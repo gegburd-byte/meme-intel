@@ -119,49 +119,89 @@ class DexScreenerAdapter:
         self,
         mint: str,
         timeframe: int = 1,
-        max_signatures: int = 300,
+        lookback_minutes: int = 120,
+        max_signatures: int = 1500,
     ):
-        """Rebuild real OHLC from on-chain Pump.fun/PumpSwap trade events."""
+        """Rebuild real OHLC from on-chain trades for a bounded recent window."""
         if not self.key:
             return [], "NOT_CONFIGURED"
 
         mint = (mint or "").strip()
         timeframe = int(timeframe or 1)
-        max_signatures = max(50, min(int(max_signatures or 300), 500))
+        lookback_minutes = max(30, min(int(lookback_minutes or 120), 120))
+        max_signatures = max(100, min(int(max_signatures or 1500), 1500))
 
-        cache_key = (mint, timeframe, max_signatures)
+        cache_key = (mint, timeframe, lookback_minutes, max_signatures)
         cached = self._chart_cache.get(cache_key)
         if cached and time.time() - cached["time"] < 20:
             return cached["candles"], cached["error"]
 
-        signatures, sig_err = await self._rpc(
-            "getSignaturesForAddress",
-            [
-                mint,
-                {
-                    "limit": max_signatures,
-                    "commitment": "confirmed",
-                },
-            ],
-        )
+        cutoff = int(time.time()) - lookback_minutes * 60
+        rows = []
+        seen = set()
+        before = None
 
-        if sig_err or not signatures:
-            return [], sig_err or "NO_SIGNATURES"
+        while len(rows) < max_signatures:
+            page_limit = min(1000, max_signatures - len(rows))
+            params = {
+                "limit": page_limit,
+                "commitment": "confirmed",
+            }
+            if before:
+                params["before"] = before
+
+            signatures, sig_err = await self._rpc(
+                "getSignaturesForAddress",
+                [mint, params],
+            )
+
+            if sig_err or not signatures:
+                if not rows:
+                    return [], sig_err or "NO_SIGNATURES"
+                break
+
+            page = [
+                item for item in signatures
+                if isinstance(item, dict) and item.get("signature")
+            ]
+
+            for item in page:
+                signature = str(item["signature"])
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                rows.append(item)
+
+            block_times = [
+                int(item.get("blockTime"))
+                for item in page
+                if item.get("blockTime") is not None
+            ]
+
+            if block_times and min(block_times) <= cutoff:
+                break
+
+            if len(page) < page_limit:
+                break
+
+            before = str(page[-1]["signature"])
 
         rows = [
-            item for item in signatures
-            if isinstance(item, dict) and item.get("signature")
+            item for item in rows
+            if item.get("blockTime") is None
+            or int(item.get("blockTime")) >= cutoff
         ]
 
         trades = []
-        sem = asyncio.Semaphore(18)
+        sem = asyncio.Semaphore(32)
 
         async def load_one(item):
             async with sem:
+                signature = str(item["signature"])
                 result, err = await self._rpc(
                     "getTransaction",
                     [
-                        item["signature"],
+                        signature,
                         {
                             "encoding": "jsonParsed",
                             "commitment": "confirmed",
@@ -172,23 +212,23 @@ class DexScreenerAdapter:
                 if err or not result:
                     return None
 
-                trade = parse_live_trade_from_transaction(
+                return parse_live_trade_from_transaction(
                     result,
                     mint,
-                    signature=str(item["signature"]),
+                    signature=signature,
                     slot=result.get("slot") or item.get("slot"),
+                    block_time=result.get("blockTime") or item.get("blockTime"),
                 )
-                return trade
 
         results = await asyncio.gather(
             *(load_one(item) for item in rows),
             return_exceptions=True,
         )
 
-        for trade in results:
-            if isinstance(trade, dict):
-                trades.append(trade)
-
+        trades = [
+            trade for trade in results
+            if isinstance(trade, dict)
+        ]
         trades.sort(key=lambda x: int(x.get("timestamp") or 0))
 
         span = max(60, timeframe * 60)
@@ -197,7 +237,7 @@ class DexScreenerAdapter:
         for trade in trades:
             ts = int(trade.get("timestamp") or 0)
             price = float(trade.get("price") or 0)
-            if ts <= 0 or price <= 0:
+            if ts <= 0 or price <= 0 or ts < cutoff:
                 continue
 
             bucket = (ts // span) * span
@@ -238,7 +278,6 @@ class DexScreenerAdapter:
         }
 
         return candles, None if candles else "NO_TRADES_DECODED"
-
 
     async def security(self, mint):
         return None, "NOT_AVAILABLE"
