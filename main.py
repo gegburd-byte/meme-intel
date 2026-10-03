@@ -135,7 +135,7 @@ def security_gate(security):
 
     if score >= 65:
         label = "BLOCK"
-    elif score >= 30:
+    elif score >= 30 or coverage < 0.95:
         label = "WARN"
     else:
         label = "PASS"
