@@ -34,7 +34,7 @@ let renderScheduled = false;
 let liveTradeBackoff = 500;
 
 const PAGE_SIZE = 1000;
-const MAX_HISTORY_BARS = 20000;
+const MAX_HISTORY_BARS = 120;
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, Number(v) || 0));
@@ -1229,7 +1229,8 @@ async function fetchInitialHistory() {
     mergePage(page.candles);
   } else {
     selectedCandles = page.candles
-      .sort((a,b)=>a.time-b.time);
+      .sort((a,b)=>a.time-b.time)
+      .slice(-MAX_HISTORY_BARS);
   }
 
   historyBarsLoaded = selectedCandles.length;
