@@ -804,21 +804,39 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     # payloads, so do not let a single source win without comparison.
     chart_diagnostics = None
     if offset == 0:
-        onchain_task = he.historical_trade_candles(
-            mint,
-            timeframe=timeframe,
-            lookback_minutes=120,
-            max_signatures=600,
-        )
-        gecko_task = gt.candles(mint, "1m")
+        async def load_onchain_history():
+            try:
+                return await asyncio.wait_for(
+                    he.historical_trade_candles(
+                        mint,
+                        timeframe=timeframe,
+                        lookback_minutes=120,
+                        max_signatures=240,
+                    ),
+                    timeout=12.0,
+                )
+            except asyncio.TimeoutError:
+                return [], "ONCHAIN_HISTORY_TIMEOUT"
+            except Exception as exc:
+                return [], str(exc)[:240]
+
+        async def load_gecko_history():
+            try:
+                return await asyncio.wait_for(
+                    gt.candles(mint, "1m"),
+                    timeout=8.0,
+                )
+            except asyncio.TimeoutError:
+                return None, "GECKO_HISTORY_TIMEOUT"
+            except Exception as exc:
+                return None, str(exc)[:240]
 
         (
             (onchain_candles, onchain_err),
             (gecko_payload, gecko_err),
         ) = await asyncio.gather(
-            onchain_task,
-            gecko_task,
-            return_exceptions=False,
+            load_onchain_history(),
+            load_gecko_history(),
         )
 
         # Fresh Pump.fun bonding-curve tokens often have no GeckoTerminal pool.
@@ -827,13 +845,21 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         public_errors = []
         if chart_data_quality(onchain_candles or [], minimum_bars=3) <= 0:
             for public_rpc in public_rpc_endpoints():
-                public_candles, public_err = await he.historical_trade_candles(
-                    mint,
-                    timeframe=timeframe,
-                    lookback_minutes=120,
-                    max_signatures=400,
-                    rpc_base=public_rpc,
-                )
+                try:
+                    public_candles, public_err = await asyncio.wait_for(
+                        he.historical_trade_candles(
+                            mint,
+                            timeframe=timeframe,
+                            lookback_minutes=120,
+                            max_signatures=180,
+                            rpc_base=public_rpc,
+                        ),
+                        timeout=7.0,
+                    )
+                except asyncio.TimeoutError:
+                    public_candles, public_err = [], "PUBLIC_RPC_HISTORY_TIMEOUT"
+                except Exception as exc:
+                    public_candles, public_err = [], str(exc)[:240]
                 if chart_data_quality(public_candles or [], minimum_bars=3) > 0:
                     onchain_candles = public_candles
                     onchain_err = None
