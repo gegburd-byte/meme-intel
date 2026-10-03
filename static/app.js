@@ -1209,11 +1209,17 @@ async function fetchInitialHistory() {
 
   try {
     $("chartMode").textContent =
-      "LOADING REAL MARKET HISTORY…";
+      "CONNECTING TO REAL MARKET DATA…";
 
-    $("historyStatus").textContent = "loading…";
+    $("historyStatus").textContent = "starting…";
 
-    const page = await fetchPage(0,generation);
+    // Start the real historical request and the lightweight active-price path
+    // together. The user should see a real current bar before slow history APIs
+    // finish.
+    const historyPromise = fetchPage(0,generation);
+    const seedPromise = syncCurrentPumpCandle();
+
+    await seedPromise;
 
     if (
       generation !== historyGeneration ||
@@ -1222,68 +1228,74 @@ async function fetchInitialHistory() {
       return false;
     }
 
-    chartDataSource = page.source || "MARKET DATA";
+    if (selectedCandles.length) {
+      historyBarsLoaded = selectedCandles.length;
+      renderChart(selectedCandles,true);
 
-    if (page.diagnostics?.sources) {
-      const parts = Object.entries(page.diagnostics.sources)
-        .map(([name,info]) => name + ": " + Number(info.bars || 0) + " bars")
-        .join(" · ");
       $("chartMode").textContent =
-        (page.source || "MARKET DATA") +
-        " · " +
-        parts;
+        chartDataSource === "LIVE_PRICE"
+          ? "LIVE PRICE · " + timeframeLabel() + " · HISTORY LOADING"
+          : chartDataSource + " · " + timeframeLabel() + " · LIVE";
     }
 
-    if (!page.candles.length) {
-      // A very new token may not have enough history for the main page yet.
-      // Seed the chart from the authoritative live Pump.fun candle instead
-      // of leaving the chart completely blank.
-      await syncCurrentPumpCandle();
+    const page = await historyPromise;
 
-      if (!selectedCandles.length || generation !== historyGeneration) {
-        $("chartMode").textContent =
-          page.error
-            ? "CHART HISTORY ERROR · " + page.error
-            : "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
-        $("historyStatus").textContent = "0 bars";
-        $("chartState").textContent =
-          page.error ? "ERROR" : "WAITING";
-        return false;
+    if (
+      generation !== historyGeneration ||
+      !selectedMint
+    ) {
+      return Boolean(selectedCandles.length);
+    }
+
+    if (page.candles.length) {
+      chartDataSource = page.source || "MARKET DATA";
+
+      if (selectedCandles.length) {
+        mergePage(page.candles);
+      } else {
+        selectedCandles = page.candles
+          .sort((a,b)=>a.time-b.time)
+          .slice(-MAX_HISTORY_BARS);
       }
 
       historyBarsLoaded = selectedCandles.length;
+      historyNextOffset = PAGE_SIZE;
+      historyHasMore = page.hasMore;
+
       renderChart(selectedCandles,true);
+
+      setTimeout(() => {
+        if (generation === historyGeneration) {
+          loadOlderHistory(generation);
+        }
+      }, 900);
+
       return true;
     }
 
     if (selectedCandles.length) {
-      mergePage(page.candles);
-    } else {
-      selectedCandles = page.candles
-        .sort((a,b)=>a.time-b.time)
-        .slice(-MAX_HISTORY_BARS);
+      $("chartMode").textContent =
+        chartDataSource === "LIVE_PRICE"
+          ? "LIVE PRICE · " + timeframeLabel() + " · WAITING FOR HISTORY"
+          : "LIVE · " + timeframeLabel() + " · HISTORY UNAVAILABLE";
+      $("historyStatus").textContent =
+        historyBarsLoaded.toLocaleString() + " live bar";
+      setSource("dotChart","chartState","LIVE",["LIVE","READY"]);
+      return true;
     }
 
-    historyBarsLoaded = selectedCandles.length;
-    historyNextOffset = PAGE_SIZE;
-    historyHasMore = page.hasMore;
-
-    renderChart(selectedCandles,true);
-
-    // Defer older history until the first chart paint is complete.
-    setTimeout(() => {
-      if (generation === historyGeneration) {
-        loadOlderHistory(generation);
-      }
-    }, 900);
-
-    return true;
+    $("chartMode").textContent =
+      "WAITING FOR REAL LIVE PRICE…";
+    $("historyStatus").textContent = "0 bars";
+    $("chartState").textContent = "WAITING";
+    return false;
   } finally {
     if (initialHistoryGeneration === generation) {
       initialHistoryBusy = false;
     }
   }
 }
+
 async function loadOlderHistory(generation) {
   const busyForSameGeneration =
     historyBusy &&
@@ -1459,17 +1471,29 @@ async function syncCurrentPumpCandle() {
 
       if (!candles.length) return;
 
+      const incomingSource = String(
+        j.source || chartDataSource
+      );
+
+      if (
+        incomingSource === "LIVE_PRICE" &&
+        selectedCandles.length &&
+        chartDataSource !== "LOADING" &&
+        chartDataSource !== "LIVE_PRICE"
+      ) {
+        return;
+      }
+
       mergePage(candles);
 
       const last = selectedCandles[
         selectedCandles.length - 1
       ];
-
-      chartDataSource = String(
-        j.source || chartDataSource
-      );
+      
+      chartDataSource = incomingSource;
 
       updateRealtimeChart(last);
+
     } catch {
       // The websocket/tape remains live if the lightweight HTTP snapshot
       // temporarily fails; the next scheduled tick will retry.
@@ -1967,6 +1991,7 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
+  startLivePricePoll();
   startCurrentCandleSync();
 
   // Paint real chart data first. The heavier security/risk analysis starts
