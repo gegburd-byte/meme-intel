@@ -1167,54 +1167,56 @@ async function fetchPage(offset, generation) {
 async function fetchInitialHistory() {
   if (initialHistoryBusy) return false;
   initialHistoryBusy = true;
-  const generation = historyGeneration;
 
-  $("chartMode").textContent =
-    "LOADING PUMP.FUN HISTORY…";
+  try {
+    const generation = historyGeneration;
 
-  $("historyStatus").textContent = "loading…";
-
-  const page = await fetchPage(0,generation);
-
-  if (
-    generation !== historyGeneration ||
-    !selectedMint
-  ) {
-    return false;
-  }
-
-  chartDataSource = page.source || "MARKET DATA";
-
-  if (!page.candles.length) {
     $("chartMode").textContent =
-      "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
-    $("historyStatus").textContent = "0 bars";
-    $("chartState").textContent = "WAITING";
+      "LOADING REAL MARKET HISTORY…";
+
+    $("historyStatus").textContent = "loading…";
+
+    const page = await fetchPage(0,generation);
+
+    if (
+      generation !== historyGeneration ||
+      !selectedMint
+    ) {
+      return false;
+    }
+
+    chartDataSource = page.source || "MARKET DATA";
+
+    if (!page.candles.length) {
+      $("chartMode").textContent =
+        "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
+      $("historyStatus").textContent = "0 bars";
+      $("chartState").textContent = "WAITING";
+      return false;
+    }
+
+    if (selectedCandles.length) {
+      mergePage(page.candles);
+    } else {
+      selectedCandles = page.candles
+        .sort((a,b)=>a.time-b.time)
+        .slice(-MAX_HISTORY_BARS);
+    }
+
+    historyBarsLoaded = selectedCandles.length;
+    historyNextOffset = PAGE_SIZE;
+    historyHasMore = page.hasMore;
+
+    renderChart(selectedCandles,true);
+
+    // Backfill is deliberately non-blocking.
+    loadOlderHistory(generation);
+
+    return true;
+  } finally {
     initialHistoryBusy = false;
-    return false;
   }
-
-  if (selectedCandles.length) {
-    mergePage(page.candles);
-  } else {
-    selectedCandles = page.candles
-      .sort((a,b)=>a.time-b.time)
-      .slice(-MAX_HISTORY_BARS);
-  }
-
-  historyBarsLoaded = selectedCandles.length;
-  historyNextOffset = PAGE_SIZE;
-  historyHasMore = page.hasMore;
-
-  renderChart(selectedCandles,true);
-
-  // Backfill is deliberately non-blocking.
-  loadOlderHistory(generation);
-  initialHistoryBusy = false;
-
-  return true;
 }
-
 async function loadOlderHistory(generation) {
   if (
     historyBusy ||
