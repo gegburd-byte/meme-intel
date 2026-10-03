@@ -709,30 +709,51 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     candles = parse_pump_candles(payload)
     source = "PUMP.FUN"
 
-    # If Pump.fun doesn't provide enough native bars, rebuild real OHLC
-    # from the token's on-chain Pump.fun/PumpSwap trades.
+    # If Pump.fun doesn't provide enough native bars, compare two real
+    # historical sources in parallel and keep the source with more usable bars.
     if len(candles) < 20 and offset == 0:
-        onchain_candles, onchain_err = await he.historical_trade_candles(
+        onchain_task = he.historical_trade_candles(
             mint,
             timeframe=timeframe,
             max_signatures=300,
         )
-        if len(onchain_candles) > len(candles):
-            candles = onchain_candles[-limit:]
-            source = "HELIUS_ONCHAIN_TRADES"
-            pump_err = onchain_err
+        gecko_task = gt.candles(mint, "1m")
 
-    # GeckoTerminal remains the broad market-data fallback.
-    if len(candles) < 5 and offset == 0:
-        gecko_payload, gecko_err = await gt.candles(mint, "1m")
-        gecko_candles = parse_candles(gecko_payload)
-        if gecko_candles:
-            candles = aggregate_timeframe_candles(gecko_candles, timeframe)
-            candles = gecko_candles[-limit:] if timeframe == 1 else candles[-limit:]
-            source = "GECKOTERMINAL"
-            pump_err = gecko_err
-        else:
-            pump_err = pump_err or gecko_err
+        (
+            (onchain_candles, onchain_err),
+            (gecko_payload, gecko_err),
+        ) = await asyncio.gather(
+            onchain_task,
+            gecko_task,
+        )
+
+        gecko_base = parse_candles(gecko_payload)
+        gecko_candles = aggregate_timeframe_candles(
+            gecko_base,
+            timeframe,
+        )
+
+        options = [
+            ("HELIUS_ONCHAIN_TRADES", onchain_candles or []),
+            ("GECKOTERMINAL", gecko_candles or []),
+        ]
+
+        best_source, best_candles = max(
+            options,
+            key=lambda row: len(row[1]),
+        )
+
+        if len(best_candles) > len(candles):
+            candles = best_candles[-limit:]
+            source = best_source
+            pump_err = (
+                onchain_err
+                if best_source == "HELIUS_ONCHAIN_TRADES"
+                else gecko_err
+            )
+
+        if not candles:
+            pump_err = pump_err or onchain_err or gecko_err
 
     return {
         "state": "READY" if candles else "NO_CANDLES",
