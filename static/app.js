@@ -34,7 +34,7 @@ let renderScheduled = false;
 let liveTradeBackoff = 500;
 
 const PAGE_SIZE = 1000;
-const MAX_HISTORY_BARS = 120;
+const MAX_HISTORY_BARS = 30;
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, Number(v) || 0));
@@ -1183,45 +1183,10 @@ async function fetchInitialHistory() {
   chartDataSource = page.source || "MARKET DATA";
 
   if (!page.candles.length) {
-    let seedPrice = Number(selectedInfo.price);
-
-    if (!(seedPrice > 0)) {
-      try {
-        const r = await fetch(
-          "/api/live/price?mint=" +
-          encodeURIComponent(selectedMint) +
-          "&t=" + Date.now(),
-          {cache:"no-store"}
-        );
-        const data = await readJsonResponse(r);
-        seedPrice = Number(data.price);
-      } catch {}
-    }
-
-    if (Number.isFinite(seedPrice) && seedPrice > 0) {
-      const span = chartTimeframe * 60;
-      const bucket = Math.floor(Date.now() / 1000 / span) * span;
-      selectedCandles = [{
-        time: bucket,
-        ts: bucket,
-        o: seedPrice,
-        h: seedPrice,
-        l: seedPrice,
-        c: seedPrice,
-        v: 0
-      }];
-      historyBarsLoaded = 1;
-      chartDataSource = "LIVE PRICE";
-      $("chartMode").textContent =
-        "LIVE PRICE · BUILDING " + timeframeLabel() + " CANDLE";
-      $("historyStatus").textContent = "1 bar";
-      renderChart(selectedCandles,true);
-      return true;
-    }
-
     $("chartMode").textContent =
-      "WAITING FOR LIVE PRICE…";
+      "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
     $("historyStatus").textContent = "0 bars";
+    $("chartState").textContent = "WAITING";
     return false;
   }
 
