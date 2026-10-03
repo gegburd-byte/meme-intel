@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meme Intel</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="shell">
+<header>
+  <div><h1>MEME INTEL</h1><p>Solana research terminal · 5m → 1m setup · social corroboration · paper trading</p></div>
+  <div id="health" class="pill">CHECKING…</div>
+</header>
+
+<section class="sourcebar">
+  <div><span class="dot" id="dotX"></span>X <b id="srcX">—</b></div>
+  <div><span class="dot" id="dotBE"></span>Birdeye <b id="srcBE">—</b></div>
+  <div><span class="dot" id="dotHE"></span>Helius <b id="srcHE">—</b></div>
+  <div class="muted">No wallet connection · paper only</div>
+</section>
+
+<section class="controls panel">
+  <div class="field grow"><label>Solana mint / contract</label><input id="mint" placeholder="Paste token CA here"></div>
+  <div class="field wide"><label>X query</label><input id="query" value='(solana OR "pump.fun" OR memecoin OR $SOL) lang:en -is:retweet'></div>
+  <button id="analyze" class="primary">ANALYZE</button>
+</section>
+
+<section class="grid">
+  <article class="panel hero">
+    <div class="panelhead"><h2>LIVE SETUP</h2><span id="setupState" class="stage">—</span></div>
+    <div class="setupgrid">
+      <div><small>PREVIOUS HIGH</small><strong id="prevHigh">—</strong></div>
+      <div><small>HIGHER LOW</small><strong id="higherLow">—</strong></div>
+      <div><small>STOP</small><strong id="stop">—</strong></div>
+      <div><small>WHY</small><strong id="setupWhy">—</strong></div>
+    </div>
+    <div id="path" class="path">PUMP → PULLBACK → HIGHER LOW → 1M CLOSE ABOVE HIGH</div>
+  </article>
+
+  <article class="panel">
+    <div class="panelhead"><h2>OPPORTUNITY SCORE</h2><span id="score">—</span></div>
+    <div id="scoreRows" class="rows"></div>
+    <p class="muted">Research heuristic, not a probability or prediction.</p>
+  </article>
+
+  <article class="panel">
+    <div class="panelhead"><h2>RISK</h2><span id="riskLevel" class="risk">—</span></div>
+    <div id="riskRows" class="rows"></div>
+  </article>
+
+  <article class="panel">
+    <div class="panelhead"><h2>SOCIAL</h2><span id="socialState">—</span></div>
+    <div class="metrics">
+      <div><small>POSTS</small><strong id="posts">—</strong></div>
+      <div><small>MENTION/MIN</small><strong id="vel">—</strong></div>
+      <div><small>SENTIMENT</small><strong id="sentiment">—</strong></div>
+      <div><small>DOMINATION</small><strong id="domination">—</strong></div>
+      <div><small>DUPES</small><strong id="dupes">—</strong></div>
+    </div>
+  </article>
+
+  <article class="panel">
+    <div class="panelhead"><h2>TOKEN DATA</h2><span id="tokenName">—</span></div>
+    <div id="tokenRows" class="rows"></div>
+  </article>
+
+  <article class="panel">
+    <div class="panelhead"><h2>X SIGNALS</h2><span id="tweetCount">—</span></div>
+    <div id="tweets" class="tweets"><div class="muted">Analyze a mint or search X.</div></div>
+  </article>
+
+  <article class="panel paper">
+    <div class="panelhead"><h2>PAPER TRADE</h2><span class="muted">No real orders</span></div>
+    <div class="paperform">
+      <input id="pEntry" placeholder="Entry price">
+      <input id="pQty" placeholder="Qty / units">
+      <input id="pNote" placeholder="Note">
+      <button id="paperOpen">OPEN LONG</button>
+    </div>
+    <div id="paperTrades" class="papertrades"></div>
+  </article>
+
+  <article class="panel full">
+    <div class="panelhead"><h2>DATA STATUS</h2><span class="muted">Transparent missing-data handling</span></div>
+    <pre id="raw" class="raw">Nothing loaded.</pre>
+  </article>
+</section>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

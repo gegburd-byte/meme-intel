@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+market_history.db
+data/*.db
+backtest_local_results.json
+backtest_results.json
+paper_watcher_state.json
