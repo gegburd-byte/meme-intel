@@ -463,8 +463,9 @@ async def top_opportunities():
         return TOP_CACHE["data"]
 
     candidates = await discover_candidates(
-        limit=8,
+        limit=12,
         min_liquidity=10000,
+        pump_only=True,
     )
 
     async def inspect(candidate):
