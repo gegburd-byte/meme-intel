@@ -772,10 +772,13 @@ def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
 
 @app.get("/api/chart")
 async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 1):
-    """Return only validated real OHLC data.
+    """Serve Pump.fun's own candle series whenever available.
 
-    Native Pump.fun candles are accepted only when they pass quality checks.
-    Otherwise the endpoint compares GeckoTerminal and on-chain Helius history.
+    This is the important correctness rule for Meme Intel:
+    the primary chart must not splice together differently-priced candle
+    definitions from Helius/Gecko/Pump.fun. Pump.fun's candlestick endpoint
+    is authoritative for the chart. On-chain reconstruction is fallback-only
+    when the native candle feed is unavailable.
     """
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
@@ -787,205 +790,191 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     limit = max(15, min(int(limit or 1000), 1000))
     offset = max(0, int(offset or 0))
 
-    if offset == 0:
-        async def load_pump_history():
-            try:
-                return await asyncio.wait_for(
-                    pf.candles(
-                        mint,
-                        limit=limit,
-                        timeframe=timeframe,
-                        offset=offset,
-                    ),
-                    timeout=7.0,
-                )
-            except asyncio.TimeoutError:
-                return None, "PUMPFUN_CHART_TIMEOUT"
-            except Exception as exc:
-                return None, str(exc)[:240]
+    # Always try the native Pump.fun candle feed first. This is what keeps
+    # 1m/5m/15m/1h bars on the exact same candle definition as Pump.fun.
+    try:
+        payload, pump_err = await asyncio.wait_for(
+            pf.candles(
+                mint,
+                limit=limit,
+                timeframe=timeframe,
+                offset=offset,
+            ),
+            timeout=7.0,
+        )
+    except asyncio.TimeoutError:
+        payload, pump_err = None, "PUMPFUN_CHART_TIMEOUT"
+    except Exception as exc:
+        payload, pump_err = None, str(exc)[:240]
 
-        async def load_onchain_history():
+    native = parse_pump_candles(payload)
+    native_quality = chart_data_quality(native, minimum_bars=3)
+
+    if native_quality > 0:
+        candles = sorted(native, key=lambda x: x.ts)[-limit:]
+        return {
+            "state": "READY",
+            "source": "PUMP.FUN",
+            "offset": offset,
+            "limit": limit,
+            "timeframe": timeframe,
+            "has_more": len(candles) >= limit,
+            "candles": [
+                {
+                    "ts": c.ts,
+                    "o": c.o,
+                    "h": c.h,
+                    "l": c.l,
+                    "c": c.c,
+                    "v": c.v,
+                }
+                for c in candles
+            ],
+            "error": None,
+            "diagnostics": {
+                "exact_native": True,
+                "primary": "PUMP.FUN",
+                "sources": {
+                    "PUMP.FUN": {
+                        "bars": len(candles),
+                        "quality": round(native_quality, 2),
+                    }
+                },
+                "pump_error": None,
+            },
+            "timestamp": int(time.time()),
+        }
+
+    # Do NOT silently switch an older pagination page to a different candle
+    # definition. That would splice providers into one chart. On fallback,
+    # only page 0 is reconstructed; this keeps fallback data internally
+    # consistent and tells the frontend there is no native pagination.
+    if offset > 0:
+        return {
+            "state": "NO_CANDLES",
+            "source": "NONE",
+            "offset": offset,
+            "limit": limit,
+            "timeframe": timeframe,
+            "has_more": False,
+            "candles": [],
+            "error": pump_err or "PUMPFUN_HISTORY_UNAVAILABLE",
+            "diagnostics": {
+                "exact_native": False,
+                "primary": "PUMP.FUN",
+                "sources": {
+                    "PUMP.FUN": {
+                        "bars": 0,
+                        "quality": round(native_quality, 2),
+                    }
+                },
+                "pump_error": pump_err,
+            },
+            "timestamp": int(time.time()),
+        }
+
+    async def load_onchain_history():
+        try:
+            return await asyncio.wait_for(
+                he.historical_trade_candles(
+                    mint,
+                    timeframe=timeframe,
+                    lookback_minutes=120,
+                    max_signatures=240,
+                ),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            return [], "ONCHAIN_HISTORY_TIMEOUT"
+        except Exception as exc:
+            return [], str(exc)[:240]
+
+    async def load_gecko_history():
+        try:
+            return await asyncio.wait_for(
+                gt.candles(mint, "1m"),
+                timeout=6.0,
+            )
+        except asyncio.TimeoutError:
+            return None, "GECKO_HISTORY_TIMEOUT"
+        except Exception as exc:
+            return None, str(exc)[:240]
+
+    (onchain_candles, onchain_err), (gecko_payload, gecko_err) = await asyncio.gather(
+        load_onchain_history(),
+        load_gecko_history(),
+    )
+
+    public_errors = []
+    onchain_source = "HELIUS_ONCHAIN_TRADES"
+
+    if chart_data_quality(onchain_candles or [], minimum_bars=3) <= 0:
+        async def load_public_history(public_rpc):
             try:
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     he.historical_trade_candles(
                         mint,
                         timeframe=timeframe,
                         lookback_minutes=120,
-                        max_signatures=240,
+                        max_signatures=180,
+                        rpc_base=public_rpc,
                     ),
-                    timeout=10.0,
+                    timeout=4.5,
                 )
+                return public_rpc, result
             except asyncio.TimeoutError:
-                return [], "ONCHAIN_HISTORY_TIMEOUT"
+                return public_rpc, ([], "PUBLIC_RPC_HISTORY_TIMEOUT")
             except Exception as exc:
-                return [], str(exc)[:240]
+                return public_rpc, ([], str(exc)[:240])
 
-        async def load_gecko_history():
-            try:
-                return await asyncio.wait_for(
-                    gt.candles(mint, "1m"),
-                    timeout=6.0,
-                )
-            except asyncio.TimeoutError:
-                return None, "GECKO_HISTORY_TIMEOUT"
-            except Exception as exc:
-                return None, str(exc)[:240]
-
-        (
-            (payload, pump_err),
-            (onchain_candles, onchain_err),
-            (gecko_payload, gecko_err),
-        ) = await asyncio.gather(
-            load_pump_history(),
-            load_onchain_history(),
-            load_gecko_history(),
+        public_results = await asyncio.gather(
+            *(load_public_history(rpc) for rpc in public_rpc_endpoints())
         )
+
+        for public_rpc, result in public_results:
+            public_candles, public_err = result
+            if chart_data_quality(public_candles or [], minimum_bars=3) > 0:
+                onchain_candles = public_candles
+                onchain_err = None
+                onchain_source = "SOLANA_PUBLIC_RPC"
+                break
+            public_errors.append(f"{public_rpc}:{public_err}")
+
+    gecko_base = parse_candles(gecko_payload)
+    gecko_candles = aggregate_timeframe_candles(
+        gecko_base,
+        timeframe,
+    )
+
+    options = [
+        (onchain_source, onchain_candles or []),
+        ("GECKOTERMINAL", gecko_candles or []),
+    ]
+
+    scored = [
+        (name, rows, chart_data_quality(rows, minimum_bars=3))
+        for name, rows in options
+    ]
+
+    valid = [row for row in scored if row[2] > 0]
+    if valid:
+        best_source, best_candles, best_quality = max(
+            valid,
+            key=lambda row: (row[2], len(row[1])),
+        )
+        candles = sorted(best_candles, key=lambda x: x.ts)[-limit:]
+        source = best_source
     else:
-        try:
-            payload, pump_err = await asyncio.wait_for(
-                pf.candles(
-                    mint,
-                    limit=limit,
-                    timeframe=timeframe,
-                    offset=offset,
-                ),
-                timeout=7.0,
-            )
-        except asyncio.TimeoutError:
-            payload, pump_err = None, "PUMPFUN_CHART_TIMEOUT"
-        except Exception as exc:
-            payload, pump_err = None, str(exc)[:240]
-
-        onchain_candles, onchain_err = [], None
-        gecko_payload, gecko_err = None, None
-
-    native = parse_pump_candles(payload)
-
-    native_quality = chart_data_quality(native, minimum_bars=3)
-    source = "PUMP.FUN" if native_quality > 0 else "NONE"
-    candles = native if native_quality > 0 else []
-
-    # Always corroborate the first page with independent real-data sources.
-    # Pump.fun's frontend feed can return structurally valid but visually poor
-    # payloads, so do not let a single source win without comparison.
-    chart_diagnostics = None
-    if offset == 0:
-        # Fresh Pump.fun bonding-curve tokens often have no GeckoTerminal pool.
-        # If Helius history is unavailable, retry the exact same on-chain
-        # reconstruction against public Solana RPCs before declaring the chart empty.
-        public_errors = []
-        if chart_data_quality(onchain_candles or [], minimum_bars=3) <= 0:
-            async def load_public_history(public_rpc):
-                try:
-                    result = await asyncio.wait_for(
-                        he.historical_trade_candles(
-                            mint,
-                            timeframe=timeframe,
-                            lookback_minutes=120,
-                            max_signatures=180,
-                            rpc_base=public_rpc,
-                        ),
-                        timeout=4.5,
-                    )
-                    return public_rpc, result
-                except asyncio.TimeoutError:
-                    return public_rpc, ([], "PUBLIC_RPC_HISTORY_TIMEOUT")
-                except Exception as exc:
-                    return public_rpc, ([], str(exc)[:240])
-
-            public_results = await asyncio.gather(
-                *(load_public_history(rpc) for rpc in public_rpc_endpoints())
-            )
-
-            for public_rpc, result in public_results:
-                public_candles, public_err = result
-                if chart_data_quality(public_candles or [], minimum_bars=3) > 0:
-                    onchain_candles = public_candles
-                    onchain_err = None
-                    onchain_source = "SOLANA_PUBLIC_RPC"
-                    break
-                public_errors.append(f"{public_rpc}:{public_err}")
-            else:
-                onchain_source = "HELIUS_ONCHAIN_TRADES"
-        else:
-            onchain_source = "HELIUS_ONCHAIN_TRADES"
-
-        gecko_base = parse_candles(gecko_payload)
-        gecko_candles = aggregate_timeframe_candles(
-            gecko_base,
-            timeframe,
-        )
-
-        options = [
-            ("PUMP.FUN", native),
-            (onchain_source, onchain_candles or []),
-            ("GECKOTERMINAL", gecko_candles or []),
-        ]
-
-        scored = [
-            (name, rows, chart_data_quality(rows, minimum_bars=3))
-            for name, rows in options
-        ]
-        chart_diagnostics = {
-            "window_minutes": 120,
-            "sources": {
-                name: {
-                    "bars": len(rows),
-                    "quality": round(quality, 2),
-                }
-                for name, rows, quality in scored
-            },
-            "helius_error": onchain_err,
-            "public_rpc_errors": public_errors,
-            "gecko_error": gecko_err,
-            "pump_error": pump_err,
-        }
-        # Prefer reconstructed on-chain trades whenever they are available.
-        # They use the same SOL/token price unit as the live trade websocket,
-        # eliminating frontend-feed unit/format surprises.
-        onchain_rows = [
-            row for row in scored
-            if row[0] in {"HELIUS_ONCHAIN_TRADES", "SOLANA_PUBLIC_RPC"}
-        ]
-        valid_onchain = [
-            row for row in onchain_rows
-            if row[2] > 0
-        ]
-
-        if valid_onchain:
-            best_source, best_candles, best_quality = max(
-                valid_onchain,
-                key=lambda row: (row[2], len(row[1])),
-            )
-        else:
-            best_source, best_candles, best_quality = max(
-                scored,
-                key=lambda row: (row[2], len(row[1])),
-            )
-
-        if best_quality > 0:
-            candles = sorted(best_candles, key=lambda x: x.ts)[-limit:]
-            source = best_source
-        else:
-            candles = []
-            source = "NONE"
-
-        if not candles:
-            pump_err = (
-                "; ".join(public_errors)
-                or onchain_err
-                or gecko_err
-                or pump_err
-                or "NO_VALID_CANDLES"
-            )
+        candles = []
+        source = "NONE"
 
     return {
         "state": "READY" if candles else "NO_CANDLES",
-        "source": source if candles else "NONE",
+        "source": source,
         "offset": offset,
         "limit": limit,
         "timeframe": timeframe,
-        "has_more": source == "PUMP.FUN" and len(candles) >= limit,
+        "has_more": False,
         "candles": [
             {
                 "ts": c.ts,
@@ -997,8 +986,34 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             }
             for c in candles
         ],
-        "error": None if candles else (pump_err or "NO_VALID_CANDLES"),
-        "diagnostics": chart_diagnostics,
+        "error": None if candles else (
+            "; ".join(public_errors)
+            or onchain_err
+            or gecko_err
+            or pump_err
+            or "NO_VALID_CANDLES"
+        ),
+        "diagnostics": {
+            "exact_native": False,
+            "primary": source if candles else "PUMP.FUN",
+            "sources": {
+                "PUMP.FUN": {
+                    "bars": len(native),
+                    "quality": round(native_quality, 2),
+                },
+                **{
+                    name: {
+                        "bars": len(rows),
+                        "quality": round(quality, 2),
+                    }
+                    for name, rows, quality in scored
+                },
+            },
+            "helius_error": onchain_err,
+            "public_rpc_errors": public_errors,
+            "gecko_error": gecko_err,
+            "pump_error": pump_err,
+        },
         "timestamp": int(time.time()),
     }
 
