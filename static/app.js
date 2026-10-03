@@ -623,7 +623,7 @@ async function selectToken(mint) {
   await fetchChart(true);
 
   if(liveTimer) clearInterval(liveTimer);
-  liveTimer=setInterval(()=>fetchChart(false),1500);
+  liveTimer=setInterval(()=>fetchChart(false),1000);
 
   // Do not block the chart on the slower analysis endpoint.
   analyzeSelected();
