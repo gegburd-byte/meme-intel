@@ -726,19 +726,64 @@ async def ws_trades(websocket: WebSocket):
         await trade_hub.remove_client(mint, websocket)
 
 
+def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
+    """Score real OHLC data; flat/malformed payloads must not become the chart."""
+    if not candles:
+        return 0.0
+
+    ordered = sorted(candles, key=lambda x: x.ts)
+    times = [int(x.ts) for x in ordered]
+    closes = [float(x.c) for x in ordered if float(x.c) > 0]
+    ranges = [
+        max(0.0, float(x.h) - float(x.l))
+        for x in ordered
+        if float(x.h) > 0 and float(x.l) > 0
+    ]
+
+    if len(ordered) < minimum_bars or len(set(times)) < minimum_bars:
+        return 0.0
+    if len(closes) < minimum_bars:
+        return 0.0
+
+    # Reject an apparently successful payload that is just the same price
+    # repeated across many timestamps with no wick/body movement.
+    price_min = min(closes)
+    price_max = max(closes)
+    price_span = (price_max - price_min) / max(price_min, 1e-30)
+
+    moving_bars = sum(
+        1 for c in ordered
+        if abs(float(c.c) - float(c.o)) > 0
+        or float(c.h) > float(c.o)
+        or float(c.l) < float(c.o)
+    )
+
+    if price_span == 0 and moving_bars == 0:
+        return 0.0
+
+    return min(
+        100.0,
+        len(ordered)
+        + min(50.0, price_span * 100.0)
+        + min(20.0, moving_bars),
+    )
+
+
 @app.get("/api/chart")
 async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 1):
-    """Layered market history: Pump.fun first, GeckoTerminal second."""
+    """Return only validated real OHLC data.
+
+    Native Pump.fun candles are accepted only when they pass quality checks.
+    Otherwise the endpoint compares GeckoTerminal and on-chain Helius history.
+    """
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
-    allowed = {1, 5, 15, 60}
-    timeframe = int(timeframe or 1)
-    if timeframe not in allowed:
+    if timeframe not in {1, 5, 15, 60}:
         raise HTTPException(400, "Unsupported timeframe")
 
-    limit = max(25, min(int(limit or 1000), 1000))
+    limit = max(15, min(int(limit or 1000), 1000))
     offset = max(0, int(offset or 0))
 
     payload, pump_err = await pf.candles(
@@ -747,17 +792,20 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         timeframe=timeframe,
         offset=offset,
     )
-    candles = parse_pump_candles(payload)
-    source = "PUMP.FUN"
+    native = parse_pump_candles(payload)
 
-    # If Pump.fun doesn't provide enough native bars, compare two real
-    # historical sources in parallel and keep the source with more usable bars.
-    if len(candles) < 20 and offset == 0:
+    native_quality = chart_data_quality(native, minimum_bars=3)
+    source = "PUMP.FUN" if native_quality > 0 else "NONE"
+    candles = native if native_quality > 0 else []
+
+    # For the first page, never let a low-quality/flat native payload block
+    # the real on-chain/market fallbacks.
+    if offset == 0 and native_quality < 25:
         onchain_task = he.historical_trade_candles(
             mint,
             timeframe=timeframe,
-            lookback_minutes=120,
-            max_signatures=1500,
+            lookback_minutes=30,
+            max_signatures=500,
         )
         gecko_task = gt.candles(mint, "1m")
 
@@ -767,6 +815,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         ) = await asyncio.gather(
             onchain_task,
             gecko_task,
+            return_exceptions=False,
         )
 
         gecko_base = parse_candles(gecko_payload)
@@ -776,26 +825,34 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         )
 
         options = [
+            ("PUMP.FUN", native),
             ("HELIUS_ONCHAIN_TRADES", onchain_candles or []),
             ("GECKOTERMINAL", gecko_candles or []),
         ]
 
-        best_source, best_candles = max(
-            options,
-            key=lambda row: len(row[1]),
+        scored = [
+            (name, rows, chart_data_quality(rows, minimum_bars=3))
+            for name, rows in options
+        ]
+        best_source, best_candles, best_quality = max(
+            scored,
+            key=lambda row: (row[2], len(row[1])),
         )
 
-        if len(best_candles) > len(candles):
-            candles = best_candles[-limit:]
+        if best_quality > 0:
+            candles = sorted(best_candles, key=lambda x: x.ts)[-limit:]
             source = best_source
-            pump_err = (
-                onchain_err
-                if best_source == "HELIUS_ONCHAIN_TRADES"
-                else gecko_err
-            )
+        else:
+            candles = []
+            source = "NONE"
 
         if not candles:
-            pump_err = pump_err or onchain_err or gecko_err
+            pump_err = (
+                onchain_err
+                or gecko_err
+                or pump_err
+                or "NO_VALID_CANDLES"
+            )
 
     return {
         "state": "READY" if candles else "NO_CANDLES",
@@ -815,10 +872,9 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             }
             for c in candles
         ],
-        "error": None if candles else (pump_err or "NO_CANDLES"),
+        "error": None if candles else (pump_err or "NO_VALID_CANDLES"),
         "timestamp": int(time.time()),
     }
-
 
 @app.get("/api/live/price")
 async def live_price(mint: str):
