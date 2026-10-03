@@ -128,7 +128,8 @@ class DexScreenerAdapter:
 
         mint = (mint or "").strip()
         timeframe = int(timeframe or 1)
-        lookback_minutes = max(30, min(int(lookback_minutes or 120), 120))
+        default_lookback = int(os.getenv("CHART_HISTORY_MINUTES", "120"))
+        lookback_minutes = max(30, min(int(lookback_minutes or default_lookback), 120))
         max_signatures = max(100, min(int(max_signatures or 1500), 1500))
 
         cache_key = (mint, timeframe, lookback_minutes, max_signatures)
@@ -193,7 +194,7 @@ class DexScreenerAdapter:
         ]
 
         trades = []
-        sem = asyncio.Semaphore(32)
+        sem = asyncio.Semaphore(8)
 
         async def load_one(item):
             async with sem:
