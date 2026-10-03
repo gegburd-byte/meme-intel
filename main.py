@@ -337,25 +337,34 @@ async def analyze(req: AnalyzeReq):
     data = overview.get("data", {}) if isinstance(overview, dict) else {}
     x_query = build_token_x_query(mint, data.get("symbol"), data.get("name"), req.x_query)
 
-    creation_task = ds.creation(mint)
     security_task = he.security(mint)
-    asset_task = he.asset(mint)
     candles_task = gt.candles(mint, "1m")
     x_task = xa.recent(x_query, 60) if req.include_x else skipped_x()
 
     (
-        (creation, creation_err),
         (security, security_err),
-        (asset, asset_err),
         (d1, e1),
         (xp, xerr),
     ) = await asyncio.gather(
-        creation_task,
         security_task,
-        asset_task,
         candles_task,
         x_task,
     )
+
+    asset = (
+        security.get("asset")
+        if isinstance(security, dict)
+        else None
+    )
+    asset_err = security_err
+    creation = {
+        "data": {
+            "pairCreatedAt": data.get("pairCreatedAt"),
+            "pairAddress": data.get("pairAddress"),
+            "dexId": data.get("dexId"),
+        }
+    }
+    creation_err = overview_err
 
     raw1 = parse_candles(d1)
     c1 = closed_candles(raw1, 60)
