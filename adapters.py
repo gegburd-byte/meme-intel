@@ -276,6 +276,15 @@ class PumpFunAdapter:
             "https://frontend-api-v3.pump.fun",
             "https://frontend-api.pump.fun",
         )
+        self._client = httpx.AsyncClient(
+            timeout=4.5,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; MemeIntel/2.1)",
+                "Accept": "application/json",
+                "Referer": "https://pump.fun/",
+                "Origin": "https://pump.fun",
+            },
+        )
 
     async def candles(self, mint, limit=300, timeframe=1):
         mint = (mint or "").strip()
@@ -294,21 +303,13 @@ class PumpFunAdapter:
         }
         last_error = None
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; MemeIntel/2.1)",
-            "Accept": "application/json",
-            "Referer": "https://pump.fun/",
-            "Origin": "https://pump.fun",
-        }
-
         try:
-            async with httpx.AsyncClient(timeout=8, headers=headers) as c:
-                for base in self.base_urls:
-                    try:
-                        r = await c.get(
-                            f"{base}/candlesticks/{mint}",
-                            params=params,
-                        )
+            for base in self.base_urls:
+                try:
+                    r = await self._client.get(
+                        f"{base}/candlesticks/{mint}",
+                        params=params,
+                    )
                         if r.status_code >= 400:
                             last_error = f"HTTP_{r.status_code}"
                             continue
