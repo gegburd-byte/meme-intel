@@ -369,7 +369,15 @@ function renderSocial(s, items) {
 
 function renderRisk(r) {
   r = r || {};
+
   $("riskLevel").textContent = r.overall || "UNKNOWN";
+
+  const sg = lastData && lastData.security_gate ? lastData.security_gate : {};
+  const gate = $("securityGate");
+  if (gate) {
+    gate.textContent = sg.label || "SECURITY UNKNOWN";
+    gate.className = "gate " + String(sg.label || "SECURITY UNKNOWN").toLowerCase().replace(/[^a-z]+/g, "-");
+  }
 
   $("riskRows").innerHTML = (r.flags || []).map(function(f) {
     return row(escapeHtml(f.code || "FLAG"), escapeHtml(f.level || "UNKNOWN")) +
@@ -668,6 +676,9 @@ document.addEventListener("DOMContentLoaded", function() {
   refreshRadar();
   startPumpFeed();
   setInterval(health, 15000);
+  window.addEventListener("resize", function() {
+    if (lastData) renderChart(lastData);
+  });
 });
 
 function renderRadar(candidates) {
