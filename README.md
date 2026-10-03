@@ -7,7 +7,7 @@ Meme Intel is a browser-based research + paper-trading terminal for Solana meme 
 ## Current capabilities
 
 - Automatic market-wide candidate discovery from DexScreener data.
-- Automatic top-opportunity scanner with a strict security eligibility gate.
+- Automatic top-opportunity scanner with staged market/security screening and limited X enrichment on finalists.
 - Token-specific X search using contract address, symbol and token name.
 - X velocity, acceleration, independent-author count, engagement, sentiment and copy/coordination risk.
 - Real-time Pump.fun new-token event feed when the optional PumpPortal WebSocket is reachable.
@@ -20,6 +20,7 @@ Meme Intel is a browser-based research + paper-trading terminal for Solana meme 
 - Automatic refresh without a page reload.
 - Paper trading only. No wallet connection and no real orders.
 - Transparent DATA NOT AVAILABLE / SECURITY UNKNOWN states instead of fabricated data.
+- Graceful degraded mode when X is unavailable, rate-limited, or out of credits; missing social data is not treated as bearish evidence.
 - Automated regression tests and GitHub Actions configuration.
 
 ## Safety model
