@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from engine import (
@@ -360,6 +360,36 @@ async def x_radar(req: XSearchReq):
     }
 
 
+def aggregate_timeframe_candles(candles: list[Candle], minutes: int) -> list[Candle]:
+    """Aggregate available lower-timeframe candles without requiring every minute."""
+    if minutes <= 1:
+        return sorted(candles, key=lambda x: x.ts)
+
+    span = minutes * 60
+    buckets: dict[int, list[Candle]] = {}
+
+    for candle in sorted(candles, key=lambda x: x.ts):
+        bucket = (candle.ts // span) * span
+        buckets.setdefault(bucket, []).append(candle)
+
+    out: list[Candle] = []
+    for ts, group in sorted(buckets.items()):
+        group.sort(key=lambda x: x.ts)
+        if not group:
+            continue
+        out.append(
+            Candle(
+                ts=ts,
+                o=group[0].o,
+                h=max(x.h for x in group),
+                l=min(x.l for x in group),
+                c=group[-1].c,
+                v=sum(max(0.0, x.v) for x in group),
+            )
+        )
+    return out
+
+
 def aggregate_5m_from_1m(candles: list[Candle]) -> list[Candle]:
     buckets = {}
     for c in sorted(candles, key=lambda x: x.ts):
@@ -428,11 +458,14 @@ async def analyze(req: AnalyzeReq):
     token_decimals = token_info.get("decimals")
     token_supply = token_info.get("supply")
 
-    sell_probe, sell_probe_err = await ju.sell_probe(
-        mint,
-        decimals=token_decimals,
-        supply=token_supply,
-    )
+    try:
+        sell_probe, sell_probe_err = await ju.sell_probe(
+            mint,
+            decimals=token_decimals,
+            supply=token_supply,
+        )
+    except Exception as exc:
+        sell_probe, sell_probe_err = None, str(exc)[:300]
     asset_err = security_err
     creation = {
         "data": {
@@ -588,6 +621,20 @@ async def analyze(req: AnalyzeReq):
     }
 
 
+
+
+@app.exception_handler(Exception)
+async def api_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "state": "ERROR",
+            "detail": "Backend request failed.",
+            "error": str(exc)[:300],
+        },
+    )
+
+
 PRICE_CACHE = {}
 
 
@@ -625,7 +672,7 @@ async def ws_trades(websocket: WebSocket):
 
 @app.get("/api/chart")
 async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 1):
-    """Fast Pump.fun OHLC page. The browser can page this endpoint in parallel."""
+    """Layered market history: Pump.fun first, GeckoTerminal second."""
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
@@ -638,21 +685,35 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     limit = max(25, min(int(limit or 1000), 1000))
     offset = max(0, int(offset or 0))
 
-    payload, err = await pf.candles(
+    payload, pump_err = await pf.candles(
         mint,
         limit=limit,
         timeframe=timeframe,
         offset=offset,
     )
     candles = parse_pump_candles(payload)
+    source = "PUMP.FUN"
+
+    # Current Pump.fun frontend candle routes may require authentication.
+    # GeckoTerminal is the historical fallback for tracked markets.
+    if not candles and offset == 0:
+        gecko_payload, gecko_err = await gt.candles(mint, "1m")
+        gecko_candles = parse_candles(gecko_payload)
+        if gecko_candles:
+            candles = aggregate_timeframe_candles(gecko_candles, timeframe)
+            candles = candles[-limit:]
+            source = "GECKOTERMINAL"
+            pump_err = gecko_err
+        else:
+            pump_err = pump_err or gecko_err
 
     return {
         "state": "READY" if candles else "NO_CANDLES",
-        "source": "PUMP.FUN" if candles else "NONE",
+        "source": source if candles else "NONE",
         "offset": offset,
         "limit": limit,
         "timeframe": timeframe,
-        "has_more": len(candles) >= limit,
+        "has_more": source == "PUMP.FUN" and len(candles) >= limit,
         "candles": [
             {
                 "ts": c.ts,
@@ -664,7 +725,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             }
             for c in candles
         ],
-        "error": None if candles else (err or "NO_CANDLES"),
+        "error": None if candles else (pump_err or "NO_CANDLES"),
         "timestamp": int(time.time()),
     }
 
