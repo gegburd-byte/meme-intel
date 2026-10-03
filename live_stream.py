@@ -91,28 +91,24 @@ def parse_live_trade_from_transaction(
     if trade:
         return trade
 
+    # Pump.fun TradeEvents are also emitted through CPI inner-instruction data.
+    # Scan every inner instruction payload for the event discriminator rather
+    # than requiring a specific wrapper/tag, because current transactions can
+    # encode the event directly in instruction data.
     for payload in _iter_inner_instruction_data(tx):
-        # PumpSwap emit_cpi events are encoded as:
-        # [anchor self-cpi tag][8-byte event discriminator][borsh payload].
-        if not payload.startswith(ANCHOR_SELF_CPI_TAG):
-            continue
-
-        pseudo_log = "Program data: " + base64.b64encode(
-            payload[8:]
-        ).decode()
-
-        trade = parse_live_trade(
-            [pseudo_log],
-            mint,
-            signature=signature,
-            slot=slot,
-            block_time=block_time,
-        )
-        if trade and trade["source"] == "PUMPSWAP":
-            return trade
+        if PUMP_TRADE_DISC in payload or PUMP_AMM_BUY_DISC in payload or PUMP_AMM_SELL_DISC in payload:
+            pseudo_log = "Program data: " + base64.b64encode(payload).decode()
+            trade = parse_live_trade(
+                [pseudo_log],
+                mint,
+                signature=signature,
+                slot=slot,
+                block_time=block_time if block_time is not None else tx.get("blockTime"),
+            )
+            if trade:
+                return trade
 
     return None
-
 
 def _event_bytes(log: str) -> bytes | None:
     prefix = "Program data: "
