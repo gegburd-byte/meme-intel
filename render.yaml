@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: meme-intel
+    runtime: python
+    plan: free
+    autoDeployTrigger: off
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: X_BEARER_TOKEN
+        sync: false
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: DATABASE_PATH
+        value: ./data/meme_intel.db
+      - key: PAPER_START_USD
+        value: "100"
+      - key: SCAN_SECONDS
+        value: "30"
