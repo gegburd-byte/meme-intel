@@ -840,7 +840,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     if offset == 0:
         async def tagged(source, loader):
             try:
-                return source, await loader()
+                return source, await loader
             except Exception as exc:
                 return source, (None, str(exc)[:240])
 
