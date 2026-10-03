@@ -470,3 +470,53 @@ button.secondary { background:#13202b; border:1px solid #263747; }
   .pumpRow { grid-template-columns:55px minmax(0,1fr) auto; }
   .pumpMeta { display:none; }
 }
+
+
+.paperHint {
+  margin-top:8px;
+  font-size:10px;
+}
+
+.trade {
+  gap:8px;
+  align-items:center;
+}
+
+.trade span {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+@media (max-width:480px) {
+  .topLevels,
+  .commandStats,
+  .metrics.four,
+  .metrics.five,
+  .setupgrid {
+    grid-template-columns:1fr 1fr;
+  }
+
+  .topRow {
+    grid-template-columns:26px minmax(0,1fr) auto;
+  }
+
+  .topRowAction,
+  .topRowGate,
+  .topRowScore {
+    display:none;
+  }
+
+  .pumpRow {
+    grid-template-columns:48px minmax(0,1fr) auto;
+  }
+
+  .pumpMain span {
+    font-size:8px;
+  }
+
+  #chart {
+    height:300px;
+  }
+}
