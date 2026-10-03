@@ -806,8 +806,8 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         onchain_task = he.historical_trade_candles(
             mint,
             timeframe=timeframe,
-            lookback_minutes=30,
-            max_signatures=300,
+            lookback_minutes=120,
+            max_signatures=600,
         )
         gecko_task = gt.candles(mint, "1m")
 
@@ -829,8 +829,8 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
                 public_candles, public_err = await he.historical_trade_candles(
                     mint,
                     timeframe=timeframe,
-                    lookback_minutes=30,
-                    max_signatures=200,
+                    lookback_minutes=120,
+                    max_signatures=400,
                     rpc_base=public_rpc,
                 )
                 if chart_data_quality(public_candles or [], minimum_bars=3) > 0:
