@@ -444,3 +444,29 @@ button.secondary { background:#13202b; border:1px solid #263747; }
   text-align:center;
   color:#7fe2ae;
 }
+
+.pumpPanel { margin-bottom:14px; }
+.pumpFeedList { display:grid; gap:6px; max-height:330px; overflow:auto; }
+.pumpRow {
+  display:grid;
+  grid-template-columns:70px minmax(0,1.4fr) 1fr auto;
+  gap:9px;
+  align-items:center;
+  padding:8px;
+  border:1px solid #182634;
+  border-radius:9px;
+  background:#091018;
+}
+.pumpTime { color:#667a90; font-size:9px; }
+.pumpMain { min-width:0; display:flex; flex-direction:column; gap:2px; }
+.pumpMain b { font-size:11px; }
+.pumpMain span { color:#61758b; font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pumpMeta { color:#7d90a5; font-size:9px; }
+@media (max-width:700px) {
+  .topGrid { grid-template-columns:1fr; }
+  .topLevels { grid-template-columns:repeat(2,1fr); }
+  .topRow { grid-template-columns:28px minmax(0,1fr) 80px 65px auto; }
+  .topRowGate { display:none; }
+  .pumpRow { grid-template-columns:55px minmax(0,1fr) auto; }
+  .pumpMeta { display:none; }
+}
