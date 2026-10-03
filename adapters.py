@@ -309,7 +309,6 @@ class HeliusAdapter:
         if not self.key:
             return None, "NOT_CONFIGURED"
 
-        asset_task = self.asset(mint)
         account_task = self._rpc(
             "getAccountInfo",
             [
@@ -317,24 +316,10 @@ class HeliusAdapter:
                 {"encoding": "jsonParsed"},
             ],
         )
-        holders_task = self._rpc(
-            "getTokenAccounts",
-            {
-                "mint": mint,
-                "page": 1,
-                "limit": 1000,
-                "displayOptions": {},
-            },
-        )
 
-        asset, asset_err = await asset_task
+        asset_task = self.asset(mint)
         account, account_err = await account_task
-        holders, holders_err = await holders_task
-
-        if asset_err and account_err and holders_err:
-            return None, (
-                asset_err or account_err or holders_err
-            )
+        asset, asset_err = await asset_task
 
         parsed = (
             (account or {})
@@ -347,29 +332,64 @@ class HeliusAdapter:
         mint_authority = parsed.get("mintAuthority")
         freeze_authority = parsed.get("freezeAuthority")
 
-        token_accounts = (
-            (holders or {}).get("token_accounts")
-            or []
+        supply = (
+            ((asset or {}).get("token_info") or {}).get("supply")
         )
 
+        try:
+            supply = int(supply) if supply is not None else 0
+        except Exception:
+            supply = 0
+
+        token_accounts = []
+        page = 1
+        max_pages = 5
+
+        while page <= max_pages:
+            holders, holders_err = await self._rpc(
+                "getTokenAccounts",
+                {
+                    "mint": mint,
+                    "page": page,
+                    "limit": 1000,
+                    "displayOptions": {},
+                },
+            )
+
+            if holders_err:
+                if page == 1 and not account and not asset:
+                    return None, holders_err
+                break
+
+            rows = (holders or {}).get("token_accounts") or []
+            token_accounts.extend(rows)
+
+            if len(rows) < 1000:
+                break
+
+            page += 1
+
+        if account_err and not parsed:
+            return None, account_err
+        if asset_err and not supply:
+            return None, asset_err
+        if not token_accounts:
+            return None, "NO_HOLDER_ACCOUNTS"
+
         owner_balances = {}
-        raw_total = 0
+        sampled_amount = 0
 
         for row in token_accounts:
             owner = row.get("owner")
-            amount = row.get("amount")
-
             try:
-                amount = int(amount or 0)
+                amount = int(row.get("amount") or 0)
             except Exception:
                 amount = 0
 
             if owner:
-                owner_balances[owner] = (
-                    owner_balances.get(owner, 0) + amount
-                )
+                owner_balances[owner] = owner_balances.get(owner, 0) + amount
 
-            raw_total += amount
+            sampled_amount += amount
 
         ranked = sorted(
             owner_balances.items(),
@@ -377,14 +397,14 @@ class HeliusAdapter:
             reverse=True,
         )
 
-        supply = (
-            ((asset or {}).get("token_info") or {}).get("supply")
-        )
+        if supply <= 0:
+            supply = sampled_amount
 
-        try:
-            supply = int(supply) if supply is not None else raw_total
-        except Exception:
-            supply = raw_total
+        coverage_ratio = (
+            sampled_amount / supply
+            if supply > 0
+            else 0
+        )
 
         top_share = (
             ranked[0][1] / supply
@@ -406,7 +426,11 @@ class HeliusAdapter:
             "top_holder_share": top_share,
             "top10_holder_share": top10_share,
             "sampled_accounts": len(token_accounts),
+            "sampled_supply": sampled_amount,
+            "coverage_ratio": coverage_ratio,
             "supply": supply,
+            "pages_scanned": page,
+            "coverage_complete": coverage_ratio >= 0.95,
             "top_holders": [
                 {
                     "owner": owner,
@@ -421,10 +445,12 @@ class HeliusAdapter:
                     "FREEZE_AUTHORITY_ACTIVE" if freeze_authority else None,
                     "TOP_HOLDER_OVER_50PCT" if top_share is not None and top_share > 0.50 else None,
                     "TOP10_OVER_70PCT" if top10_share is not None and top10_share > 0.70 else None,
+                    "HOLDER_COVERAGE_INCOMPLETE" if coverage_ratio < 0.95 else None,
                 ]
                 if warning
             ],
         }, None
+
 
 
 class XAdapter:
