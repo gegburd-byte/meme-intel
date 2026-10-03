@@ -47,12 +47,24 @@ p{color:var(--muted);margin:5px 0}
 .signalMeta span,.metric span{display:block;color:#718398;font-size:9px;font-weight:900;letter-spacing:.6px}
 .signalMeta b,.metric b{display:block;margin-top:4px;font-size:15px}
 .chartCard{margin-top:12px;border:1px solid #182735;border-radius:12px;background:#071019;padding:10px}
-.chartHeader{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:6px}
+.chartHeader{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px}
 .muted{color:#718398;font-size:10px}
-.legend{display:flex;gap:10px;flex-wrap:wrap;color:#7f91a6;font-size:9px;font-weight:800}
+.activePriceBox{display:flex;align-items:baseline;gap:8px;border:1px solid #203140;background:#081019;border-radius:9px;padding:6px 10px}
+.activePriceBox span{font-size:8px;font-weight:900;letter-spacing:1px;color:#718398}
+.activePriceBox b{font-size:16px;letter-spacing:.2px}
+.activePriceBox small{font-size:8px;color:#65778c}
+.chartToolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px;border:1px solid #162532;background:#081019;border-radius:9px;margin-bottom:7px}
+.timeframes,.chartActions{display:flex;align-items:center;gap:4px}
+.tf,.chartBtn{border:1px solid #223443;background:#0b151f;color:#8395a9;border-radius:7px;padding:6px 9px;font-size:10px;font-weight:900;min-width:35px}
+.tf:hover,.chartBtn:hover{border-color:#46627b;color:#dfe8f2}
+.tf.active,.chartBtn.active{background:#eaf1f7;color:#071019;border-color:#eaf1f7}
+.historyStatus{font-size:9px;color:#6e8196;margin-left:5px;white-space:nowrap}
+.legend{display:flex;gap:10px;flex-wrap:wrap;color:#7f91a6;font-size:9px;font-weight:800;margin-top:7px}
+.chartLegend{justify-content:flex-end}
+.legendNote{color:#5f7185;font-weight:700}
 .key{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:4px;border-radius:2px}
-.priceKey{background:#edf3fb}.ema9Key{background:var(--green)}.ema21Key{background:var(--amber)}.meanKey{background:var(--blue)}.buyKey{background:var(--green)}.sellKey{background:var(--red)}
-#chart{display:block;width:100%;height:470px;min-height:320px}
+.priceKey{background:#edf3fb}.ema9Key{background:var(--green)}.ema21Key{background:var(--amber)}.buyKey{background:var(--green)}.sellKey{background:var(--red)}
+#chart{display:block;width:100%;height:500px;min-height:330px}
 .indicatorGrid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:10px}
 .belowGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
 .subpanel{border:1px solid #182735;border-radius:12px;background:#091018;padding:12px}
@@ -72,7 +84,7 @@ input:focus{border-color:#41617d}
 @media(max-width:650px){
   .app{padding:10px}.header{flex-direction:column}.header h1{font-size:25px}.sourceStrip{gap:9px 14px}
   .candidate{grid-template-columns:24px minmax(0,1fr) 70px}.candidateTag{display:none}
-  .signalText{font-size:28px}.belowGrid{grid-template-columns:1fr}.indicatorGrid{grid-template-columns:1fr 1fr}
-  #chart{height:350px;min-height:280px}.manualRow{grid-template-columns:1fr}
+  .signalText{font-size:28px}.activePriceBox{align-self:flex-start}.chartToolbar{flex-direction:column;align-items:stretch}.chartActions{justify-content:space-between}.chartLegend{justify-content:flex-start}.belowGrid{grid-template-columns:1fr}.indicatorGrid{grid-template-columns:1fr 1fr}
+  #chart{height:360px;min-height:290px}.manualRow{grid-template-columns:1fr}
 }
 .chartCard #chart{overflow:hidden;border-radius:8px}
