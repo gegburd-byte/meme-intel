@@ -153,7 +153,8 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                 if (
                     target_mint is not None and
                     len(target_mint) == 32 and
-                    event_mint != target_mint
+                    event_mint != target_mint and
+                    event_mint != bytes(32)
                 ):
                     search_from = pos + 8
                     continue
