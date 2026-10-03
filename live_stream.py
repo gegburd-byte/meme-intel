@@ -184,7 +184,11 @@ class LiveTradeHub:
                 await self._unsubscribe(mint)
 
     async def _subscribe_when_ready(self, mint: str) -> None:
-        if self.ws is not None:
+        if self.ws is None:
+            return
+        subscribed = mint in self.subscription_to_mint.values()
+        pending = mint in self.pending.values()
+        if not subscribed and not pending:
             await self._subscribe(mint)
 
     async def _send(self, payload: dict[str, Any]) -> None:
@@ -268,7 +272,8 @@ class LiveTradeHub:
                     await self._status_all("LIVE")
 
                     for mint in list(self.clients):
-                        await self._subscribe(mint)
+                        if mint not in self.subscription_to_mint.values() and mint not in self.pending.values():
+                            await self._subscribe(mint)
 
                     async for raw in ws:
                         try:
