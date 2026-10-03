@@ -522,6 +522,67 @@ class HeliusAdapter:
 
 
 
+class RugCheckAdapter:
+    """Read-only RugCheck token report with a short cache.
+
+    The public report includes normalized risk, detected risks, holder/creator
+    information, markets, liquidity and LP-lock information when available.
+    """
+
+    BASE = "https://api.rugcheck.xyz"
+
+    def __init__(self):
+        self.source = Source("RugCheck", True)
+        self._cache = {}
+
+    async def report(self, mint: str):
+        mint = (mint or "").strip()
+        cached = self._cache.get(mint)
+        if cached and time.time() - cached["time"] < 30:
+            return cached["data"], cached["error"]
+
+        urls = (
+            f"{self.BASE}/v1/tokens/{mint}/report",
+            f"{self.BASE}/v1/tokens/{mint}/report/summary",
+        )
+        last_error = None
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=4.0,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "Meme-Intel/2.2",
+                },
+            ) as c:
+                for url in urls:
+                    try:
+                        r = await c.get(url)
+                        if r.status_code == 200:
+                            payload = r.json()
+                            if isinstance(payload, dict):
+                                self._cache[mint] = {
+                                    "time": time.time(),
+                                    "data": payload,
+                                    "error": None,
+                                }
+                                return payload, None
+
+                        last_error = f"HTTP_{r.status_code}"
+                    except Exception as exc:
+                        last_error = str(exc)
+
+        except Exception as exc:
+            last_error = str(exc)
+
+        self._cache[mint] = {
+            "time": time.time(),
+            "data": None,
+            "error": last_error or "RUGCHECK_UNAVAILABLE",
+        }
+        return None, last_error or "RUGCHECK_UNAVAILABLE"
+
+
 class XAdapter:
     def __init__(self, token=None):
         self.token = token or os.getenv("X_BEARER_TOKEN")
