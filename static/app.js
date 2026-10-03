@@ -1134,6 +1134,9 @@ async function fetchPage(offset, generation) {
   }
 
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 20000);
+
     const r = await fetch(
       "/api/chart?mint=" +
       encodeURIComponent(selectedMint) +
@@ -1141,11 +1144,21 @@ async function fetchPage(offset, generation) {
       "&offset=" + offset +
       "&timeframe=" + chartTimeframe +
       "&t=" + Date.now(),
-      {cache:"no-store"}
+      {
+        cache:"no-store",
+        signal:controller.signal
+      }
     );
 
+    clearTimeout(timer);
+
     if (!r.ok) {
-      return {candles:[],hasMore:false};
+      return {
+        candles:[],
+        hasMore:false,
+        source:"ERROR",
+        error:"HTTP " + r.status
+      };
     }
 
     const j = await readJsonResponse(r);
@@ -1160,8 +1173,15 @@ async function fetchPage(offset, generation) {
       source:String(j.source || "MARKET DATA"),
       diagnostics:j.diagnostics || null
     };
-  } catch {
-    return {candles:[],hasMore:false};
+  } catch (err) {
+    return {
+      candles:[],
+      hasMore:false,
+      source:"ERROR",
+      error:err?.name === "AbortError"
+        ? "CHART_REQUEST_TIMEOUT"
+        : String(err?.message || err)
+    };
   }
 }
 
@@ -1200,9 +1220,11 @@ async function fetchInitialHistory() {
 
     if (!page.candles.length) {
       $("chartMode").textContent =
-        "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
+        page.error
+          ? "CHART HISTORY ERROR · " + page.error
+          : "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
       $("historyStatus").textContent = "0 bars";
-      $("chartState").textContent = "WAITING";
+      $("chartState").textContent = page.error ? "ERROR" : "WAITING";
       return false;
     }
 
