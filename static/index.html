@@ -71,16 +71,34 @@
           <h3>LIVE PRICE CHART</h3>
           <span id="chartMode" class="muted">Waiting for data</span>
         </div>
-        <div class="legend">
-          <span><i class="key priceKey"></i>PRICE</span>
-          <span><i class="key ema9Key"></i>EMA 9</span>
-          <span><i class="key ema21Key"></i>EMA 21</span>
-          <span><i class="key meanKey"></i>MEAN / VWAP</span>
-          <span><i class="key buyKey"></i>BUY</span>
-          <span><i class="key sellKey"></i>SELL</span>
+        <div class="activePriceBox">
+          <span>ACTIVE PRICE</span>
+          <b id="activePrice">—</b>
+          <small id="activeAge">—</small>
+        </div>
+      </div>
+      <div class="chartToolbar">
+        <div id="timeframeButtons" class="timeframes">
+          <button class="tf active" data-tf="1">1m</button>
+          <button class="tf" data-tf="5">5m</button>
+          <button class="tf" data-tf="15">15m</button>
+          <button class="tf" data-tf="60">1h</button>
+        </div>
+        <div class="chartActions">
+          <button id="chartAll" class="chartBtn">ALL</button>
+          <button id="chartLive" class="chartBtn active">LIVE</button>
+          <span id="historyStatus" class="historyStatus">0 bars</span>
         </div>
       </div>
       <div id="chart" aria-label="Live Pump.fun candlestick chart"></div>
+      <div class="legend chartLegend">
+        <span><i class="key priceKey"></i>PRICE</span>
+        <span><i class="key ema9Key"></i>EMA 9</span>
+        <span><i class="key ema21Key"></i>EMA 21</span>
+        <span><i class="key buyKey"></i>BUY</span>
+        <span><i class="key sellKey"></i>SELL</span>
+        <span class="legendNote">Scroll/drag/ pinch to zoom like Pump.fun</span>
+      </div>
     </div>
 
     <div class="indicatorGrid">
