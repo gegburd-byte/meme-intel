@@ -1384,6 +1384,13 @@ function applyLiveTrade(rawTrade, record = true) {
   const t = normalizeTrade(rawTrade);
   if (!t || !selectedMint) return;
 
+  if (
+    record &&
+    selectedTrades.some(x => x.id === t.id)
+  ) {
+    return;
+  }
+
   applyLivePrice(
     t.price,
     t.time * 1000,
