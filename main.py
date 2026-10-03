@@ -538,7 +538,7 @@ async def top_opportunities():
         "candidates": inspected,
         "top": next(
             (x for x in inspected if x.get("eligible")),
-            inspected[0] if inspected else None,
+            None,
         ),
     }
 
