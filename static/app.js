@@ -1,4 +1,97 @@
 
+let pumpSocket = null;
+let pumpEvents = [];
+
+function setPumpFeedStatus(ok, text) {
+  const dot = $("dotPF");
+  const label = $("srcPF");
+  const state = $("pumpFeedState");
+  if (dot) dot.className = "dot " + (ok ? "ok" : "bad");
+  if (label) label.textContent = text;
+  if (state) state.textContent = text;
+}
+
+function renderPumpEvents() {
+  const list = pumpEvents.slice(0, 12);
+
+  $("pumpFeedList").innerHTML = list.map(function(e) {
+    return "<div class=\"pumpRow\">" +
+      "<div class=\"pumpTime\">" + escapeHtml(e.time) + "</div>" +
+      "<div class=\"pumpMain\">" +
+        "<b>$" + escapeHtml(e.symbol || e.name || "NEW") + "</b>" +
+        "<span>" + escapeHtml(e.mint || "") + "</span>" +
+      "</div>" +
+      "<div class=\"pumpMeta\">" +
+        "new token" + (e.creator ? " · " + escapeHtml(e.creator.slice(0, 8)) + "…" : "") +
+      "</div>" +
+      "<button class=\"secondary smallButton\" data-pump-ca=\"" + escapeHtml(e.mint || "") + "\">ANALYZE</button>" +
+    "</div>";
+  }).join("") || "<div class=\"muted\">Waiting for live Pump.fun events…</div>";
+
+  document.querySelectorAll("[data-pump-ca]").forEach(function(btn) {
+    btn.addEventListener("click", function() {
+      $("mint").value = btn.getAttribute("data-pump-ca") || "";
+      analyze();
+      window.scrollTo({top: 0, behavior: "smooth"});
+    });
+  });
+}
+
+function startPumpFeed() {
+  if (pumpSocket) return;
+
+  try {
+    pumpSocket = new WebSocket("wss://pumpportal.fun/api/data");
+
+    pumpSocket.addEventListener("open", function() {
+      setPumpFeedStatus(true, "LIVE");
+      pumpSocket.send(JSON.stringify({method: "subscribeNewToken"}));
+    });
+
+    pumpSocket.addEventListener("message", function(event) {
+      try {
+        const data = JSON.parse(event.data);
+        const mint = data.mint || data.tokenAddress;
+        if (!mint) return;
+
+        const symbol = data.symbol || data.tokenSymbol || "";
+        const name = data.name || data.tokenName || "";
+        const creator = data.traderPublicKey || data.creator || "";
+
+        pumpEvents.unshift({
+          mint: mint,
+          symbol: symbol,
+          name: name,
+          creator: creator,
+          time: new Date().toLocaleTimeString()
+        });
+
+        const seen = new Set();
+        pumpEvents = pumpEvents.filter(function(x) {
+          if (seen.has(x.mint)) return false;
+          seen.add(x.mint);
+          return true;
+        }).slice(0, 30);
+
+        renderPumpEvents();
+      } catch (e) {}
+    });
+
+    pumpSocket.addEventListener("close", function() {
+      setPumpFeedStatus(false, "RECONNECTING…");
+      pumpSocket = null;
+      setTimeout(startPumpFeed, 5000);
+    });
+
+    pumpSocket.addEventListener("error", function() {
+      setPumpFeedStatus(false, "UNAVAILABLE");
+    });
+  } catch (e) {
+    setPumpFeedStatus(false, "UNAVAILABLE");
+  }
+}
+
+
 let topTimer = null;
 let topBusy = false;
 
@@ -552,6 +645,7 @@ document.addEventListener("DOMContentLoaded", function() {
   loadTrades();
   startAutopilot();
   refreshRadar();
+  startPumpFeed();
   setInterval(health, 15000);
 });
 
