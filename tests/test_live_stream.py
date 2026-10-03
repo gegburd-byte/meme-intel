@@ -8,6 +8,16 @@ from live_stream import (
 )
 
 
+def _base58_encode(data: bytes) -> str:
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    n = int.from_bytes(data, "big")
+    out = ""
+    while n:
+        n, rem = divmod(n, 58)
+        out = alphabet[rem] + out
+    return "1" * (len(data) - len(data.lstrip(b"\\x00"))) + (out or "")
+
+
 def test_parse_pump_trade_event():
     mint = "So11111111111111111111111111111111111111112"
     ts = 1_700_000_000
@@ -55,3 +65,48 @@ def test_parse_pumpswap_buy_event():
     assert row["source"] == "PUMPSWAP"
     assert row["side"] == "BUY"
     assert abs(row["price"] - 0.02) < 1e-12
+
+
+def test_parse_pump_trade_from_inner_instruction_data():
+    mint = "So11111111111111111111111111111111111111112"
+    ts = 1_700_000_000
+    payload = (
+        PUMP_TRADE_DISC
+        + bytes(32)
+        + struct.pack("<QQB", 2_000_000_000, 100_000_000, 1)
+        + bytes(32)
+        + struct.pack("<q", ts)
+        + struct.pack("<QQ", 90_000_000_000, 793_000_000_000_000)
+        + bytes(16)
+    )
+
+    transaction = {
+        "blockTime": ts,
+        "slot": 99,
+        "meta": {
+            "logMessages": [],
+            "innerInstructions": [
+                {
+                    "index": 0,
+                    "instructions": [
+                        {"programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "data": _base58_encode(payload)}
+                    ],
+                }
+            ],
+        },
+    }
+
+    from live_stream import parse_live_trade_from_transaction
+
+    row = parse_live_trade_from_transaction(
+        transaction,
+        mint,
+        signature="inner-sig",
+        slot=99,
+        block_time=ts,
+    )
+
+    assert row is not None
+    assert row["source"] == "PUMP.FUN"
+    assert row["signature"] == "inner-sig"
+    assert row["timestamp"] == ts
