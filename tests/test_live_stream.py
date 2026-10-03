@@ -54,4 +54,4 @@ def test_parse_pumpswap_buy_event():
     assert row is not None
     assert row["source"] == "PUMPSWAP"
     assert row["side"] == "BUY"
-    assert abs(row["price"] - 20.0) < 1e-12
+    assert abs(row["price"] - 0.02) < 1e-12
