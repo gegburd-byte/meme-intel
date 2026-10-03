@@ -1,3 +1,5 @@
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/gegburd-byte/meme-intel)
+
 # Meme Intel — Solana research terminal
 
 Meme Intel is a browser-based research + paper-trading terminal for Solana meme tokens.
@@ -41,13 +43,17 @@ Set these secrets in the deployment environment:
 
 Optional persistent storage settings are documented in .env.example.
 
-## Run
+## Run locally / Codespaces
 
 The app starts with:
 
     uvicorn main:app --host 0.0.0.0 --port 3000
 
-Open the web preview and the terminal will begin its automatic scans.
+Forward port 3000 in GitHub Codespaces to get an `app.github.dev` URL.
+
+## Public website
+
+The repository also includes `render.yaml` for a public Render Web Service. Render can deploy this FastAPI app directly from GitHub with Uvicorn and provide an `onrender.com` URL. Add `X_BEARER_TOKEN` and `HELIUS_API_KEY` as deployment secrets for X and on-chain security data.
 
 ## Important provider note
 
