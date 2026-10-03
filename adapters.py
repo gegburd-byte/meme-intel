@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from live_stream import parse_live_trade_from_transaction
+
 DEXSCREENER = "https://api.dexscreener.com"
 GECKO = "https://api.geckoterminal.com/api/v2"
 X_API = "https://api.x.com/2"
@@ -112,6 +114,131 @@ class DexScreenerAdapter:
                 "dexId": pair.get("dexId"),
             }
         }, None
+
+    async def historical_trade_candles(
+        self,
+        mint: str,
+        timeframe: int = 1,
+        max_signatures: int = 300,
+    ):
+        """Rebuild real OHLC from on-chain Pump.fun/PumpSwap trade events."""
+        if not self.key:
+            return [], "NOT_CONFIGURED"
+
+        mint = (mint or "").strip()
+        timeframe = int(timeframe or 1)
+        max_signatures = max(50, min(int(max_signatures or 300), 500))
+
+        cache_key = (mint, timeframe, max_signatures)
+        cached = self._chart_cache.get(cache_key)
+        if cached and time.time() - cached["time"] < 20:
+            return cached["candles"], cached["error"]
+
+        signatures, sig_err = await self._rpc(
+            "getSignaturesForAddress",
+            [
+                mint,
+                {
+                    "limit": max_signatures,
+                    "commitment": "confirmed",
+                },
+            ],
+        )
+
+        if sig_err or not signatures:
+            return [], sig_err or "NO_SIGNATURES"
+
+        rows = [
+            item for item in signatures
+            if isinstance(item, dict) and item.get("signature")
+        ]
+
+        trades = []
+        sem = asyncio.Semaphore(18)
+
+        async def load_one(item):
+            async with sem:
+                result, err = await self._rpc(
+                    "getTransaction",
+                    [
+                        item["signature"],
+                        {
+                            "encoding": "jsonParsed",
+                            "commitment": "confirmed",
+                            "maxSupportedTransactionVersion": 1,
+                        },
+                    ],
+                )
+                if err or not result:
+                    return None
+
+                trade = parse_live_trade_from_transaction(
+                    result,
+                    mint,
+                    signature=str(item["signature"]),
+                    slot=result.get("slot") or item.get("slot"),
+                )
+                return trade
+
+        results = await asyncio.gather(
+            *(load_one(item) for item in rows),
+            return_exceptions=True,
+        )
+
+        for trade in results:
+            if isinstance(trade, dict):
+                trades.append(trade)
+
+        trades.sort(key=lambda x: int(x.get("timestamp") or 0))
+
+        span = max(60, timeframe * 60)
+        buckets = {}
+
+        for trade in trades:
+            ts = int(trade.get("timestamp") or 0)
+            price = float(trade.get("price") or 0)
+            if ts <= 0 or price <= 0:
+                continue
+
+            bucket = (ts // span) * span
+            row = buckets.get(bucket)
+
+            if row is None:
+                buckets[bucket] = {
+                    "ts": bucket,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": float(trade.get("volume_sol") or 0),
+                }
+            else:
+                row["h"] = max(row["h"], price)
+                row["l"] = min(row["l"], price)
+                row["c"] = price
+                row["v"] += float(trade.get("volume_sol") or 0)
+
+        candles = [
+            Candle(
+                ts=int(row["ts"]),
+                o=float(row["o"]),
+                h=float(row["h"]),
+                l=float(row["l"]),
+                c=float(row["c"]),
+                v=float(row["v"]),
+            )
+            for row in buckets.values()
+        ]
+
+        candles.sort(key=lambda x: x.ts)
+        self._chart_cache[cache_key] = {
+            "time": time.time(),
+            "candles": candles,
+            "error": None if candles else "NO_TRADES_DECODED",
+        }
+
+        return candles, None if candles else "NO_TRADES_DECODED"
+
 
     async def security(self, mint):
         return None, "NOT_AVAILABLE"
@@ -340,6 +467,7 @@ class HeliusAdapter:
             bool(self.key),
             "HELIUS_API_KEY missing" if not self.key else ""
         )
+        self._chart_cache = {}
 
     async def _rpc(self, method, params):
         if not self.key:
