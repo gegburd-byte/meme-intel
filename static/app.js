@@ -290,6 +290,7 @@ async function health() {
     setSource("dotDS", "srcDS", j.sources && j.sources.DexScreener);
     setSource("dotGT", "srcGT", j.sources && j.sources.GeckoTerminal);
     setSource("dotHE", "srcHE", j.sources && j.sources.Helius);
+    setSource("dotSEC", "srcSEC", j.sources && j.sources.Security);
   } catch (e) {
     $("health").textContent = "BACKEND ERROR";
   }
