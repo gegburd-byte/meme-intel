@@ -1038,6 +1038,44 @@ function updateLiveCandleOnSeries(candle) {
   });
 }
 
+function updateRealtimeChart(candle) {
+  if (!candle || !candleSeries) return;
+
+  updateLiveCandleOnSeries(candle);
+
+  const closes = selectedCandles.map(
+    x => Number(x.c)
+  );
+
+  const e9 = ema(closes,9);
+  const e21 = ema(closes,21);
+
+  if (e9 != null) {
+    ema9Series.update({
+      time:candle.time,
+      value:e9
+    });
+  }
+
+  if (e21 != null) {
+    ema21Series.update({
+      time:candle.time,
+      value:e21
+    });
+  }
+
+  const signal = signalFromCandles(selectedCandles);
+  renderSignal(signal);
+
+  updateActivePrice(
+    candle.c,
+    Date.now()
+  );
+
+  $("historyStatus").textContent =
+    historyBarsLoaded.toLocaleString() + " bars";
+}
+
 function scheduleLiveRender() {
   if (renderScheduled) return;
 
@@ -1048,30 +1086,14 @@ function scheduleLiveRender() {
 
     if (!selectedCandles.length || !candleSeries) return;
 
-    const last = selectedCandles[selectedCandles.length - 1];
+    const last =
+      selectedCandles[selectedCandles.length - 1];
 
-    updateLiveCandleOnSeries(last);
-
-    const ind = indicatorSeries(selectedCandles);
-    ema9Series.setData(ind.ema9);
-    ema21Series.setData(ind.ema21);
-
-    markersApi.setMarkers(buildMarkers(selectedCandles));
-
-    const signal = signalFromCandles(selectedCandles);
-    renderSignal(signal);
-
-    updateActivePrice(
-      last.c,
-      Date.now()
-    );
-
-    $("historyStatus").textContent =
-      historyBarsLoaded.toLocaleString() + " bars";
-
+    updateRealtimeChart(last);
     renderTape();
   });
 }
+
 
 function rebuildSelectedFromRaw(raw) {
   selectedCandles = aggregateCandles(
@@ -1398,12 +1420,13 @@ async function syncCurrentPumpCandle() {
     const generation = historyGeneration;
 
     const r = await fetch(
-      "/api/chart?mint=" +
+      "/api/chart/current?mint=" +
       encodeURIComponent(selectedMint) +
-      "&limit=30&offset=0&timeframe=" +
-      chartTimeframe +
+      "&timeframe=" + chartTimeframe +
       "&t=" + Date.now(),
-      {cache:"no-store"}
+      {
+        cache:"no-store"
+      }
     );
 
     if (!r.ok) return;
@@ -1424,17 +1447,19 @@ async function syncCurrentPumpCandle() {
     if (!candles.length) return;
 
     mergePage(candles);
+
+    const last = selectedCandles[
+      selectedCandles.length - 1
+    ];
+
     chartDataSource = String(
       j.source || chartDataSource
     );
 
-    renderChart(
-      selectedCandles,
-      false
-    );
+    updateRealtimeChart(last);
   } catch {
-    // Keep the live websocket/tape alive if the reconciliation request
-    // temporarily fails. The one-second safety sync will try again.
+    // The websocket/tape remains live if the lightweight HTTP snapshot
+    // temporarily fails; the next scheduled tick will retry.
   } finally {
     currentCandleSyncInFlight = false;
 
