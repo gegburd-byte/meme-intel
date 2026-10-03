@@ -1,88 +1,56 @@
-# Meme Intel — Solana research terminal (paper trading)
+# Meme Intel — Solana research terminal
 
-This is a Replit-friendly, browser-based research terminal built from the attached spec.
+Meme Intel is a browser-based research + paper-trading terminal for Solana meme tokens.
 
-It is intentionally **analysis + paper trading only**. It does not connect to a wallet or place trades.
+## Current capabilities
 
-## What is implemented
+- Automatic market-wide candidate discovery from DexScreener data.
+- Automatic top-opportunity scanner with a strict security eligibility gate.
+- Token-specific X search using contract address, symbol and token name.
+- X velocity, acceleration, independent-author count, engagement, sentiment and copy/coordination risk.
+- Real-time Pump.fun new-token event feed when the optional PumpPortal WebSocket is reachable.
+- 1-minute live candle chart with volume.
+- POC, VAH, VAL and 70% value area.
+- VWAP, EMA 9/21, RSI, ATR, buy ratio, volume spike and short-term momentum.
+- 5m -> 1m pump / pullback / higher-low / breakout state machine.
+- Entry trigger, invalidation, T1, T2 and continuous exit state.
+- Helius on-chain security checks for mint authority, freeze authority and holder concentration when HELIUS_API_KEY is configured.
+- Automatic refresh without a page reload.
+- Paper trading only. No wallet connection and no real orders.
+- Transparent DATA NOT AVAILABLE / SECURITY UNKNOWN states instead of fabricated data.
+- Automated regression tests and GitHub Actions configuration.
 
-- 5m → 1m setup state machine:
-  - pump / impulse detection
-  - previous high = highest wick
-  - pullback detection
-  - higher-low confirmation
-  - breakout requires a **1m candle close** above the previous high
-  - false-breakout rejection
-  - invalidation stop below the higher low
-- Risk screen with explicit LOW / MEDIUM / HIGH / CRITICAL flags.
-- Transparent opportunity score.
-- X post search adapter using the X API recent-search endpoint.
-- Solana token overview + OHLCV + security/creation checks through Birdeye.
-- Helius token metadata endpoint.
-- Social duplicate / domination checks.
-- Paper-trade ledger.
-- Walk-forward-style backtest on candle data you provide.
-- No-lookahead design for the setup engine.
-- Clear `DATA NOT AVAILABLE` / `NOT_CONFIGURED` states instead of invented numbers.
-- Single-page dark terminal UI.
+## Safety model
 
-## Live-data reality
+The scanner does not claim that a token is guaranteed safe or that any signal guarantees profit.
 
-Live X and market data require API credentials. X's current developer tooling requires enrollment/access for the API endpoints, and X documents authentication/rate-limit errors for inaccessible endpoints. See the official X developer docs.
+A token can only become the automatic top clean candidate when:
+1. On-chain security checks are available.
+2. The security gate passes.
+3. Overall risk is not HIGH or CRITICAL.
+4. The rule-based decision engine is not returning NO TRADE.
 
-Birdeye currently exposes Solana token overview, security and OHLCV endpoints; plan/access limits vary. Helius exposes Solana RPC/DAS functionality such as `getAsset`.
+When those conditions are not met, the UI says there is no fully checked clean candidate rather than silently promoting a risky token.
 
-The app never invents missing data. If a key is not configured, the relevant source is marked `NOT_CONFIGURED`.
+## Configuration
 
-## Replit
+Set these secrets in the deployment environment:
 
-1. Create a new Replit.
-2. Upload the contents of this ZIP.
-3. Replit should detect `requirements.txt` and `.replit`.
-4. Set Secrets in Replit:
-   - `X_BEARER_TOKEN`
-   - `BIRDEYE_API_KEY`
-   - `HELIUS_API_KEY`
-5. Click Run.
-6. Open the web preview.
+- X_BEARER_TOKEN
+- HELIUS_API_KEY
 
-Start command is:
+Optional persistent storage settings are documented in .env.example.
+
+## Run
+
+The app starts with:
 
     uvicorn main:app --host 0.0.0.0 --port 3000
 
-## Environment variables
+Open the web preview and the terminal will begin its automatic scans.
 
-See `.env.example`.
+## Important provider note
 
-Optional:
-- `DATABASE_PATH` — defaults to `./data/meme_intel.db`
-- `PAPER_START_USD` — defaults to `100`
-- `SCAN_SECONDS` — defaults to `30`
+The X and blockchain providers control access, quotas and endpoint availability. PumpPortal's real-time feed is an optional third-party data source used only for launch-event discovery; deeper analysis still goes through the Meme Intel backend.
 
-## How to use the terminal
-
-1. Paste a Solana mint address into **Analyze Token**.
-2. Click Analyze.
-3. The terminal pulls what your configured providers can supply.
-4. Review:
-   - LIVE SETUP
-   - TECHNICAL STATE
-   - RISK
-   - SOCIAL
-   - SCORE
-   - PAPER TRADE
-5. Use the paper-trade controls only for testing your rules.
-
-The dashboard does **not** say a coin is "safe", "guaranteed", or a buy. It reports the conditions and your predefined setup.
-
-## X query
-
-A useful starter query:
-
-    (solana OR "pump.fun" OR memecoin OR memecoin OR $SOL) lang:en -is:retweet
-
-You can change it in the UI.
-
-## Important
-
-The system cannot literally see "all of Twitter/X". It only receives the posts returned by the X API for the query, account access level, availability, rate limits and post-access rules. It is a research scanner, not omniscience.
+No part of the application should be treated as a guarantee of future price movement or absence of fraud.
