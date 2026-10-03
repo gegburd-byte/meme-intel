@@ -110,3 +110,49 @@ def test_parse_pump_trade_from_inner_instruction_data():
     assert row["source"] == "PUMP.FUN"
     assert row["signature"] == "inner-sig"
     assert row["timestamp"] == ts
+
+def test_parse_pump_trade_from_top_level_instruction_data():
+    mint = "So11111111111111111111111111111111111111112"
+    ts = 1_700_000_000
+    payload = (
+        PUMP_TRADE_DISC
+        + bytes(32)
+        + struct.pack("<QQB", 1_000_000_000, 50_000_000, 1)
+        + bytes(32)
+        + struct.pack("<q", ts)
+        + struct.pack("<QQ", 80_000_000_000, 800_000_000_000_000)
+    )
+
+    transaction = {
+        "blockTime": ts,
+        "slot": 100,
+        "transaction": {
+            "message": {
+                "instructions": [
+                    {
+                        "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+                        "data": _base58_encode(payload),
+                    }
+                ]
+            }
+        },
+        "meta": {
+            "logMessages": [],
+            "innerInstructions": [],
+        },
+    }
+
+    from live_stream import parse_live_trade_from_transaction
+
+    row = parse_live_trade_from_transaction(
+        transaction,
+        mint,
+        signature="top-level-sig",
+        slot=100,
+        block_time=ts,
+    )
+
+    assert row is not None
+    assert row["source"] == "PUMP.FUN"
+    assert row["signature"] == "top-level-sig"
+    assert row["timestamp"] == ts
