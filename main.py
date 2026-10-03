@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -29,6 +29,7 @@ from adapters import (
     x_radar_candidates,
 )
 from storage import Store
+from live_stream import trade_hub
 
 load_dotenv()
 
@@ -299,6 +300,10 @@ async def health():
                     if he.source.configured
                     else "NOT_CONFIGURED"
                 ),
+            },            "LiveTrade": {
+                "configured": trade_hub.active(),
+                "state": trade_hub.state,
+                "detail": trade_hub.last_error,
             },
         },
         "server_time": int(time.time()),
@@ -552,6 +557,37 @@ async def analyze(req: AnalyzeReq):
 
 PRICE_CACHE = {}
 
+
+
+@app.websocket("/ws/trades")
+async def ws_trades(websocket: WebSocket):
+    mint = (websocket.query_params.get("mint") or "").strip()
+    if len(mint) < 32 or len(mint) > 44:
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "status",
+            "state": "INVALID_MINT",
+            "detail": "Invalid Solana mint.",
+        })
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    await trade_hub.add_client(mint, websocket)
+    try:
+        await websocket.send_json({
+            "type": "status",
+            "state": trade_hub.state if trade_hub.active() else "UNAVAILABLE",
+            "detail": trade_hub.last_error,
+        })
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        await trade_hub.remove_client(mint, websocket)
 
 
 @app.get("/api/chart")
