@@ -1652,6 +1652,7 @@ async function setTimeframe(tf) {
   if (tf === chartTimeframe && selectedCandles.length) return;
 
   chartTimeframe = tf;
+  liveCandleTradeAt.clear();
   historyGeneration++;
 
   historyBusy = false;
@@ -1777,6 +1778,7 @@ async function selectToken(mint) {
   selectedMint = mint;
   selectedCandles = [];
   selectedTrades = [];
+  liveCandleTradeAt.clear();
   selectedInfo =
     mergedCandidates().find(x=>x.mint===mint) ||
     {mint};
