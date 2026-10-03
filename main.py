@@ -4,6 +4,7 @@ import time
 import asyncio
 import re
 from pathlib import Path
+from collections import defaultdict, deque
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -40,6 +41,36 @@ app = FastAPI(
     title="Meme Intel",
     version="2.0"
 )
+
+RATE_LIMIT_RULES = {
+    "/api/chart": (30, 10.0),
+    "/api/live/price": (20, 10.0),
+    "/api/analyze": (4, 30.0),
+}
+_rate_state = defaultdict(deque)
+
+@app.middleware("http")
+async def api_rate_limit(request, call_next):
+    rule = RATE_LIMIT_RULES.get(request.url.path)
+    client = request.client
+    if rule and client:
+        limit, window = rule
+        now = time.monotonic()
+        key = (client.host, request.url.path)
+        bucket = _rate_state[key]
+        while bucket and now - bucket[0] >= window:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "state": "RATE_LIMITED",
+                    "detail": "Too many requests. Please slow down.",
+                },
+                headers={"Retry-After": str(max(1, int(window)))} ,
+            )
+        bucket.append(now)
+    return await call_next(request)
 
 app.mount(
     "/static",
