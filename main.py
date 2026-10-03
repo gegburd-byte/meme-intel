@@ -25,6 +25,7 @@ from adapters import (
     XAdapter,
     x_items,
     social_metrics,
+    x_radar_candidates,
 )
 from storage import Store
 
@@ -192,6 +193,23 @@ async def x_search(req: XSearchReq):
         "state": "READY",
         "items": items,
         "social": social_metrics(items),
+    }
+
+
+@app.post("/api/x/radar")
+async def x_radar(req: XSearchReq):
+    payload, err = await xa.recent(req.query, req.max_results)
+    if err:
+        return {
+            "state": err,
+            "candidates": [],
+        }
+
+    items = x_items(payload)
+    return {
+        "state": "READY",
+        "meta": (payload or {}).get("meta") or {},
+        "candidates": x_radar_candidates(items, 20),
     }
 
 
