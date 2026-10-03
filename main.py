@@ -334,6 +334,17 @@ async def analyze(req: AnalyzeReq):
         "creation": creation.get("data") if isinstance(creation, dict) else "DATA NOT AVAILABLE",
         "asset": asset if asset else "DATA NOT AVAILABLE",
         "market": market,
+        "candles": [
+            {
+                "ts": c.ts,
+                "o": c.o,
+                "h": c.h,
+                "l": c.l,
+                "c": c.c,
+                "v": c.v,
+            }
+            for c in c1[-180:]
+        ],
         "social": sm,
         "social_items": social_items,
         "risk": risk,
