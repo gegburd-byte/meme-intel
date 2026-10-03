@@ -1177,6 +1177,8 @@ async function fetchPage(offset, generation) {
       candles,
       hasMore:Boolean(j.has_more) && candles.length >= PAGE_SIZE,
       source:String(j.source || "MARKET DATA"),
+      error:j.error || null,
+      state:String(j.state || ""),
       diagnostics:j.diagnostics || null
     };
   } catch (err) {
@@ -1232,14 +1234,25 @@ async function fetchInitialHistory() {
     }
 
     if (!page.candles.length) {
-      $("chartMode").textContent =
-        page.error
-          ? "CHART HISTORY ERROR · " + page.error
-          : "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
-      $("historyStatus").textContent = "0 bars";
-      $("chartState").textContent =
-        page.error ? "ERROR" : "WAITING";
-      return false;
+      // A very new token may not have enough history for the main page yet.
+      // Seed the chart from the authoritative live Pump.fun candle instead
+      // of leaving the chart completely blank.
+      await syncCurrentPumpCandle();
+
+      if (!selectedCandles.length || generation !== historyGeneration) {
+        $("chartMode").textContent =
+          page.error
+            ? "CHART HISTORY ERROR · " + page.error
+            : "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
+        $("historyStatus").textContent = "0 bars";
+        $("chartState").textContent =
+          page.error ? "ERROR" : "WAITING";
+        return false;
+      }
+
+      historyBarsLoaded = selectedCandles.length;
+      renderChart(selectedCandles,true);
+      return true;
     }
 
     if (selectedCandles.length) {
