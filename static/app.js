@@ -1417,10 +1417,23 @@ async function pollLivePrice() {
     const price = Number(data.price);
 
     if (Number.isFinite(price) && price > 0) {
+      const now = Date.now();
+
       updateActivePrice(
         price,
-        Date.now()
+        now
       );
+
+      if (
+        chartDataSource === "LIVE_PRICE" &&
+        selectedMint
+      ) {
+        seedLivePriceBar(price, now);
+      }
+
+      if (!selectedCandles.length) {
+        requestCurrentCandleSync(0);
+      }
     }
   } catch {}
 }
@@ -1745,6 +1758,13 @@ async function setTimeframe(tf) {
     "LOADING " + timeframeLabel() + " HISTORY…";
   $("historyStatus").textContent = "loading…";
 
+  const knownText = String($("activePrice")?.textContent || "")
+    .replace(/,/g,"");
+  const knownPrice = Number(knownText);
+  if (Number.isFinite(knownPrice) && knownPrice > 0) {
+    seedLivePriceBar(knownPrice, Date.now());
+  }
+
   await fetchInitialHistory();
 }
 
@@ -1902,7 +1922,55 @@ async function analyzeSelected() {
       "ANALYZE";
   }
 }
-async function selectToken(mint) {
+async function seedLivePriceBar(price, timestampMs = Date.now()) {
+  price = Number(price);
+  if (!Number.isFinite(price) || price <= 0 || !selectedMint) return false;
+
+  const span = Math.max(60, Number(chartTimeframe || 1) * 60);
+  const bucket = Math.floor(
+    Number(timestampMs || Date.now()) / 1000 / span
+  ) * span;
+
+  const p = price;
+  const existing = selectedCandles.find(
+    x => x.time === bucket
+  );
+
+  if (existing) {
+    existing.h = Math.max(existing.h, p);
+    existing.l = Math.min(existing.l, p);
+    existing.c = p;
+    existing.v = Number(existing.v || 0);
+  } else {
+    selectedCandles = [{
+      time:bucket,
+      ts:bucket,
+      o:p,
+      h:p,
+      l:p,
+      c:p,
+      v:0
+    }];
+  }
+
+  chartDataSource = "LIVE_PRICE";
+  historyBarsLoaded = selectedCandles.length;
+
+  updateActivePrice(p, timestampMs);
+
+  if (chartInitialized) {
+    renderChart(
+      selectedCandles.slice(-MAX_HISTORY_BARS),
+      true
+    );
+    $("chartMode").textContent =
+      "LIVE PRICE · " + timeframeLabel() + " · HISTORY LOADING";
+  }
+
+  return true;
+}
+
+function selectToken(mint) {
   if (!mint) return;
 
   disconnectLiveTrade();
@@ -1983,7 +2051,9 @@ async function selectToken(mint) {
   $("activeAge").textContent = "—";
 
   if (Number(selectedInfo.price) > 0) {
-    updateActivePrice(Number(selectedInfo.price), Date.now());
+    const knownPrice = Number(selectedInfo.price);
+    updateActivePrice(knownPrice, Date.now());
+    seedLivePriceBar(knownPrice, Date.now());
   }
 
   renderCandidates();
