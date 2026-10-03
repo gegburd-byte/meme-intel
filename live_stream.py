@@ -54,7 +54,7 @@ def _base58_decode(value: str) -> bytes | None:
                 leading += 1
             else:
                 break
-        return b"\\x00" * leading + (raw.lstrip(b"\\x00") if number else b"")
+        return b"\x00" * leading + (raw.lstrip(b"\x00") if number else b"")
     except (KeyError, ValueError):
         return None
 
@@ -124,9 +124,9 @@ def _event_bytes(log: str) -> bytes | None:
 def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slot: int | None = None) -> dict[str, Any] | None:
     """Decode Pump.fun/PumpSwap trade events emitted in Solana logs.
 
-    Prices are execution prices from the on-chain event amounts, not a delayed
-    third-party quote. Pump.fun tokens use 6 decimal base units and SOL uses
-    9 decimal lamports.
+    Prices use Pump.fun's live bonding-curve virtual reserves when available,
+    falling back to execution amount ratio for legacy events. Pump.fun tokens
+    use 6 decimal base units and SOL uses 9 decimal lamports.
     """
     for index, log in enumerate(logs or []):
         payload = _event_bytes(log)
