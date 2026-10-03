@@ -75,6 +75,7 @@ def parse_live_trade_from_transaction(
     mint: str,
     signature: str = "",
     slot: int | None = None,
+    block_time: int | None = None,
 ) -> dict[str, Any] | None:
     tx = transaction or {}
     meta = tx.get("meta") or {}
@@ -84,6 +85,7 @@ def parse_live_trade_from_transaction(
         mint,
         signature=signature,
         slot=slot,
+        block_time=block_time if block_time is not None else tx.get("blockTime"),
     )
 
     if trade:
@@ -121,7 +123,7 @@ def _event_bytes(log: str) -> bytes | None:
         return None
 
 
-def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slot: int | None = None) -> dict[str, Any] | None:
+def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slot: int | None = None, block_time: int | None = None) -> dict[str, Any] | None:
     """Decode Pump.fun/PumpSwap trade events emitted in Solana logs.
 
     Prices use Pump.fun's live bonding-curve virtual reserves when available,
@@ -183,7 +185,9 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                         event_ts = None
 
                 if not event_ts or event_ts < 1_500_000_000 or event_ts > int(time.time()) + 3600:
-                    event_ts = int(time.time())
+                    event_ts = int(block_time or 0)
+                if not event_ts or event_ts < 1_500_000_000:
+                    continue
 
                 return {
                     "id": f"{signature}:{index}",
@@ -226,7 +230,9 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                     continue
 
                 if not event_ts or event_ts < 1_500_000_000 or event_ts > int(time.time()) + 3600:
-                    event_ts = int(time.time())
+                    event_ts = int(block_time or 0)
+                if not event_ts or event_ts < 1_500_000_000:
+                    continue
 
                 return {
                     "id": f"{signature}:{index}",
@@ -462,6 +468,7 @@ class LiveTradeHub:
                                 mint,
                                 signature=str(result.get("signature") or ""),
                                 slot=result.get("slot"),
+                                block_time=result.get("blockTime"),
                             )
                         elif message.get("method") == "logsNotification":
                             result = ((params.get("result") or {}).get("value") or {})
