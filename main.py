@@ -134,7 +134,6 @@ async def health():
         "sources": {
             "X": {
                 "configured": xa.source.configured,
-                "configured": xa.source.configured,
                 "state": (
                     "CONFIGURED"
                     if xa.source.configured
@@ -383,7 +382,6 @@ async def analyze(req: AnalyzeReq):
     core_data_complete = not any([
         overview_err,
         e1,
-        e1,
         xerr,
         security_err,
     ])
@@ -455,7 +453,7 @@ async def analyze(req: AnalyzeReq):
                 overview_err or "READY"
             ),
             "GeckoTerminal": {
-                "5m": e1 or "DERIVED_FROM_1M",
+                "5m": "DERIVED_FROM_1M",
                 "1m": e1 or "READY",
             },
             "Helius": asset_err or "READY",
