@@ -13,6 +13,10 @@ DEXSCREENER = "https://api.dexscreener.com"
 GECKO = "https://api.geckoterminal.com/api/v2"
 X_API = "https://api.x.com/2"
 HELIUS_RPC = "https://mainnet.helius-rpc.com"
+PUBLIC_SOLANA_RPCS = (
+    "https://api.mainnet.solana.com",
+    "https://solana-rpc.publicnode.com",
+)
 
 CA_RE = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b")
 TICKER_RE = re.compile(r"(?<![A-Za-z0-9])\$([A-Za-z][A-Za-z0-9_]{1,14})\b")
@@ -121,9 +125,10 @@ class DexScreenerAdapter:
         timeframe: int = 1,
         lookback_minutes: int = 120,
         max_signatures: int = 1500,
+        rpc_base: str | None = None,
     ):
         """Rebuild real OHLC from on-chain trades for a bounded recent window."""
-        if not self.key:
+        if not self.key and not rpc_base:
             return [], "NOT_CONFIGURED"
 
         mint = (mint or "").strip()
@@ -132,7 +137,7 @@ class DexScreenerAdapter:
         lookback_minutes = max(30, min(int(lookback_minutes or default_lookback), 120))
         max_signatures = max(100, min(int(max_signatures or 1500), 1500))
 
-        cache_key = (mint, timeframe, lookback_minutes, max_signatures)
+        cache_key = (mint, timeframe, lookback_minutes, max_signatures, rpc_base or "helius")
         cached = self._chart_cache.get(cache_key)
         if cached and time.time() - cached["time"] < 20:
             return cached["candles"], cached["error"]
@@ -143,7 +148,7 @@ class DexScreenerAdapter:
         before = None
 
         while len(rows) < max_signatures:
-            page_limit = min(1000, max_signatures - len(rows))
+            page_limit = min(100 if rpc_base else 1000, max_signatures - len(rows))
             params = {
                 "limit": page_limit,
                 "commitment": "confirmed",
@@ -154,6 +159,7 @@ class DexScreenerAdapter:
             signatures, sig_err = await self._rpc(
                 "getSignaturesForAddress",
                 [mint, params],
+                rpc_base=rpc_base,
             )
 
             if sig_err or not signatures:
@@ -209,6 +215,7 @@ class DexScreenerAdapter:
                             "maxSupportedTransactionVersion": 1,
                         },
                     ],
+                    rpc_base=rpc_base,
                 )
                 if err or not result:
                     return None
@@ -499,6 +506,10 @@ class PumpFunAdapter:
         return None, last_error or "PUMPFUN_CHART_UNAVAILABLE"
 
 
+def public_rpc_endpoints():
+    return PUBLIC_SOLANA_RPCS
+
+
 class HeliusAdapter:
     def __init__(self, key=None):
         self.key = key or os.getenv("HELIUS_API_KEY")
@@ -517,11 +528,13 @@ class HeliusAdapter:
             },
         )
 
-    async def _rpc(self, method, params):
-        if not self.key:
-            return None, "NOT_CONFIGURED"
-
-        url = f"{HELIUS_RPC}/?api-key={self.key}"
+    async def _rpc(self, method, params, rpc_base=None):
+        if rpc_base:
+            url = rpc_base
+        else:
+            if not self.key:
+                return None, "NOT_CONFIGURED"
+            url = f"{HELIUS_RPC}/?api-key={self.key}"
         last_error = None
 
         for attempt in range(3):
