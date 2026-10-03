@@ -82,6 +82,62 @@ class PaperCloseReq(BaseModel):
     exit: float
 
 
+def security_gate(security):
+    if not isinstance(security, dict) or security.get("state") != "READY":
+        return {
+            "state": "UNKNOWN",
+            "label": "SECURITY UNKNOWN",
+            "score": None,
+            "reasons": ["On-chain holder/authority checks are unavailable."],
+        }
+
+    reasons = []
+    score = 0
+
+    if security.get("mint_authority"):
+        score += 35
+        reasons.append("Mint authority appears active.")
+    if security.get("freeze_authority"):
+        score += 25
+        reasons.append("Freeze authority appears active.")
+
+    top = security.get("top_holder_share")
+    top10 = security.get("top10_holder_share")
+
+    if top is not None and top > 0.50:
+        score += 35
+        reasons.append("Top holder controls more than 50% of sampled supply.")
+    elif top is not None and top > 0.25:
+        score += 18
+        reasons.append("Top holder concentration is elevated.")
+
+    if top10 is not None and top10 > 0.70:
+        score += 25
+        reasons.append("Top 10 holders control more than 70% of sampled supply.")
+    elif top10 is not None and top10 > 0.50:
+        score += 12
+        reasons.append("Top 10 holder concentration is elevated.")
+
+    score = min(100, score)
+
+    if score >= 65:
+        label = "BLOCK"
+    elif score >= 30:
+        label = "WARN"
+    else:
+        label = "PASS"
+
+    if not reasons:
+        reasons.append("No major detectable authority or concentration warning in the sampled data.")
+
+    return {
+        "state": "READY",
+        "label": label,
+        "score": score,
+        "reasons": reasons,
+    }
+
+
 def build_token_x_query(mint, symbol, name, base_query):
     terms = ['"' + mint + '"']
     if symbol:
@@ -285,12 +341,26 @@ async def analyze(req: AnalyzeReq):
     sm = social_metrics(social_items)
     market = market_metrics(c1, c5, data)
 
+    sec_gate = security_gate(security)
+
     risk = risk_flags(
         liquidity_usd=data.get("liquidity"),
         market_cap=data.get("marketCap"),
-        holder_concentration=None,
-        mint_authority=None,
-        freeze_authority=None,
+        holder_concentration=(
+            security.get("top_holder_share")
+            if isinstance(security, dict)
+            else None
+        ),
+        mint_authority=(
+            security.get("mint_authority")
+            if isinstance(security, dict)
+            else None
+        ),
+        freeze_authority=(
+            security.get("freeze_authority")
+            if isinstance(security, dict)
+            else None
+        ),
         social_domination=sm.get("domination"),
         coordination_risk=sm.get("coordination_risk"),
         vertical_move_pct=abs(market.get("return_30m_pct")) if market.get("return_30m_pct") is not None else None,
@@ -349,6 +419,7 @@ async def analyze(req: AnalyzeReq):
         "setup": setup.dict() if setup else {"state": "DATA NOT AVAILABLE"},
         "overview": data if data else "DATA NOT AVAILABLE",
         "security": "DATA NOT AVAILABLE" if security_err else security,
+        "security_gate": sec_gate,
         "creation": creation.get("data") if isinstance(creation, dict) else "DATA NOT AVAILABLE",
         "asset": asset if asset else "DATA NOT AVAILABLE",
         "market": market,
@@ -377,6 +448,102 @@ async def analyze(req: AnalyzeReq):
         },
         "timestamp": int(time.time()),
     }
+
+
+TOP_CACHE = {"time": 0, "data": None}
+TOP_CACHE_SECONDS = 35
+
+
+@app.get("/api/top")
+async def top_opportunities():
+    global TOP_CACHE
+
+    now = time.time()
+    if TOP_CACHE["data"] is not None and now - TOP_CACHE["time"] < TOP_CACHE_SECONDS:
+        return TOP_CACHE["data"]
+
+    candidates = await discover_candidates(
+        limit=8,
+        min_liquidity=10000,
+    )
+
+    async def inspect(candidate):
+        try:
+            analysis = await analyze(
+                AnalyzeReq(
+                    mint=candidate["address"],
+                    x_query='lang:en -is:retweet',
+                )
+            )
+            decision = analysis.get("decision") or {}
+            risk = analysis.get("risk") or {}
+            gate = analysis.get("security_gate") or {}
+            overview = analysis.get("overview") or {}
+
+            eligible = (
+                gate.get("state") == "READY"
+                and gate.get("label") == "PASS"
+                and risk.get("overall") not in {"HIGH", "CRITICAL"}
+                and decision.get("action") != "NO TRADE"
+            )
+
+            research_rank = (
+                float(decision.get("score") or 0)
+                + (12 if eligible else 0)
+                - (25 if gate.get("label") == "BLOCK" else 0)
+                - (10 if gate.get("label") == "WARN" else 0)
+            )
+
+            return {
+                "candidate": candidate,
+                "mint": candidate["address"],
+                "symbol": overview.get("symbol") if isinstance(overview, dict) else candidate.get("symbol"),
+                "name": overview.get("name") if isinstance(overview, dict) else candidate.get("name"),
+                "price": overview.get("price") if isinstance(overview, dict) else candidate.get("priceUsd"),
+                "research_rank": round(max(0, min(100, research_rank)), 1),
+                "eligible": eligible,
+                "decision": decision,
+                "risk": risk,
+                "security_gate": gate,
+                "market": analysis.get("market"),
+                "social": analysis.get("social"),
+                "updated_at": analysis.get("timestamp"),
+            }
+        except Exception as exc:
+            return {
+                "mint": candidate.get("address"),
+                "symbol": candidate.get("symbol"),
+                "name": candidate.get("name"),
+                "research_rank": 0,
+                "eligible": False,
+                "error": str(exc),
+            }
+
+    inspected = await asyncio.gather(
+        *[inspect(c) for c in candidates[:5]]
+    )
+
+    inspected = sorted(
+        inspected,
+        key=lambda x: (
+            x.get("eligible", False),
+            x.get("research_rank", 0),
+        ),
+        reverse=True,
+    )
+
+    result = {
+        "state": "READY",
+        "updated_at": int(now),
+        "candidates": inspected,
+        "top": next(
+            (x for x in inspected if x.get("eligible")),
+            inspected[0] if inspected else None,
+        ),
+    }
+
+    TOP_CACHE = {"time": now, "data": result}
+    return result
 
 
 @app.get("/api/discover")
