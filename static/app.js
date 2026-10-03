@@ -1,293 +1,291 @@
 const $ = (id) => document.getElementById(id);
 
+let live = false;
+let timer = null;
+let lastData = null;
+
+function safe(v, digits = 6) {
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function usd(v) {
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  return "$" + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function pct(v, digits = 2) {
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  return Number(v).toFixed(digits) + "%";
+}
+
+function row(name, value) {
+  return "<div class=\"row\"><span>" + name + "</span><b>" + value + "</b></div>";
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, function(c) {
+    const map = {"&":"&amp;","<":"&lt;",">":"&gt;",\"":"&quot;","'":"&#039;"};
+    return map[c] || c;
+  });
+}
+
+function setSource(dotId, textId, source) {
+  if (!source) return;
+  const ok = source.configured === true || source.state === "READY" || source.state === "CONFIGURED";
+  $(dotId).className = "dot " + (ok ? "ok" : "bad");
+  $(textId).textContent = source.state || "UNKNOWN";
+}
+
 async function health() {
   try {
-    const r = await fetch("/api/health?x=" + Date.now(), {
-      cache: "no-store"
-    });
-
+    const r = await fetch("/api/health?x=" + Date.now(), { cache: "no-store" });
     const j = await r.json();
-
     $("health").textContent = j.status || "ONLINE";
-
-    const sources = j.sources || {};
-
-    setSource("X", "dotX", "srcX", sources.X);
-    setSource("Birdeye", "dotBE", "srcBE", sources.Birdeye);
-    setSource("Helius", "dotHE", "srcHE", sources.Helius);
-  } catch (err) {
-    console.error(err);
+    setSource("dotX", "srcX", j.sources && j.sources.X);
+    setSource("dotDS", "srcDS", j.sources && j.sources.DexScreener);
+    setSource("dotGT", "srcGT", j.sources && j.sources.GeckoTerminal);
+    setSource("dotHE", "srcHE", j.sources && j.sources.Helius);
+  } catch (e) {
     $("health").textContent = "BACKEND ERROR";
   }
 }
 
-function setSource(name, dotId, textId, source) {
-  if (!source) return;
+function renderDecision(d) {
+  d = d || {};
+  $("action").textContent = d.action || "NO DATA";
+  $("decisionScore").textContent = d.score == null ? "—" : d.score + "/100";
+  $("confidence").textContent = d.confidence || "—";
+  $("confirmations").textContent = d.confirmation_count == null ? "—" : d.confirmation_count + "/7";
+  $("entryTrigger").textContent = safe(d.entry_trigger);
+  $("decisionReason").textContent = d.reason || "—";
+  $("entryStyle").textContent = d.entry_style || "—";
 
-  const ok = source.configured === true;
+  $("targetTrigger").textContent = safe(d.entry_trigger);
+  $("targetStop").textContent = safe(d.invalidation);
+  $("target1").textContent = safe(d.target1);
+  $("target2").textContent = safe(d.target2);
 
-  const dot = $(dotId);
-  dot.className = "dot " + (ok ? "ok" : "bad");
+  $("exitRules").innerHTML = (d.exit_rules || []).map(function(x) {
+    return "<div class=\"muted rule\">• " + escapeHtml(x) + "</div>";
+  }).join("");
+}
 
-  $(textId).textContent = source.state || "UNKNOWN";
+function renderSetup(s) {
+  s = s || {};
+  $("setupState").textContent = s.state || "DATA NOT AVAILABLE";
+  $("prevHigh").textContent = safe(s.prev_high);
+  $("higherLow").textContent = safe(s.higher_low);
+  $("stop").textContent = safe(s.stop);
+}
+
+function renderMarket(m) {
+  m = m || {};
+  const p = m.profile || {};
+
+  $("poc").textContent = safe(p.poc);
+  $("vah").textContent = safe(p.vah);
+  $("val").textContent = safe(p.val);
+  $("vwap").textContent = safe(m.vwap);
+
+  $("rsi").textContent = safe(m.rsi14, 2);
+  $("ema").textContent = safe(m.ema9) + " / " + safe(m.ema21);
+  $("buyRatio").textContent = m.buy_ratio_5m == null ? "—" : pct(Number(m.buy_ratio_5m) * 100, 1);
+  $("volSpike").textContent = m.volume_spike == null ? "—" : Number(m.volume_spike).toFixed(2) + "x";
+  $("trendState").textContent = m.ema_trend || "—";
+
+  $("profileRows").innerHTML =
+    row("Price vs VAH", pct(m.distance_vah_pct)) +
+    row("Price vs POC", pct(m.distance_poc_pct)) +
+    row("Price vs VAL", pct(m.distance_val_pct)) +
+    row("ATR", pct(m.atr_pct));
+
+  $("flowRows").innerHTML =
+    row("1m", pct(m.return_1m_pct)) +
+    row("5m", pct(m.return_5m_pct)) +
+    row("15m", pct(m.return_15m_pct)) +
+    row("30m", pct(m.return_30m_pct)) +
+    row("Volume / Liquidity", m.volume_liquidity_ratio == null ? "—" : Number(m.volume_liquidity_ratio).toFixed(3));
+}
+
+function renderSocial(s, items) {
+  s = s || {};
+
+  $("socialState").textContent = s.state || "—";
+  $("posts").textContent = s.recent_15m == null ? "—" : s.recent_15m;
+  $("vel").textContent = s.mention_velocity == null ? "—" : Number(s.mention_velocity).toFixed(2);
+  $("accel").textContent = s.velocity_acceleration == null ? "—" : Number(s.velocity_acceleration).toFixed(2) + "x";
+  $("authors").textContent = s.unique_author_count == null ? "—" : s.unique_author_count;
+  $("sentiment").textContent = s.sentiment == null ? "—" : Number(s.sentiment).toFixed(0);
+  $("authorQuality").textContent = s.author_quality == null ? "—" : Number(s.author_quality).toFixed(0);
+  $("engagement").textContent = s.engagement_velocity == null ? "—" : Number(s.engagement_velocity).toFixed(1);
+  $("copyRisk").textContent = s.coordination_risk == null ? "—" : Number(s.coordination_risk).toFixed(0);
+  $("topAuthor").textContent = s.top_authors && s.top_authors.length ? "@" + s.top_authors[0].username : "—";
+
+  const list = items || [];
+  $("tweets").innerHTML = list.slice(0, 12).map(function(t) {
+    const age = t.age_seconds == null ? "" : " · " + Math.max(0, Math.round(t.age_seconds / 60)) + "m";
+    const verify = t.verified ? " ✓" : "";
+    return "<div class=\"tweet\">" +
+      "<div class=\"meta\">@" + escapeHtml(t.username || "unknown") + verify +
+      " · " + Number(t.followers || 0).toLocaleString() +
+      " followers · " + Number(t.engagement || 0).toLocaleString() + " eng" + age + "</div>" +
+      "<p>" + escapeHtml(t.text || "") + "</p>" +
+      "<a target=\"_blank\" rel=\"noopener\" href=\"" + escapeHtml(t.url || "#") + "\">OPEN ON X ↗</a>" +
+      "</div>";
+  }).join("") || "<div class=\"muted\">No posts returned for the token-specific query.</div>";
+}
+
+function renderRisk(r) {
+  r = r || {};
+  $("riskLevel").textContent = r.overall || "UNKNOWN";
+
+  $("riskRows").innerHTML = (r.flags || []).map(function(f) {
+    return row(escapeHtml(f.code || "FLAG"), escapeHtml(f.level || "UNKNOWN")) +
+      "<div class=\"muted\">" + escapeHtml(f.reason || "") + "</div>";
+  }).join("") || "<div class=\"muted\">No risk flags returned.</div>";
+}
+
+function renderToken(o) {
+  if (!o || typeof o !== "object") {
+    $("tokenName").textContent = "DATA NOT AVAILABLE";
+    $("tokenRows").innerHTML = "";
+    return;
+  }
+
+  $("tokenName").textContent = o.symbol || o.name || "TOKEN";
+  $("tokenRows").innerHTML =
+    row("Price", safe(o.price, 10)) +
+    row("Liquidity", usd(o.liquidity)) +
+    row("Market Cap", usd(o.marketCap)) +
+    row("5m Volume", usd(o.v5mUSD)) +
+    row("1h Volume", usd(o.v1hUSD)) +
+    row("24h Volume", usd(o.v24hUSD)) +
+    row("DEX", o.dexId || "—");
+}
+
+function renderAll(data) {
+  lastData = data;
+
+  renderDecision(data.decision);
+  renderSetup(data.setup);
+  renderMarket(data.market);
+  renderSocial(data.social, data.social_items);
+  renderRisk(data.risk);
+  renderToken(data.overview);
+
+  $("queryUsed").textContent = data.x_query_used || "—";
+  $("raw").textContent = JSON.stringify(data, null, 2);
+
+  const currentPrice = data.market && data.market.price;
+  if (currentPrice != null && $("pEntry").value === "") {
+    $("pEntry").value = currentPrice;
+  }
+
+  loadTrades();
 }
 
 async function analyze() {
   const mint = $("mint").value.trim();
 
   if (!mint) {
-    alert("Paste a Solana token contract address first.");
+    $("decisionReason").textContent = "Paste a Solana contract address first.";
     return;
   }
 
-  $("setupState").textContent = "LOADING...";
-  $("setupWhy").textContent = "Fetching live data...";
-  $("score").textContent = "LOADING...";
-  $("riskLevel").textContent = "LOADING...";
+  $("action").textContent = "ANALYZING…";
+  $("decisionReason").textContent = "Pulling market structure, flow, risk and token-specific X posts…";
 
   try {
-    const response = await fetch("/api/analyze", {
+    const r = await fetch("/api/analyze", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         mint: mint,
         x_query: $("query").value.trim()
       })
     });
 
-    const data = await response.json();
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Analyze request failed");
 
-    $("raw").textContent = JSON.stringify(data, null, 2);
-
-    if (!response.ok) {
-      throw new Error(data.detail || "Analyze request failed");
-    }
-
-    renderSetup(data.setup);
-    renderScore(data.score);
-    renderRisk(data.risk);
-    renderSocial(data.social);
-    renderToken(data.overview);
-    renderTweets(data);
-
-    console.log("ANALYZE RESULT:", data);
-
-  } catch (error) {
-    console.error("ANALYZE ERROR:", error);
-
-    $("setupState").textContent = "ERROR";
-    $("setupWhy").textContent = error.message;
-
-    $("raw").textContent =
-      "ANALYZE ERROR\n\n" + error.stack;
+    renderAll(data);
+  } catch (e) {
+    $("action").textContent = "ERROR";
+    $("decisionReason").textContent = e.message || "Unknown error";
+    $("raw").textContent = String(e && e.stack ? e.stack : e);
   }
 }
 
-function renderSetup(s) {
-  s = s || {};
+function toggleLive() {
+  live = !live;
+  $("liveToggle").textContent = live ? "LIVE ON · 30s" : "LIVE OFF";
 
-  $("setupState").textContent =
-    s.state || "DATA NOT AVAILABLE";
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
 
-  $("prevHigh").textContent =
-    formatNumber(s.prev_high);
-
-  $("higherLow").textContent =
-    formatNumber(s.higher_low);
-
-  $("stop").textContent =
-    formatNumber(s.stop);
-
-  $("setupWhy").textContent =
-    s.last_reason || "No setup detected.";
+  if (live) {
+    analyze();
+    timer = setInterval(analyze, 30000);
+  }
 }
 
-function renderScore(s) {
-  if (!s) {
-    $("score").textContent = "DATA NOT AVAILABLE";
+async function loadTrades() {
+  try {
+    const r = await fetch("/api/paper/trades?x=" + Date.now());
+    const j = await r.json();
+
+    $("paperTrades").innerHTML =
+      (j.trades || []).slice(0, 10).map(function(t) {
+        return "<div class=\"trade\"><span>#" + t.id + " " +
+          String(t.mint || "").slice(0, 8) + "…</span><b>" +
+          (t.pnl == null ? "OPEN" : usd(t.pnl)) + "</b></div>";
+      }).join("") ||
+      "<div class=\"muted\">No paper trades yet.</div>";
+  } catch (e) {}
+}
+
+async function paperOpen() {
+  const mint = $("mint").value.trim();
+  const entry = Number($("pEntry").value || (lastData && lastData.market && lastData.market.price));
+  const qty = Number($("pQty").value);
+
+  if (!mint || !Number.isFinite(entry) || !Number.isFinite(qty) || qty <= 0) {
+    $("decisionReason").textContent = "Enter a mint, entry price, and quantity.";
     return;
   }
 
-  $("score").textContent =
-    s.score == null ? "—" : s.score + "/100";
-
-  const components = s.components || {};
-
-  $("scoreRows").innerHTML =
-    Object.entries(components)
-      .map(([name, value]) => {
-        return `
-          <div class="row">
-            <span>${pretty(name)}</span>
-            <b>${value.value}/100</b>
-          </div>
-        `;
-      })
-      .join("");
-}
-
-function renderRisk(r) {
-  if (!r) {
-    $("riskLevel").textContent = "DATA NOT AVAILABLE";
-    return;
-  }
-
-  $("riskLevel").textContent =
-    r.overall || "UNKNOWN";
-
-  $("riskRows").innerHTML =
-    (r.flags || [])
-      .map(flag => {
-        return `
-          <div class="row">
-            <span>${pretty(flag.code)}</span>
-            <b>${flag.level}</b>
-          </div>
-          <div class="muted">${flag.reason}</div>
-        `;
-      })
-      .join("") ||
-    `<div class="row"><span>No returned risk flags</span><b>—</b></div>`;
-}
-
-function renderSocial(s) {
-  s = s || {};
-
-  $("posts").textContent =
-    s.post_count ?? "—";
-
-  $("vel").textContent =
-    s.mention_velocity == null
-      ? "DATA NOT AVAILABLE"
-      : Number(s.mention_velocity).toFixed(2);
-
-  $("sentiment").textContent =
-    s.sentiment == null
-      ? "DATA NOT AVAILABLE"
-      : s.sentiment;
-
-  $("domination").textContent =
-    s.domination == null
-      ? "DATA NOT AVAILABLE"
-      : (s.domination * 100).toFixed(1) + "%";
-
-  $("dupes").textContent =
-    s.duplicates ?? "—";
-
-  $("socialState").textContent =
-    s.state || "X";
-}
-
-function renderToken(o) {
-  if (!o || typeof o !== "object") {
-    $("tokenName").textContent = "DATA NOT AVAILABLE";
-    $("tokenRows").innerHTML =
-      `<div class="muted">No market overview returned.</div>`;
-    return;
-  }
-
-  $("tokenName").textContent =
-    o.symbol || o.name || "TOKEN";
-
-  $("tokenRows").innerHTML = `
-    ${row("Price", money(o.price))}
-    ${row("Liquidity", moneyUSD(o.liquidity))}
-    ${row("Market Cap", moneyUSD(o.marketCap))}
-    ${row("24h Volume", moneyUSD(o.v24hUSD))}
-  `;
-}
-
-function renderTweets(data) {
-  const social = data.social || {};
-
-  $("tweetCount").textContent =
-    social.post_count
-      ? social.post_count + " returned"
-      : "X unavailable";
-
-  $("tweets").innerHTML = `
-    <div class="tweet">
-      <div class="meta">
-        X status: ${data.sources?.X || "UNKNOWN"}
-      </div>
-      <p>
-        ${
-          data.social?.state === "READY"
-            ? "X data received."
-            : "X data is unavailable or API credits are exhausted."
-        }
-      </p>
-    </div>
-  `;
-}
-
-function row(name, value) {
-  return `
-    <div class="row">
-      <span>${name}</span>
-      <b>${value}</b>
-    </div>
-  `;
-}
-
-function money(value) {
-  if (value == null) return "DATA NOT AVAILABLE";
-
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return "DATA NOT AVAILABLE";
-
-  return n.toLocaleString(undefined, {
-    maximumFractionDigits: 8
+  await fetch("/api/paper/open", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      mint: mint,
+      entry: entry,
+      qty: qty,
+      note: $("pNote").value,
+      side: "LONG"
+    })
   });
+
+  loadTrades();
 }
 
-function moneyUSD(value) {
-  if (value == null) return "DATA NOT AVAILABLE";
+document.addEventListener("DOMContentLoaded", function() {
+  $("analyze").addEventListener("click", analyze);
+  $("liveToggle").addEventListener("click", toggleLive);
+  $("paperOpen").addEventListener("click", paperOpen);
 
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return "DATA NOT AVAILABLE";
-
-  return "$" + n.toLocaleString(undefined, {
-    maximumFractionDigits: 2
+  $("mint").addEventListener("keydown", function(e) {
+    if (e.key === "Enter") analyze();
   });
-}
 
-function formatNumber(value) {
-  if (value == null) return "—";
-
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return "—";
-
-  return n.toLocaleString(undefined, {
-    maximumFractionDigits: 8
+  $("query").addEventListener("keydown", function(e) {
+    if (e.key === "Enter") analyze();
   });
-}
-
-function pretty(value) {
-  return String(value)
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, c => c.toUpperCase());
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-
-  console.log("MEME INTEL JAVASCRIPT LOADED");
-
-  const button = $("analyze");
-
-  if (!button) {
-    console.error("ANALYZE BUTTON NOT FOUND");
-    return;
-  }
-
-  button.addEventListener("click", analyze);
 
   health();
-
+  loadTrades();
   setInterval(health, 15000);
 });
