@@ -802,6 +802,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     # Always corroborate the first page with independent real-data sources.
     # Pump.fun's frontend feed can return structurally valid but visually poor
     # payloads, so do not let a single source win without comparison.
+    chart_diagnostics = None
     if offset == 0:
         onchain_task = he.historical_trade_candles(
             mint,
@@ -860,6 +861,20 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             (name, rows, chart_data_quality(rows, minimum_bars=3))
             for name, rows in options
         ]
+        chart_diagnostics = {
+            "window_minutes": 120,
+            "sources": {
+                name: {
+                    "bars": len(rows),
+                    "quality": round(quality, 2),
+                }
+                for name, rows, quality in scored
+            },
+            "helius_error": onchain_err,
+            "public_rpc_errors": public_errors,
+            "gecko_error": gecko_err,
+            "pump_error": pump_err,
+        }
         # Prefer reconstructed on-chain trades whenever they are available.
         # They use the same SOL/token price unit as the live trade websocket,
         # eliminating frontend-feed unit/format surprises.
@@ -918,6 +933,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             for c in candles
         ],
         "error": None if candles else (pump_err or "NO_VALID_CANDLES"),
+        "diagnostics": chart_diagnostics,
         "timestamp": int(time.time()),
     }
 
