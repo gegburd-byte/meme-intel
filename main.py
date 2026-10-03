@@ -198,6 +198,10 @@ def parse_candles(data):
     return candles
 
 
+async def skipped_x():
+    return None, "X_SKIPPED_FOR_MARKET_SCREEN"
+
+
 def closed_candles(candles, seconds_per_candle):
     now = int(time.time())
 
@@ -222,11 +226,8 @@ async def health():
         "sources": {
             "X": {
                 "configured": xa.source.configured,
-                "state": (
-                    "CONFIGURED"
-                    if xa.source.configured
-                    else "NOT_CONFIGURED"
-                ),
+                "state": xa.last_state if xa.source.configured else "NOT_CONFIGURED",
+                "detail": xa.last_error[:180] if xa.last_error else "",
             },
             "DexScreener": {
                 "configured": True,
@@ -235,6 +236,10 @@ async def health():
             "GeckoTerminal": {
                 "configured": True,
                 "state": "READY",
+            },
+            "Security": {
+                "configured": he.source.configured,
+                "state": "READY" if he.source.configured else "NOT_CONFIGURED",
             },
             "Helius": {
                 "configured": he.source.configured,
@@ -441,6 +446,12 @@ async def analyze(req: AnalyzeReq):
         "setup": setup.dict() if setup else {"state": "DATA NOT AVAILABLE"},
         "overview": data if data else "DATA NOT AVAILABLE",
         "security": "DATA NOT AVAILABLE" if security_err else security,
+        "data_quality": {
+            "market": "READY" if not any([overview_err, e1]) else "LIMITED",
+            "security": sec_gate.get("state", "UNKNOWN"),
+            "x": sm.get("state", "NO_POSTS"),
+            "mode": "FULL" if sm.get("state") == "READY" else "MARKET_ONLY",
+        },
         "security_gate": sec_gate,
         "creation": creation.get("data") if isinstance(creation, dict) else "DATA NOT AVAILABLE",
         "asset": asset if asset else "DATA NOT AVAILABLE",
