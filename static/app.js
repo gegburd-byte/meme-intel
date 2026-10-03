@@ -411,10 +411,25 @@ function renderRisk(r) {
     gate.className = "gate " + String(sg.label || "SECURITY UNKNOWN").toLowerCase().replace(/[^a-z]+/g, "-");
   }
 
-  $("riskRows").innerHTML = (r.flags || []).map(function(f) {
-    return row(escapeHtml(f.code || "FLAG"), escapeHtml(f.level || "UNKNOWN")) +
-      "<div class=\"muted\">" + escapeHtml(f.reason || "") + "</div>";
-  }).join("") || "<div class=\"muted\">No risk flags returned.</div>";
+  const security = lastData && lastData.security && typeof lastData.security === "object"
+    ? lastData.security
+    : {};
+  const securitySummary =
+    row("Holder coverage", security.coverage_ratio == null ? "—" : pct(Number(security.coverage_ratio) * 100, 0)) +
+    row("Top holder", security.top_holder_share == null ? "—" : pct(Number(security.top_holder_share) * 100, 1)) +
+    row("Top 10 holders", security.top10_holder_share == null ? "—" : pct(Number(security.top10_holder_share) * 100, 1)) +
+    row("Mint authority", security.mint_authority ? "ACTIVE" : security.state ? "OFF" : "—") +
+    row("Freeze authority", security.freeze_authority ? "ACTIVE" : security.state ? "OFF" : "—");
+
+  const riskFlags = (r.flags || []).map(function(flag) {
+    return row(escapeHtml(flag.code || "FLAG"), escapeHtml(flag.level || "UNKNOWN")) +
+      "<div class=\"muted\">" + escapeHtml(flag.reason || "") + "</div>";
+  }).join("");
+
+  $("riskRows").innerHTML =
+    securitySummary +
+    riskFlags +
+    (riskFlags ? "" : "<div class=\"muted\">No additional risk flags returned.</div>");
 }
 
 function renderToken(o) {
