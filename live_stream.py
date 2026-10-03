@@ -340,7 +340,11 @@ class LiveTradeHub:
                 await self._send({
                     "jsonrpc": "2.0",
                     "id": self.request_id,
-                    "method": "logsUnsubscribe",
+                    "method": (
+                        "transactionUnsubscribe"
+                        if self.stream_mode == "ENHANCED"
+                        else "logsUnsubscribe"
+                    ),
                     "params": [sub_id],
                 })
                 self.request_id += 1
