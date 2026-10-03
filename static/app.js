@@ -6,7 +6,8 @@ let fallbackTimer = null;
 let reconnectTimer = null;
 let pricePollTimer = null;
 let currentCandleSyncTimer = null;
-let liveCandleTradeAt = new Map();
+let currentCandleSyncInFlight = false;
+let currentCandleSyncQueued = false;
 
 let pumpEvents = [];
 let marketCandidates = [];
@@ -28,7 +29,9 @@ let chartTimeframe = 1;
 let chartDataSource = "PUMP.FUN";
 let historyGeneration = 0;
 let historyBusy = false;
+let historyBusyGeneration = 0;
 let initialHistoryBusy = false;
+let initialHistoryGeneration = 0;
 let historyHasMore = true;
 let historyNextOffset = 0;
 let historyBarsLoaded = 0;
@@ -1093,41 +1096,11 @@ function mergePage(page) {
     selectedCandles.map(x=>[x.time,x])
   );
 
-  const currentBucket = Math.floor(
-    Date.now() / 1000 / (chartTimeframe * 60)
-  ) * (chartTimeframe * 60);
-
+  // Pump.fun's native OHLC is the single source of truth. Never merge a
+  // Helius execution-price sample into an OHLC bar because the two can use
+  // different price definitions/timing.
   for (const item of page) {
-    const existing = byTime.get(item.time);
-
-    if (!existing) {
-      byTime.set(item.time,{...item});
-      continue;
-    }
-
-    // Pump.fun is authoritative. For closed candles, replace the bar exactly
-    // instead of combining values from different providers.
-    if (item.time !== currentBucket) {
-      Object.assign(existing,item);
-      continue;
-    }
-
-    // For the currently-forming bucket, only preserve a websocket trade when
-    // we actually received one after the HTTP snapshot. Otherwise take the
-    // native Pump.fun candle exactly so the displayed close/wick stays synced.
-    const liveTradeAt = Number(liveCandleTradeAt.get(item.time) || 0);
-    if (liveTradeAt <= 0) {
-      Object.assign(existing,item);
-      continue;
-    }
-
-    existing.o = item.o;
-    existing.h = Math.max(item.h, existing.h);
-    existing.l = Math.min(item.l, existing.l);
-    existing.v = Math.max(
-      Number(item.v) || 0,
-      Number(existing.v) || 0
-    );
+    byTime.set(item.time,{...item});
   }
 
   selectedCandles = [...byTime.values()]
@@ -1136,7 +1109,6 @@ function mergePage(page) {
 
   historyBarsLoaded = selectedCandles.length;
 }
-
 async function fetchPage(offset, generation) {
   if (
     !selectedMint ||
@@ -1198,12 +1170,19 @@ async function fetchPage(offset, generation) {
 }
 
 async function fetchInitialHistory() {
-  if (initialHistoryBusy) return false;
+  const generation = historyGeneration;
+
+  if (
+    initialHistoryBusy &&
+    initialHistoryGeneration === generation
+  ) {
+    return false;
+  }
+
   initialHistoryBusy = true;
+  initialHistoryGeneration = generation;
 
   try {
-    const generation = historyGeneration;
-
     $("chartMode").textContent =
       "LOADING REAL MARKET HISTORY…";
 
@@ -1236,7 +1215,8 @@ async function fetchInitialHistory() {
           ? "CHART HISTORY ERROR · " + page.error
           : "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
       $("historyStatus").textContent = "0 bars";
-      $("chartState").textContent = page.error ? "ERROR" : "WAITING";
+      $("chartState").textContent =
+        page.error ? "ERROR" : "WAITING";
       return false;
     }
 
@@ -1254,22 +1234,29 @@ async function fetchInitialHistory() {
 
     renderChart(selectedCandles,true);
 
-    // Backfill is deliberately non-blocking.
+    // Older native Pump.fun pages are loaded without blocking the visible chart.
     loadOlderHistory(generation);
 
     return true;
   } finally {
-    initialHistoryBusy = false;
+    if (initialHistoryGeneration === generation) {
+      initialHistoryBusy = false;
+    }
   }
 }
 async function loadOlderHistory(generation) {
+  const busyForSameGeneration =
+    historyBusy &&
+    historyBusyGeneration === generation;
+
   if (
-    historyBusy ||
+    busyForSameGeneration ||
     !historyHasMore ||
     generation !== historyGeneration
   ) return;
 
   historyBusy = true;
+  historyBusyGeneration = generation;
 
   try {
     while (
@@ -1292,12 +1279,18 @@ async function loadOlderHistory(generation) {
 
       for (const result of results) {
         if (generation !== historyGeneration) break;
+
         if (result.candles.length) {
           mergePage(result.candles);
           received += result.candles.length;
         }
-        if (result.hasMore) anyMore = true;
+
+        if (result.hasMore) {
+          anyMore = true;
+        }
       }
+
+      if (generation !== historyGeneration) break;
 
       historyNextOffset += PAGE_SIZE * 3;
       historyHasMore = anyMore && received > 0;
@@ -1306,82 +1299,41 @@ async function loadOlderHistory(generation) {
         historyBarsLoaded.toLocaleString() +
         (historyHasMore ? "+ bars" : " bars");
 
-      // Refresh overlays after a background chunk lands, but don't move the
-      // user's manually zoomed/panned viewport.
       renderChart(selectedCandles,false);
 
       if (!received) break;
 
-      // Yield so live WebSocket messages and chart input stay responsive.
       await new Promise(requestAnimationFrame);
     }
   } finally {
-    historyBusy = false;
+    if (historyBusyGeneration === generation) {
+      historyBusy = false;
+    }
   }
 }
-
 function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
   price = Number(price);
   if (!Number.isFinite(price) || price <= 0 || !selectedMint) return;
 
-  const tSec = Math.floor(Number(timestampMs) / 1000);
-  const span = chartTimeframe * 60;
-  const bucket = Math.floor(tSec / span) * span;
-
-  let current = selectedCandles[selectedCandles.length - 1];
-  const liveVolume = recordTrade
-    ? Math.max(0, Number(recordTrade.volumeSol) || 0)
-    : 0;
-
-  if (!current || bucket > current.time) {
-    current = {
-      time: bucket,
-      ts: bucket,
-      o: price,
-      h: price,
-      l: price,
-      c: price,
-      v: liveVolume
-    };
-    selectedCandles.push(current);
-  } else if (bucket === current.time) {
-    current.h = Math.max(current.h, price);
-    current.l = Math.min(current.l, price);
-    current.c = price;
-    current.v = Math.max(
-      Number(current.v) || 0,
-      (Number(current.v) || 0) + liveVolume
-    );
-  } else {
-    const old = selectedCandles.find(x => x.time === bucket);
-    if (old) {
-      old.h = Math.max(old.h, price);
-      old.l = Math.min(old.l, price);
-      old.c = price;
-    }
-  }
-
-  selectedCandles.sort((a,b)=>a.time-b.time);
-
-  if (selectedCandles.length > MAX_HISTORY_BARS) {
-    selectedCandles.shift();
-  }
-
-  historyBarsLoaded = Math.max(
-    historyBarsLoaded,
-    selectedCandles.length
+  // Live websocket trades are used for immediate UI/tape updates. They are
+  // NOT used to fabricate/modify OHLC because Pump.fun's native candle feed
+  // defines the chart price exactly.
+  updateActivePrice(
+    price,
+    Number(timestampMs || Date.now())
   );
 
-  updateActivePrice(price, tSec * 1000);
-
   if (recordTrade) {
-    liveCandleTradeAt.set(bucket, Number(timestampMs));
     if (!selectedTrades.some(x => x.id === recordTrade.id)) {
       selectedTrades.push(recordTrade);
-      if (selectedTrades.length > 500) selectedTrades.shift();
+      if (selectedTrades.length > 500) {
+        selectedTrades.shift();
+      }
     }
+
     $("lastUpdate").textContent =
-      new Date(recordTrade.time * 1000).toLocaleTimeString();
+      new Date(recordTrade.time * 1000)
+        .toLocaleTimeString();
   }
 
   scheduleLiveRender();
@@ -1398,11 +1350,15 @@ function applyLiveTrade(rawTrade, record = true) {
     return;
   }
 
+  // Show the trade instantly in the tape/header, then pull the authoritative
+  // Pump.fun candle so the displayed OHLC matches the live chart.
   applyLivePrice(
     t.price,
     t.time * 1000,
     record ? t : null
   );
+
+  requestCurrentCandleSync();
 }
 
 async function pollLivePrice() {
@@ -1420,7 +1376,10 @@ async function pollLivePrice() {
     const price = Number(data.price);
 
     if (Number.isFinite(price) && price > 0) {
-      applyLivePrice(price, Date.now(), null);
+      updateActivePrice(
+        price,
+        Date.now()
+      );
     }
   } catch {}
 }
@@ -1428,7 +1387,16 @@ async function pollLivePrice() {
 async function syncCurrentPumpCandle() {
   if (!selectedMint) return;
 
+  if (currentCandleSyncInFlight) {
+    currentCandleSyncQueued = true;
+    return;
+  }
+
+  currentCandleSyncInFlight = true;
+
   try {
+    const generation = historyGeneration;
+
     const r = await fetch(
       "/api/chart?mint=" +
       encodeURIComponent(selectedMint) +
@@ -1441,20 +1409,53 @@ async function syncCurrentPumpCandle() {
     if (!r.ok) return;
 
     const j = await readJsonResponse(r);
+
+    if (
+      generation !== historyGeneration ||
+      !selectedMint
+    ) {
+      return;
+    }
+
     const candles = (j.candles || [])
       .map(normalizeCandle)
       .filter(Boolean);
 
-    if (!candles.length || !selectedMint) return;
+    if (!candles.length) return;
 
     mergePage(candles);
-    chartDataSource = String(j.source || chartDataSource);
+    chartDataSource = String(
+      j.source || chartDataSource
+    );
 
-    renderChart(selectedCandles,false);
+    renderChart(
+      selectedCandles,
+      false
+    );
   } catch {
-    // The Helius trade websocket keeps the chart moving if HTTP reconciliation
-    // is temporarily unavailable.
+    // Keep the live websocket/tape alive if the reconciliation request
+    // temporarily fails. The one-second safety sync will try again.
+  } finally {
+    currentCandleSyncInFlight = false;
+
+    if (currentCandleSyncQueued) {
+      currentCandleSyncQueued = false;
+      requestCurrentCandleSync(0);
+    }
   }
+}
+
+function requestCurrentCandleSync(delay = 75) {
+  if (!selectedMint) return;
+
+  if (currentCandleSyncTimer) {
+    clearTimeout(currentCandleSyncTimer);
+  }
+
+  currentCandleSyncTimer = setTimeout(() => {
+    currentCandleSyncTimer = null;
+    syncCurrentPumpCandle();
+  }, Math.max(0,delay));
 }
 
 function startLivePricePoll() {
@@ -1465,19 +1466,22 @@ function startLivePricePoll() {
 
 function startCurrentCandleSync() {
   if (currentCandleSyncTimer) {
-    clearInterval(currentCandleSyncTimer);
+    clearTimeout(currentCandleSyncTimer);
   }
 
-  // One-second reconciliation against the same Pump.fun candle feed used for
-  // history. WebSocket trades fill the gap between HTTP snapshots.
-  currentCandleSyncTimer = setInterval(
-    syncCurrentPumpCandle,
-    1000
-  );
+  const tick = () => {
+    if (!selectedMint) return;
 
-  syncCurrentPumpCandle();
+    syncCurrentPumpCandle();
+
+    currentCandleSyncTimer = setTimeout(
+      tick,
+      1000
+    );
+  };
+
+  tick();
 }
-
 function disconnectLiveTrade() {
   if (fallbackTimer) {
     clearInterval(fallbackTimer);
@@ -1495,7 +1499,7 @@ function disconnectLiveTrade() {
   }
 
   if (currentCandleSyncTimer) {
-    clearInterval(currentCandleSyncTimer);
+    clearTimeout(currentCandleSyncTimer);
     currentCandleSyncTimer = null;
   }
 
@@ -1652,7 +1656,6 @@ async function setTimeframe(tf) {
   if (tf === chartTimeframe && selectedCandles.length) return;
 
   chartTimeframe = tf;
-  liveCandleTradeAt.clear();
   historyGeneration++;
 
   historyBusy = false;
@@ -1699,20 +1702,66 @@ async function analyzeSelected() {
   analysisBusy = true;
   $("analyzeButton").textContent = "ANALYZING…";
 
-  try {
-    const r = await fetch(
-      "/api/analyze",
-      {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          mint:selectedMint,
-          include_x:false
-        })
-      }
-    );
+  const mintAtStart = selectedMint;
+  let lastError = null;
+  let data = null;
 
-    const data = await readJsonResponse(r);
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(
+          "/api/analyze",
+          {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+              mint:mintAtStart,
+              include_x:false
+            }),
+            cache:"no-store"
+          }
+        );
+
+        if (
+          r.ok ||
+          (r.status < 500 && r.status !== 429)
+        ) {
+          data = await readJsonResponse(r);
+          break;
+        }
+
+        lastError = new Error(
+          "Analysis service returned HTTP " + r.status + "."
+        );
+      } catch (e) {
+        lastError = e;
+      }
+
+      await new Promise(
+        resolve => setTimeout(resolve, 700)
+      );
+    }
+
+    if (
+      !data ||
+      mintAtStart !== selectedMint
+    ) {
+      if (mintAtStart === selectedMint) {
+        $("safetyStatus").textContent =
+          "RISK DATA UNAVAILABLE";
+        $("safetyStatus").className =
+          "safetyStatus unknown";
+        $("safetyDetail").textContent =
+          lastError?.message ||
+          "Risk sources did not respond. Press ANALYZE to retry.";
+        $("safetyPercent").textContent = "—";
+        $("rugRiskPercent").textContent = "—";
+        $("riskConfidence").textContent = "0";
+        $("safetyChecks").innerHTML =
+          '<div class="empty">Risk checks unavailable right now.</div>';
+      }
+      return;
+    }
 
     renderSafety(data);
     renderSecurity(data);
@@ -1753,23 +1802,36 @@ async function analyzeSelected() {
     $("securityState").textContent =
       data.security_gate?.label ||
       "UNKNOWN";
+
     setSource(
       "dotRug",
       "rugState",
-      data?.sources?.RugCheck === "READY" ? "READY" : "LIMITED",
+      data?.sources?.RugCheck === "READY"
+        ? "READY"
+        : "LIMITED",
       ["READY"]
     );
   } catch(e) {
-    $("signalReason").textContent =
-      e.message ||
-      "Analysis failed.";
+    if (mintAtStart === selectedMint) {
+      $("safetyStatus").textContent =
+        "RISK DATA UNAVAILABLE";
+      $("safetyStatus").className =
+        "safetyStatus unknown";
+      $("safetyDetail").textContent =
+        e.message ||
+        "Risk sources did not respond. Press ANALYZE to retry.";
+      $("safetyPercent").textContent = "—";
+      $("rugRiskPercent").textContent = "—";
+      $("riskConfidence").textContent = "0";
+      $("safetyChecks").innerHTML =
+        '<div class="empty">Risk checks unavailable right now.</div>';
+    }
   } finally {
     analysisBusy = false;
     $("analyzeButton").textContent =
       "ANALYZE";
   }
 }
-
 async function selectToken(mint) {
   if (!mint) return;
 
