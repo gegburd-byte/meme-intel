@@ -715,7 +715,8 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         onchain_task = he.historical_trade_candles(
             mint,
             timeframe=timeframe,
-            max_signatures=300,
+            lookback_minutes=120,
+            max_signatures=1500,
         )
         gecko_task = gt.candles(mint, "1m")
 
@@ -786,7 +787,7 @@ async def live_price(mint: str):
 
     now = time.time()
     cached = PRICE_CACHE.get(mint)
-    if cached and now - cached["time"] < 4:
+    if cached and now - cached["time"] < 0.75:
         return cached["data"]
 
     price = None
