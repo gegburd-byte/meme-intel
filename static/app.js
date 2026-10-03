@@ -1840,7 +1840,6 @@ async function selectToken(mint) {
   selectedMint = mint;
   selectedCandles = [];
   selectedTrades = [];
-  liveCandleTradeAt.clear();
   selectedInfo =
     mergedCandidates().find(x=>x.mint===mint) ||
     {mint};
@@ -1922,12 +1921,13 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
-
-  await fetchInitialHistory();
   startCurrentCandleSync();
 
-  // Security is intentionally independent of chart speed.
+  // Risk/security runs independently of chart history so a slow market-data
+  // request can never prevent the rug-risk panel from rendering.
   analyzeSelected();
+
+  await fetchInitialHistory();
 }
 
 function startPumpFeed() {
