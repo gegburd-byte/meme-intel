@@ -1,3 +1,119 @@
+
+let topTimer = null;
+let topBusy = false;
+
+function setGate(gate) {
+  gate = gate || {};
+  const el = $("rugGate");
+  el.textContent = gate.label || "SECURITY UNKNOWN";
+  el.className = "gate " + String(gate.label || "SECURITY UNKNOWN").toLowerCase().replace(/[^a-z]+/g, "-");
+}
+
+function renderTop(data) {
+  const top = data && data.top;
+
+  $("topUpdated").textContent = data && data.updated_at
+    ? "UPDATED " + new Date(data.updated_at * 1000).toLocaleTimeString()
+    : "NO UPDATE";
+
+  if (!top) {
+    $("topSymbol").textContent = "NO FULLY CHECKED SETUP";
+    $("topMint").textContent = "The scanner did not find a candidate that passed every required gate.";
+    setGate({label: "SECURITY UNKNOWN"});
+    $("topReason").textContent = "Keep scanning; incomplete security data never counts as a clean pass.";
+    $("topGateReasons").innerHTML = "";
+    $("topCandidates").innerHTML = "";
+    return;
+  }
+
+  $("topSymbol").textContent = "$" + (top.symbol || top.name || "UNKNOWN");
+  $("topMint").textContent = top.mint || "—";
+  setGate(top.security_gate);
+
+  $("topRank").textContent = top.research_rank == null ? "—" : top.research_rank + "/100";
+  $("topEntry").textContent = safe(top.decision && top.decision.entry_trigger);
+  $("topStop").textContent = safe(top.decision && top.decision.invalidation);
+  $("topTargets").textContent =
+    safe(top.decision && top.decision.target1) + " / " +
+    safe(top.decision && top.decision.target2);
+  $("topSocial").textContent = top.social && top.social.sentiment != null
+    ? Number(top.social.sentiment).toFixed(0)
+    : "—";
+  $("topRisk").textContent = top.risk && top.risk.overall
+    ? top.risk.overall
+    : "—";
+
+  $("topReason").textContent =
+    (top.decision && top.decision.reason) ||
+    "No current decision text.";
+
+  const reasons = (top.security_gate && top.security_gate.reasons) || [];
+  $("topGateReasons").innerHTML = reasons.map(function(r) {
+    return "<div class=\"muted gateReason\">• " + escapeHtml(r) + "</div>";
+  }).join("");
+
+  const rows = (data.candidates || []).slice(0, 6);
+  $("topCandidates").innerHTML = rows.map(function(x, i) {
+    const gateLabel = x.security_gate && x.security_gate.label
+      ? x.security_gate.label
+      : "UNKNOWN";
+    const action = x.decision && x.decision.action
+      ? x.decision.action
+      : "NO DATA";
+
+    return "<div class=\"topRow\">" +
+      "<div class=\"topRowRank\">#" + (i + 1) + "</div>" +
+      "<div class=\"topRowMain\">" +
+        "<b>$" + escapeHtml(x.symbol || x.name || "UNKNOWN") + "</b>" +
+        "<span>" + escapeHtml(x.mint || "") + "</span>" +
+      "</div>" +
+      "<div class=\"topRowAction\">" + escapeHtml(action) + "</div>" +
+      "<div class=\"topRowGate\">" + escapeHtml(gateLabel) + "</div>" +
+      "<div class=\"topRowScore\">" + Number(x.research_rank || 0).toFixed(0) + "</div>" +
+      "<button class=\"secondary smallButton\" data-top-ca=\"" + escapeHtml(x.mint || "") + "\">LOAD</button>" +
+    "</div>";
+  }).join("");
+
+  document.querySelectorAll("[data-top-ca]").forEach(function(btn) {
+    btn.addEventListener("click", function() {
+      $("mint").value = btn.getAttribute("data-top-ca") || "";
+      analyze();
+      window.scrollTo({top: 0, behavior: "smooth"});
+    });
+  });
+}
+
+async function scanTop() {
+  if (topBusy) return;
+
+  topBusy = true;
+  $("scanTop").textContent = "SCANNING…";
+  $("scanTop").disabled = true;
+
+  try {
+    const r = await fetch("/api/top?x=" + Date.now(), { cache: "no-store" });
+    const data = await r.json();
+
+    if (!r.ok) {
+      throw new Error(data.detail || "Top scan failed");
+    }
+
+    renderTop(data);
+  } catch (e) {
+    $("topReason").textContent = "Scanner error: " + (e.message || e);
+  } finally {
+    $("scanTop").textContent = "SCAN NOW";
+    $("scanTop").disabled = false;
+    topBusy = false;
+  }
+}
+
+function startAutopilot() {
+  if (topTimer) clearInterval(topTimer);
+  scanTop();
+  topTimer = setInterval(scanTop, 60000);
+}
+
 const $ = (id) => document.getElementById(id);
 
 let live = false;
@@ -364,7 +480,7 @@ async function analyze() {
 
 function toggleLive() {
   live = !live;
-  $("liveToggle").textContent = live ? "LIVE ON · 30s" : "LIVE OFF";
+  $("liveToggle").textContent = live ? "LIVE ON · 20s" : "LIVE OFF";
 
   if (timer) {
     clearInterval(timer);
@@ -422,6 +538,7 @@ document.addEventListener("DOMContentLoaded", function() {
   $("liveToggle").addEventListener("click", toggleLive);
   $("paperOpen").addEventListener("click", paperOpen);
   $("radarRefresh").addEventListener("click", refreshRadar);
+  $("scanTop").addEventListener("click", scanTop);
 
   $("mint").addEventListener("keydown", function(e) {
     if (e.key === "Enter") analyze();
@@ -433,6 +550,8 @@ document.addEventListener("DOMContentLoaded", function() {
 
   health();
   loadTrades();
+  startAutopilot();
+  refreshRadar();
   setInterval(health, 15000);
 });
 
