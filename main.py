@@ -24,6 +24,7 @@ from adapters import (
     HeliusAdapter,
     PumpFunAdapter,
     RugCheckAdapter,
+    JupiterAdapter,
     XAdapter,
     x_items,
     social_metrics,
@@ -55,6 +56,7 @@ gt = GeckoTerminalAdapter()
 he = HeliusAdapter()
 pf = PumpFunAdapter()
 rc = RugCheckAdapter()
+ju = JupiterAdapter()
 xa = XAdapter()
 
 
@@ -421,6 +423,16 @@ async def analyze(req: AnalyzeReq):
         if isinstance(security, dict)
         else None
     )
+
+    token_info = (asset or {}).get("token_info") or {}
+    token_decimals = token_info.get("decimals")
+    token_supply = token_info.get("supply")
+
+    sell_probe, sell_probe_err = await ju.sell_probe(
+        mint,
+        decimals=token_decimals,
+        supply=token_supply,
+    )
     asset_err = security_err
     creation = {
         "data": {
@@ -455,6 +467,7 @@ async def analyze(req: AnalyzeReq):
         security=security,
         rugcheck=rugcheck,
         overview=data,
+        sell_probe=sell_probe,
     )
 
     risk = risk_flags(
@@ -534,6 +547,7 @@ async def analyze(req: AnalyzeReq):
         "overview": data if data else "DATA NOT AVAILABLE",
         "security": "DATA NOT AVAILABLE" if security_err else security,
         "rugcheck": "DATA NOT AVAILABLE" if rugcheck_err else rugcheck,
+        "sell_probe": "DATA NOT AVAILABLE" if sell_probe_err else sell_probe,
         "safety_profile": safety_profile,
         "data_quality": {
             "market": "READY" if not any([overview_err, e1]) else "LIMITED",
@@ -568,6 +582,7 @@ async def analyze(req: AnalyzeReq):
             "X": xerr or "READY",
             "Security": security_err or "READY",
             "RugCheck": rugcheck_err or "READY",
+            "JupiterSellProbe": sell_probe_err or "READY",
         },
         "timestamp": int(time.time()),
     }
