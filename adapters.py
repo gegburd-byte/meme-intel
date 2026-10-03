@@ -279,10 +279,15 @@ class PumpFunAdapter:
         self._client = httpx.AsyncClient(
             timeout=4.5,
             headers={
-                "User-Agent": "Mozilla/5.0 (compatible; MemeIntel/2.1)",
+                "User-Agent": "Mozilla/5.0 (compatible; MemeIntel/2.3)",
                 "Accept": "application/json",
                 "Referer": "https://pump.fun/",
                 "Origin": "https://pump.fun",
+                **(
+                    {"Authorization": f"Bearer {os.getenv('PUMP_FUN_JWT')}"}
+                    if os.getenv("PUMP_FUN_JWT")
+                    else {}
+                ),
             },
         )
 
@@ -322,6 +327,8 @@ class PumpFunAdapter:
         except Exception as exc:
             last_error = str(exc)
 
+        if last_error in {"HTTP_401", "HTTP_403"} and not os.getenv("PUMP_FUN_JWT"):
+            return None, "PUMPFUN_CHART_AUTH_REQUIRED"
         return None, last_error or "PUMPFUN_CHART_UNAVAILABLE"
 
 
