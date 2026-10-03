@@ -286,16 +286,26 @@ def parse_pump_candles(payload):
             if ts is None or any(x is None for x in (o, h, l, close)):
                 continue
 
+            o = float(o)
+            h = float(h)
+            l = float(l)
+            close = float(close)
+
+            if not all(map(lambda x: x == x and abs(x) != float("inf"), (o, h, l, close))):
+                continue
+            if l <= 0 or min(o, close) < l or max(o, close) > h or h < l:
+                continue
+
             ts = int(float(ts))
             if ts > 10_000_000_000:
                 ts //= 1000
 
             candles.append(Candle(
                 ts=ts,
-                o=float(o),
-                h=float(h),
-                l=float(l),
-                c=float(close),
+                o=o,
+                h=h,
+                l=l,
+                c=close,
                 v=float(volume or 0),
             ))
         except (TypeError, ValueError, IndexError):
