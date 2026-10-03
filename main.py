@@ -496,23 +496,25 @@ async def top_opportunities():
         return TOP_CACHE["data"]
 
     candidates = await discover_candidates(
-        limit=12,
+        limit=15,
         min_liquidity=10000,
         pump_only=True,
     )
 
-    async def inspect(candidate):
+    async def inspect(candidate, include_x=False):
         try:
             analysis = await analyze(
                 AnalyzeReq(
                     mint=candidate["address"],
-                    x_query='lang:en -is:retweet',
+                    x_query="lang:en -is:retweet",
+                    include_x=include_x,
                 )
             )
             decision = analysis.get("decision") or {}
             risk = analysis.get("risk") or {}
             gate = analysis.get("security_gate") or {}
             overview = analysis.get("overview") or {}
+            social = analysis.get("social") or {}
 
             eligible = (
                 gate.get("state") == "READY"
@@ -521,7 +523,7 @@ async def top_opportunities():
                 and decision.get("action") != "NO TRADE"
             )
 
-            research_rank = (
+            rank = (
                 float(decision.get("score") or 0)
                 + (12 if eligible else 0)
                 - (25 if gate.get("label") == "BLOCK" else 0)
@@ -534,13 +536,14 @@ async def top_opportunities():
                 "symbol": overview.get("symbol") if isinstance(overview, dict) else candidate.get("symbol"),
                 "name": overview.get("name") if isinstance(overview, dict) else candidate.get("name"),
                 "price": overview.get("price") if isinstance(overview, dict) else candidate.get("priceUsd"),
-                "research_rank": round(max(0, min(100, research_rank)), 1),
+                "research_rank": round(max(0, min(100, rank)), 1),
                 "eligible": eligible,
                 "decision": decision,
                 "risk": risk,
                 "security_gate": gate,
                 "market": analysis.get("market"),
-                "social": analysis.get("social"),
+                "social": social,
+                "data_quality": analysis.get("data_quality"),
                 "updated_at": analysis.get("timestamp"),
             }
         except Exception as exc:
@@ -553,31 +556,53 @@ async def top_opportunities():
                 "error": str(exc),
             }
 
-    inspected = await asyncio.gather(
-        *[inspect(c) for c in candidates[:5]]
+    # Stage 1: cheap market + security screening.
+    screened = await asyncio.gather(
+        *[inspect(candidate, include_x=False) for candidate in candidates[:8]]
     )
 
-    inspected = sorted(
-        inspected,
-        key=lambda x: (
-            x.get("eligible", False),
-            x.get("research_rank", 0),
+    screened.sort(
+        key=lambda item: (
+            item.get("eligible", False),
+            item.get("research_rank", 0),
         ),
         reverse=True,
     )
 
-    result = {
+    # Stage 2: only enrich the strongest finalists with X.
+    finalists = [item for item in screened if item.get("eligible")][:2]
+    if xa.source.configured and finalists:
+        enriched = await asyncio.gather(
+            *[
+                inspect(item["candidate"], include_x=True)
+                for item in finalists
+            ]
+        )
+        by_mint = {item.get("mint"): item for item in enriched}
+        screened = [by_mint.get(item.get("mint"), item) for item in screened]
+
+    screened.sort(
+        key=lambda item: (
+            item.get("eligible", False),
+            item.get("research_rank", 0),
+        ),
+        reverse=True,
+    )
+
+    return_data = {
         "state": "READY",
         "updated_at": int(now),
-        "candidates": inspected,
-        "top": next(
-            (x for x in inspected if x.get("eligible")),
-            None,
+        "candidates": screened[:8],
+        "top": next((item for item in screened if item.get("eligible")), None),
+        "scan_mode": (
+            "MARKET_SECURITY_PLUS_X_FINALISTS"
+            if xa.source.configured
+            else "MARKET_SECURITY_X_UNAVAILABLE"
         ),
     }
 
-    TOP_CACHE = {"time": now, "data": result}
-    return result
+    TOP_CACHE = {"time": now, "data": return_data}
+    return return_data
 
 
 @app.get("/api/discover")
