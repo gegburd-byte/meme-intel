@@ -110,12 +110,32 @@
       <div class="metric"><span>CONFIRMATION</span><b id="metricConfirm">—</b></div>
     </div>
 
+    <div class="safetyPanel">
+      <div class="safetyTop">
+        <div>
+          <div class="eyebrow">RUG / SAFETY ENGINE</div>
+          <h3>HOW SAFE DOES THIS LOOK?</h3>
+          <div id="safetyStatus" class="safetyStatus unknown">WAITING FOR DATA</div>
+          <p id="safetyDetail" class="safetyDetail">Run a token to combine on-chain checks with external risk intelligence.</p>
+        </div>
+        <div class="safetyNumbers">
+          <div class="safetyNumber safe"><span>SAFETY</span><b id="safetyPercent">—</b><small>/ 100</small></div>
+          <div class="safetyNumber risk"><span>RUG RISK EST.</span><b id="rugRiskPercent">—</b><small>%</small></div>
+          <div class="safetyNumber confidence"><span>DATA CONFIDENCE</span><b id="riskConfidence">—</b><small>%</small></div>
+        </div>
+      </div>
+      <div id="safetyChecks" class="safetyChecks">
+        <div class="empty">Waiting for safety checks…</div>
+      </div>
+      <div class="safetyMethod">The rug-risk percentage is an evidence-weighted estimate, not a statistically calibrated probability or a guarantee.</div>
+    </div>
+
     <div class="belowGrid">
       <article class="subpanel">
         <div class="panelHeader">
           <div>
             <div class="eyebrow">SECURITY</div>
-            <h3>RISK CHECK</h3>
+            <h3>RAW ON-CHAIN CHECKS</h3>
           </div>
           <div id="securityBadge" class="miniBadge">UNKNOWN</div>
         </div>
