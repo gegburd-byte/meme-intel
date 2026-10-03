@@ -106,6 +106,7 @@ def parse_live_trade_from_transaction(
             mint,
             signature=signature,
             slot=slot,
+            block_time=block_time,
         )
         if trade and trade["source"] == "PUMPSWAP":
             return trade
@@ -124,37 +125,49 @@ def _event_bytes(log: str) -> bytes | None:
 
 
 def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slot: int | None = None, block_time: int | None = None) -> dict[str, Any] | None:
-    """Decode Pump.fun/PumpSwap trade events emitted in Solana logs.
+    """Decode Pump.fun/PumpSwap trade events emitted in Solana logs."""
+    target_mint = _base58_decode(mint)
 
-    Prices use Pump.fun's live bonding-curve virtual reserves when available,
-    falling back to execution amount ratio for legacy events. Pump.fun tokens
-    use 6 decimal base units and SOL uses 9 decimal lamports.
-    """
     for index, log in enumerate(logs or []):
         payload = _event_bytes(log)
         if not payload:
             continue
 
-        pos = payload.find(PUMP_TRADE_DISC)
-        if pos >= 0:
+        search_from = 0
+        while True:
+            pos = payload.find(PUMP_TRADE_DISC, search_from)
+            if pos < 0:
+                break
+
             start = pos + 8
             minimum = start + 32 + 8 + 8 + 1
             if len(payload) < minimum:
-                continue
+                break
 
             try:
                 event_mint = payload[start:start + 32]
+
+                # A transaction can contain multiple Pump.fun trades (for
+                # example through an aggregator). Only accept the event whose
+                # mint actually matches the chart token.
+                if (
+                    target_mint is not None and
+                    len(target_mint) == 32 and
+                    event_mint != target_mint
+                ):
+                    search_from = pos + 8
+                    continue
+
                 sol_amount = _u64(payload, start + 32)
                 token_amount = _u64(payload, start + 40)
                 is_buy = bool(payload[start + 48])
 
                 if sol_amount <= 0 or token_amount <= 0:
+                    search_from = pos + 8
                     continue
 
-                # The event contains the mint as the first field. We trust the
-                # logsSubscribe mint filter, but keep this length check to avoid
-                # malformed/CPI data accidentally becoming a chart point.
                 if len(event_mint) != 32:
+                    search_from = pos + 8
                     continue
 
                 price = (sol_amount / 1_000_000_000) / (token_amount / 1_000_000)
@@ -190,7 +203,7 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                     continue
 
                 return {
-                    "id": f"{signature}:{index}",
+                    "id": f"{signature}:{index}:{pos}",
                     "signature": signature,
                     "slot": slot,
                     "mint": mint,
@@ -203,6 +216,7 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                     "timestamp": int(event_ts),
                 }
             except (TypeError, ValueError, struct.error):
+                search_from = pos + 8
                 continue
 
         pos = payload.find(PUMP_AMM_BUY_DISC)
