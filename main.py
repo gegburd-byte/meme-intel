@@ -799,9 +799,10 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     source = "PUMP.FUN" if native_quality > 0 else "NONE"
     candles = native if native_quality > 0 else []
 
-    # For the first page, never let a low-quality/flat native payload block
-    # the real on-chain/market fallbacks.
-    if offset == 0 and native_quality < 25:
+    # Always corroborate the first page with independent real-data sources.
+    # Pump.fun's frontend feed can return structurally valid but visually poor
+    # payloads, so do not let a single source win without comparison.
+    if offset == 0:
         onchain_task = he.historical_trade_candles(
             mint,
             timeframe=timeframe,
