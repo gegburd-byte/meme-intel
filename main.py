@@ -89,16 +89,23 @@ def security_gate(security):
         or security.get("state") != "READY"
         or not security.get("sampled_accounts")
         or not security.get("supply")
+        or float(security.get("coverage_ratio") or 0) < 0.70
     ):
         return {
             "state": "UNKNOWN",
             "label": "SECURITY UNKNOWN",
             "score": None,
-            "reasons": ["On-chain holder/authority coverage is incomplete."],
+            "reasons": ["On-chain holder/authority coverage is incomplete or below the minimum coverage threshold."],
         }
 
     reasons = []
     score = 0
+
+    coverage = float(security.get("coverage_ratio") or 0)
+    if coverage < 0.95:
+        reasons.append(
+            f"Holder coverage is partial ({coverage * 100:.0f}% of reported supply sampled)."
+        )
 
     if security.get("mint_authority"):
         score += 35
@@ -160,6 +167,36 @@ def build_token_x_query(mint, symbol, name, base_query):
     token_part = "(" + " OR ".join(terms) + ")"
     base = (base_query or "").strip()[:420]
     return token_part + (" (" + base + ")" if base else "") + " -is:retweet"
+
+def parse_candles(data):
+    items = (
+        (data or {})
+        .get("data", {})
+        .get("attributes", {})
+        .get("ohlcv_list", [])
+    )
+
+    candles = []
+    for item in items:
+        if len(item) < 6:
+            continue
+        try:
+            candles.append(
+                Candle(
+                    ts=int(item[0]),
+                    o=float(item[1]),
+                    h=float(item[2]),
+                    l=float(item[3]),
+                    c=float(item[4]),
+                    v=float(item[5] or 0),
+                )
+            )
+        except (TypeError, ValueError, IndexError):
+            continue
+
+    candles.sort(key=lambda item: item.ts)
+    return candles
+
 
 def closed_candles(candles, seconds_per_candle):
     now = int(time.time())
