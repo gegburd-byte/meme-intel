@@ -408,7 +408,15 @@ class LiveTradeHub:
             try:
                 self.state = "CONNECTING"
 
-                if self.enhanced_state is not False:
+                # Standard Solana WSS works on free Helius plans and is all
+                # the chart needs because we subscribe to logs mentioning
+                # exactly one mint. Enhanced transactionSubscribe is optional.
+                use_enhanced = (
+                    os.getenv("HELIUS_USE_ENHANCED_WS", "").strip().lower()
+                    in {"1", "true", "yes"}
+                    and self.enhanced_state is not False
+                )
+                if use_enhanced:
                     self.stream_mode = "ENHANCED"
                     url = HELIUS_ENHANCED_WS.format(key=self.api_key)
                 else:
@@ -417,10 +425,10 @@ class LiveTradeHub:
 
                 async with websockets.connect(
                     url,
-                    ping_interval=20,
-                    ping_timeout=10,
+                    ping_interval=15,
+                    ping_timeout=8,
                     close_timeout=2,
-                    max_queue=2048,
+                    max_queue=4096,
                 ) as ws:
                     self.ws = ws
                     self.state = "LIVE"
