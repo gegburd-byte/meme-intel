@@ -1157,7 +1157,8 @@ async function fetchPage(offset, generation) {
     return {
       candles,
       hasMore:Boolean(j.has_more) && candles.length >= PAGE_SIZE,
-      source:String(j.source || "MARKET DATA")
+      source:String(j.source || "MARKET DATA"),
+      diagnostics:j.diagnostics || null
     };
   } catch {
     return {candles:[],hasMore:false};
@@ -1186,6 +1187,16 @@ async function fetchInitialHistory() {
     }
 
     chartDataSource = page.source || "MARKET DATA";
+
+    if (page.diagnostics?.sources) {
+      const parts = Object.entries(page.diagnostics.sources)
+        .map(([name,info]) => name + ": " + Number(info.bars || 0) + " bars")
+        .join(" · ");
+      $("chartMode").textContent =
+        (page.source || "MARKET DATA") +
+        " · " +
+        parts;
+    }
 
     if (!page.candles.length) {
       $("chartMode").textContent =
