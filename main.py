@@ -83,12 +83,17 @@ class PaperCloseReq(BaseModel):
 
 
 def security_gate(security):
-    if not isinstance(security, dict) or security.get("state") != "READY":
+    if (
+        not isinstance(security, dict)
+        or security.get("state") != "READY"
+        or not security.get("sampled_accounts")
+        or not security.get("supply")
+    ):
         return {
             "state": "UNKNOWN",
             "label": "SECURITY UNKNOWN",
             "score": None,
-            "reasons": ["On-chain holder/authority checks are unavailable."],
+            "reasons": ["On-chain holder/authority coverage is incomplete."],
         }
 
     reasons = []
