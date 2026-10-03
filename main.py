@@ -1004,6 +1004,79 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         "timestamp": int(time.time()),
     }
 
+@app.get("/api/chart/current")
+async def chart_current(mint: str, timeframe: int = 1):
+    """Fast current-bar endpoint used by the realtime chart loop.
+
+    This endpoint deliberately hits only Pump.fun's native candle feed. It
+    never launches Helius/Gecko/public-RPC history reconstruction, keeping the
+    one-second realtime path cheap and preserving the exact Pump.fun candle.
+    """
+    mint = (mint or "").strip()
+    if len(mint) < 32 or len(mint) > 44:
+        raise HTTPException(400, "Invalid mint")
+
+    if timeframe not in {1, 5, 15, 60}:
+        raise HTTPException(400, "Unsupported timeframe")
+
+    try:
+        payload, err = await asyncio.wait_for(
+            pf.candles(
+                mint,
+                limit=5,
+                timeframe=timeframe,
+                offset=0,
+            ),
+            timeout=2.5,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "state": "TIMEOUT",
+            "source": "PUMP.FUN",
+            "timeframe": timeframe,
+            "candles": [],
+            "error": "PUMPFUN_CURRENT_TIMEOUT",
+            "timestamp": int(time.time()),
+        }
+    except Exception as exc:
+        return {
+            "state": "ERROR",
+            "source": "PUMP.FUN",
+            "timeframe": timeframe,
+            "candles": [],
+            "error": str(exc)[:240],
+            "timestamp": int(time.time()),
+        }
+
+    native = parse_pump_candles(payload)
+    if not native:
+        return {
+            "state": "NO_CANDLES",
+            "source": "PUMP.FUN",
+            "timeframe": timeframe,
+            "candles": [],
+            "error": err or "NO_CURRENT_CANDLE",
+            "timestamp": int(time.time()),
+        }
+
+    current = max(native, key=lambda x: x.ts)
+
+    return {
+        "state": "READY",
+        "source": "PUMP.FUN",
+        "timeframe": timeframe,
+        "candles": [{
+            "ts": current.ts,
+            "o": current.o,
+            "h": current.h,
+            "l": current.l,
+            "c": current.c,
+            "v": current.v,
+        }],
+        "error": None,
+        "timestamp": int(time.time()),
+    }
+
 @app.get("/api/live/price")
 async def live_price(mint: str):
     mint = (mint or "").strip()
