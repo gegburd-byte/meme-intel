@@ -670,12 +670,45 @@ async function loadTrades() {
 
     $("paperTrades").innerHTML =
       (j.trades || []).slice(0, 10).map(function(t) {
-        return "<div class=\"trade\"><span>#" + t.id + " " +
-          String(t.mint || "").slice(0, 8) + "…</span><b>" +
-          (t.pnl == null ? "OPEN" : usd(t.pnl)) + "</b></div>";
+        const open = t.pnl == null;
+        return "<div class=\"trade\">" +
+          "<span>#"+ t.id + " " + String(t.mint || "").slice(0, 8) + "… · " +
+          (open ? "OPEN" : "CLOSED") + "</span>" +
+          "<b>" + (open ? "OPEN" : usd(t.pnl)) + "</b>" +
+          (open
+            ? "<button class=\"secondary smallButton\" data-close-trade=\"" + t.id + "\">CLOSE</button>"
+            : "") +
+          "</div>";
       }).join("") ||
       "<div class=\"muted\">No paper trades yet.</div>";
+
+    document.querySelectorAll("[data-close-trade]").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        const id = Number(btn.getAttribute("data-close-trade"));
+        const price = Number(prompt("Paper exit price:"));
+        if (!Number.isFinite(price) || price <= 0) return;
+        paperClose(id, price);
+      });
+    });
   } catch (e) {}
+}
+
+async function paperClose(tradeId, exitPrice) {
+  try {
+    const r = await fetch("/api/paper/close", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        trade_id: tradeId,
+        exit: exitPrice
+      })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Paper close failed");
+    await loadTrades();
+  } catch (e) {
+    $("decisionReason").textContent = "Paper close error: " + (e.message || e);
+  }
 }
 
 async function paperOpen() {
