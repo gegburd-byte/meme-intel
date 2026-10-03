@@ -821,6 +821,65 @@ function renderTape() {
     new Date(rows[0].time * 1000).toLocaleTimeString();
 }
 
+function renderSafety(data) {
+  const p = data?.safety_profile || {};
+
+  const safety = Number(p.safety_percent);
+  const risk = Number(p.rug_risk_percent);
+  const confidence = Number(p.confidence_percent);
+
+  $("safetyPercent").textContent =
+    Number.isFinite(safety) ? Math.round(safety) : "—";
+
+  $("rugRiskPercent").textContent =
+    Number.isFinite(risk) ? Math.round(risk) : "—";
+
+  $("riskConfidence").textContent =
+    Number.isFinite(confidence) ? Math.round(confidence) : "—";
+
+  const status = p.status || "UNKNOWN";
+  const statusClass =
+    status === "LOW RUG RISK"
+      ? "safe"
+      : status === "GUARDED"
+        ? "guarded"
+        : status.includes("HIGH")
+          ? "risk"
+          : "unknown";
+
+  $("safetyStatus").textContent = status;
+  $("safetyStatus").className = "safetyStatus " + statusClass;
+  $("safetyDetail").textContent =
+    p.status_detail ||
+    "Risk engine is waiting for more evidence.";
+
+  const checks = Array.isArray(p.checks)
+    ? p.checks.slice(0,10)
+    : [];
+
+  if (!checks.length) {
+    $("safetyChecks").innerHTML =
+      '<div class="empty">No detailed safety checks were returned yet.</div>';
+    return;
+  }
+
+  $("safetyChecks").innerHTML = checks.map(c=>{
+    const state = ["safe","warn","danger"].includes(c.status)
+      ? c.status
+      : "unknown";
+
+    return (
+      '<div class="safetyCheck">' +
+        '<i class="safetyDot '+state+'"></i>' +
+        '<div>' +
+          '<b>'+esc(c.name || "Check")+'</b>' +
+          '<span>'+esc(c.detail || "No detail")+'</span>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join("");
+}
+
 function renderSecurity(data) {
   const gate = data?.security_gate || {};
 
@@ -1469,6 +1528,7 @@ async function analyzeSelected() {
       );
     }
 
+    renderSafety(data);
     renderSecurity(data);
 
     const overview =
@@ -1569,6 +1629,14 @@ async function selectToken(mint) {
 
   $("signalReason").textContent =
     "Connecting to the live on-chain feed…";
+
+  $("safetyPercent").textContent = "—";
+  $("rugRiskPercent").textContent = "—";
+  $("riskConfidence").textContent = "—";
+  $("safetyStatus").textContent = "WAITING FOR DATA";
+  $("safetyStatus").className = "safetyStatus unknown";
+  $("safetyDetail").textContent = "Checking authorities, holders, liquidity and independent token-risk data…";
+  $("safetyChecks").innerHTML = '<div class="empty">Running safety checks in background…</div>';
 
   $("chartMode").textContent =
     "LOADING PUMP.FUN 1m HISTORY…";
