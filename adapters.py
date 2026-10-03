@@ -399,6 +399,13 @@ class HeliusAdapter:
 
         mint_authority = parsed.get("mintAuthority")
         freeze_authority = parsed.get("freezeAuthority")
+        token_extensions = []
+        for extension in parsed.get("extensions") or []:
+            if isinstance(extension, dict):
+                value = extension.get("extension")
+                if value:
+                    token_extensions.append(str(value))
+        token_program = ((account or {}).get("value") or {}).get("owner")
 
         supply = (
             ((asset or {}).get("token_info") or {}).get("supply")
@@ -480,6 +487,12 @@ class HeliusAdapter:
             else None
         )
 
+        top5_share = (
+            sum(v for _, v in ranked[:5]) / supply
+            if ranked and supply > 0
+            else None
+        )
+
         top10_share = (
             sum(v for _, v in ranked[:10]) / supply
             if ranked and supply > 0
@@ -493,7 +506,10 @@ class HeliusAdapter:
             "freeze_authority": bool(freeze_authority),
             "holder_count": len(ranked),
             "top_holder_share": top_share,
+            "top5_holder_share": top5_share,
             "top10_holder_share": top10_share,
+            "token_program": token_program,
+            "token_extensions": token_extensions,
             "sampled_accounts": len(token_accounts),
             "sampled_supply": sampled_amount,
             "coverage_ratio": coverage_ratio,
