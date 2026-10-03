@@ -508,15 +508,25 @@ class HeliusAdapter:
             "HELIUS_API_KEY missing" if not self.key else ""
         )
         self._chart_cache = {}
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(8.0, connect=3.0),
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Meme-Intel/2.5",
+            },
+        )
 
     async def _rpc(self, method, params):
         if not self.key:
             return None, "NOT_CONFIGURED"
 
         url = f"{HELIUS_RPC}/?api-key={self.key}"
-        try:
-            async with httpx.AsyncClient(timeout=15) as c:
-                r = await c.post(
+        last_error = None
+
+        for attempt in range(3):
+            try:
+                r = await self._client.post(
                     url,
                     json={
                         "jsonrpc": "2.0",
@@ -525,14 +535,31 @@ class HeliusAdapter:
                         "params": params,
                     },
                 )
+
+                if r.status_code == 429 or r.status_code >= 500:
+                    last_error = f"HTTP_{r.status_code}"
+                    retry_after = r.headers.get("Retry-After")
+                    try:
+                        delay = float(retry_after)
+                    except (TypeError, ValueError):
+                        delay = 0.35 * (2 ** attempt)
+                    await asyncio.sleep(min(max(delay, 0.2), 2.0))
+                    continue
+
                 if r.status_code >= 400:
                     return None, f"HTTP_{r.status_code}"
+
                 payload = r.json()
                 if payload.get("error"):
                     return None, str(payload["error"])
                 return payload.get("result"), None
-        except Exception as exc:
-            return None, str(exc)
+
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (2 ** attempt))
+
+        return None, last_error or "HELIUS_RPC_FAILED"
 
     async def asset(self, mint):
         if not self.key:
