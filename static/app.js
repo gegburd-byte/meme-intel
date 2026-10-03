@@ -103,6 +103,13 @@ async function health() {
     );
 
     setSource(
+      "dotRug",
+      "rugState",
+      j.sources?.RugCheck?.state || "UNKNOWN",
+      ["READY"]
+    );
+
+    setSource(
       "dotX",
       "xState",
       j.sources?.X?.state || "UNKNOWN",
@@ -1567,6 +1574,12 @@ async function analyzeSelected() {
     $("securityState").textContent =
       data.security_gate?.label ||
       "UNKNOWN";
+    setSource(
+      "dotRug",
+      "rugState",
+      data?.sources?.RugCheck === "READY" ? "READY" : "LIMITED",
+      ["READY"]
+    );
   } catch(e) {
     $("signalReason").textContent =
       e.message ||
