@@ -26,6 +26,7 @@ let chartTimeframe = 1;
 let chartDataSource = "PUMP.FUN";
 let historyGeneration = 0;
 let historyBusy = false;
+let initialHistoryBusy = false;
 let historyHasMore = true;
 let historyNextOffset = 0;
 let historyBarsLoaded = 0;
@@ -1164,6 +1165,8 @@ async function fetchPage(offset, generation) {
 }
 
 async function fetchInitialHistory() {
+  if (initialHistoryBusy) return false;
+  initialHistoryBusy = true;
   const generation = historyGeneration;
 
   $("chartMode").textContent =
@@ -1187,6 +1190,7 @@ async function fetchInitialHistory() {
       "NO HISTORICAL CANDLES · WAITING FOR REAL LIVE TRADES";
     $("historyStatus").textContent = "0 bars";
     $("chartState").textContent = "WAITING";
+    initialHistoryBusy = false;
     return false;
   }
 
@@ -1206,6 +1210,7 @@ async function fetchInitialHistory() {
 
   // Backfill is deliberately non-blocking.
   loadOlderHistory(generation);
+  initialHistoryBusy = false;
 
   return true;
 }
@@ -1409,7 +1414,7 @@ function scheduleReconnect() {
       ) {
         fetchInitialHistory();
       }
-    },2000);
+    },10000);
   }
 }
 
@@ -1461,8 +1466,7 @@ function connectLiveTrade(mint) {
         timeframeLabel() +
         " · WAITING FOR TRADES";
 
-      // Immediately reconcile the newest candle after reconnect.
-      fetchInitialHistory();
+      // History is loaded by selectToken/setTimeframe; do not launch a second request here.
     });
 
     socket.addEventListener("message",(ev)=>{
