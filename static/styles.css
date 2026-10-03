@@ -335,3 +335,112 @@ button.secondary { background:#13202b; border:1px solid #263747; }
 .radarTitle span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#637589; font-size:10px; }
 .radarSub { margin-top:3px; color:#7d8fa4; font-size:10px; }
 .radarScore { font-weight:950; font-size:18px; text-align:center; color:#7fe2ae; }
+
+.topOpportunity {
+  margin-bottom:14px;
+  border-color:#253548;
+}
+.topActions {
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.topGrid {
+  display:grid;
+  grid-template-columns:1.1fr 1.9fr;
+  gap:14px;
+}
+.topIdentity {
+  background:#091018;
+  border:1px solid #1a2937;
+  border-radius:12px;
+  padding:13px;
+}
+.topSymbol {
+  font-size:28px;
+  font-weight:950;
+  letter-spacing:.4px;
+}
+.topMint {
+  margin-top:4px;
+  color:#70839a;
+  font-size:10px;
+  word-break:break-all;
+}
+.gate {
+  display:inline-block;
+  margin-top:10px;
+  padding:6px 9px;
+  border-radius:999px;
+  border:1px solid #324357;
+  font-size:10px;
+  font-weight:950;
+}
+.gate-pass { color:#75e3a6; border-color:#255c3e; background:#0a1b12; }
+.gate-warn { color:#e9c75e; border-color:#5d4c22; background:#1b1609; }
+.gate-block { color:#ff7785; border-color:#5e2832; background:#1e0c11; }
+.security-unknown { color:#9aa9ba; }
+.topLevels {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:8px;
+}
+.topLevels > div {
+  background:#091018;
+  border:1px solid #1a2937;
+  border-radius:11px;
+  padding:10px;
+}
+.topLevels strong {
+  display:block;
+  margin-top:4px;
+  font-size:15px;
+}
+.gateReasons {
+  margin-top:9px;
+  display:grid;
+  gap:2px;
+}
+.gateReason {
+  font-size:11px;
+}
+.topCandidates {
+  display:grid;
+  gap:6px;
+  margin-top:12px;
+  border-top:1px solid #172532;
+  padding-top:10px;
+}
+.topRow {
+  display:grid;
+  grid-template-columns:34px minmax(0,1.6fr) 1fr 90px 55px auto;
+  gap:8px;
+  align-items:center;
+  padding:8px;
+  border:1px solid #182634;
+  border-radius:9px;
+  background:#091018;
+}
+.topRowRank,.topRowScore { font-weight:900; color:#7f91a6; }
+.topRowMain {
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+.topRowMain span {
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#64778d;
+  font-size:9px;
+}
+.topRowAction,.topRowGate {
+  font-size:10px;
+  color:#9aabbc;
+  white-space:nowrap;
+}
+.topRowScore {
+  text-align:center;
+  color:#7fe2ae;
+}
