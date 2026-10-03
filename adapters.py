@@ -28,11 +28,14 @@ class DexScreenerAdapter:
         self.source = Source("DexScreener", True)
 
     async def _get(self, path, params=None):
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(DEXSCREENER + path, params=params)
-            if r.status_code >= 400:
-                return None, f"HTTP_{r.status_code}"
-            return r.json(), None
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(DEXSCREENER + path, params=params)
+                if r.status_code >= 400:
+                    return None, f"HTTP_{r.status_code}"
+                return r.json(), None
+        except Exception as exc:
+            return None, f"DEXSCREENER_UNREACHABLE:{exc}"
 
     async def pairs(self, mint):
         return await self._get(
