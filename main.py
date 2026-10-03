@@ -591,35 +591,35 @@ async def ws_trades(websocket: WebSocket):
 
 
 @app.get("/api/chart")
-async def chart(mint: str, limit: int = 300):
-    """Fast read-only Pump.fun OHLC feed for the selected token."""
+async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 1):
+    """Fast Pump.fun OHLC page. The browser can page this endpoint in parallel."""
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
-    payload, err = await pf.candles(mint, limit=limit, timeframe=1)
-    candles = parse_pump_candles(payload)
-    source = "PUMP.FUN"
+    allowed = {1, 5, 15, 60}
+    timeframe = int(timeframe or 1)
+    if timeframe not in allowed:
+        raise HTTPException(400, "Unsupported timeframe")
 
-    # Newly launched / unindexed tokens can briefly have no Pump.fun candles.
-    # Fall back to GeckoTerminal rather than returning an empty chart.
-    if not candles:
-        try:
-            fallback, fallback_err = await asyncio.wait_for(
-                gt.candles(mint, "1m"),
-                timeout=3.0,
-            )
-        except asyncio.TimeoutError:
-            fallback, fallback_err = None, "GECKO_TIMEOUT"
-        candles = parse_candles(fallback)
-        if candles:
-            source = "GECKOTERMINAL"
-        elif err is None:
-            err = fallback_err
+    limit = max(25, min(int(limit or 1000), 1000))
+    offset = max(0, int(offset or 0))
+
+    payload, err = await pf.candles(
+        mint,
+        limit=limit,
+        timeframe=timeframe,
+        offset=offset,
+    )
+    candles = parse_pump_candles(payload)
 
     return {
         "state": "READY" if candles else "NO_CANDLES",
-        "source": source if candles else "NONE",
+        "source": "PUMP.FUN" if candles else "NONE",
+        "offset": offset,
+        "limit": limit,
+        "timeframe": timeframe,
+        "has_more": len(candles) >= limit,
         "candles": [
             {
                 "ts": c.ts,
@@ -629,7 +629,7 @@ async def chart(mint: str, limit: int = 300):
                 "c": c.c,
                 "v": c.v,
             }
-            for c in candles[-max(25, min(int(limit or 300), 1000)):]
+            for c in candles
         ],
         "error": None if candles else (err or "NO_CANDLES"),
         "timestamp": int(time.time()),
