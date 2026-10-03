@@ -1735,7 +1735,6 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
-  startLivePricePoll();
 
   await fetchInitialHistory();
 
