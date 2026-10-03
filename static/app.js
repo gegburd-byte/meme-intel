@@ -25,7 +25,7 @@ function row(name, value) {
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, function(c) {
-    const map = {"&":"&amp;","<":"&lt;",">":"&gt;",\"":"&quot;","'":"&#039;"};
+    const map = {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"};
     return map[c] || c;
   });
 }
