@@ -6,6 +6,7 @@ let fallbackTimer = null;
 let reconnectTimer = null;
 let pricePollTimer = null;
 let currentCandleSyncTimer = null;
+let liveCandleTradeAt = new Map();
 
 let pumpEvents = [];
 let marketCandidates = [];
@@ -1111,13 +1112,18 @@ function mergePage(page) {
       continue;
     }
 
-    // The current forming candle may have a newer websocket trade than the
-    // cached Pump.fun HTTP response. Preserve the newer live close/wick while
-    // taking the authoritative opening value from Pump.fun.
+    // For the currently-forming bucket, only preserve a websocket trade when
+    // we actually received one after the HTTP snapshot. Otherwise take the
+    // native Pump.fun candle exactly so the displayed close/wick stays synced.
+    const liveTradeAt = Number(liveCandleTradeAt.get(item.time) || 0);
+    if (liveTradeAt <= 0) {
+      Object.assign(existing,item);
+      continue;
+    }
+
     existing.o = item.o;
     existing.h = Math.max(item.h, existing.h);
     existing.l = Math.min(item.l, existing.l);
-    existing.c = existing.c;
     existing.v = Math.max(
       Number(item.v) || 0,
       Number(existing.v) || 0
@@ -1369,6 +1375,7 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
   updateActivePrice(price, tSec * 1000);
 
   if (recordTrade) {
+    liveCandleTradeAt.set(bucket, Number(timestampMs));
     if (!selectedTrades.some(x => x.id === recordTrade.id)) {
       selectedTrades.push(recordTrade);
       if (selectedTrades.length > 500) selectedTrades.shift();
@@ -1851,9 +1858,9 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
-  startCurrentCandleSync();
 
   await fetchInitialHistory();
+  startCurrentCandleSync();
 
   // Security is intentionally independent of chart speed.
   analyzeSelected();
