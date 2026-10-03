@@ -27,6 +27,7 @@ from adapters import (
     RugCheckAdapter,
     JupiterAdapter,
     XAdapter,
+    public_rpc_endpoints,
     x_items,
     social_metrics,
     x_radar_candidates,
@@ -805,7 +806,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             mint,
             timeframe=timeframe,
             lookback_minutes=30,
-            max_signatures=500,
+            max_signatures=300,
         )
         gecko_task = gt.candles(mint, "1m")
 
@@ -818,6 +819,30 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             return_exceptions=False,
         )
 
+        # Fresh Pump.fun bonding-curve tokens often have no GeckoTerminal pool.
+        # If Helius history is unavailable, retry the exact same on-chain
+        # reconstruction against public Solana RPCs before declaring the chart empty.
+        public_errors = []
+        if chart_data_quality(onchain_candles or [], minimum_bars=3) <= 0:
+            for public_rpc in public_rpc_endpoints():
+                public_candles, public_err = await he.historical_trade_candles(
+                    mint,
+                    timeframe=timeframe,
+                    lookback_minutes=30,
+                    max_signatures=200,
+                    rpc_base=public_rpc,
+                )
+                if chart_data_quality(public_candles or [], minimum_bars=3) > 0:
+                    onchain_candles = public_candles
+                    onchain_err = None
+                    onchain_source = "SOLANA_PUBLIC_RPC"
+                    break
+                public_errors.append(f"{public_rpc}:{public_err}")
+            else:
+                onchain_source = "HELIUS_ONCHAIN_TRADES"
+        else:
+            onchain_source = "HELIUS_ONCHAIN_TRADES"
+
         gecko_base = parse_candles(gecko_payload)
         gecko_candles = aggregate_timeframe_candles(
             gecko_base,
@@ -826,7 +851,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
 
         options = [
             ("PUMP.FUN", native),
-            ("HELIUS_ONCHAIN_TRADES", onchain_candles or []),
+            (onchain_source, onchain_candles or []),
             ("GECKOTERMINAL", gecko_candles or []),
         ]
 
@@ -848,7 +873,8 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
 
         if not candles:
             pump_err = (
-                onchain_err
+                "; ".join(public_errors)
+                or onchain_err
                 or gecko_err
                 or pump_err
                 or "NO_VALID_CANDLES"
