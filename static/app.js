@@ -1425,15 +1425,18 @@ async function pollLivePrice() {
       );
 
       if (
-        chartDataSource === "LIVE_PRICE" &&
-        selectedMint
+        selectedMint &&
+        (
+          !selectedCandles.length ||
+          chartDataSource === "LIVE_PRICE"
+        )
       ) {
         seedLivePriceBar(price, now);
       }
 
-      if (!selectedCandles.length) {
-        requestCurrentCandleSync(0);
-      }
+      // Keep the authoritative Pump.fun bar reconciliation running, but never
+      // let it prevent the live-price bar from being visible.
+      requestCurrentCandleSync(75);
     }
   } catch {}
 }
@@ -1922,7 +1925,7 @@ async function analyzeSelected() {
       "ANALYZE";
   }
 }
-async function seedLivePriceBar(price, timestampMs = Date.now()) {
+function seedLivePriceBar(price, timestampMs = Date.now()) {
   price = Number(price);
   if (!Number.isFinite(price) || price <= 0 || !selectedMint) return false;
 
@@ -1932,17 +1935,18 @@ async function seedLivePriceBar(price, timestampMs = Date.now()) {
   ) * span;
 
   const p = price;
-  const existing = selectedCandles.find(
+  let bar = selectedCandles.find(
     x => x.time === bucket
   );
+  const wasEmpty = selectedCandles.length === 0;
 
-  if (existing) {
-    existing.h = Math.max(existing.h, p);
-    existing.l = Math.min(existing.l, p);
-    existing.c = p;
-    existing.v = Number(existing.v || 0);
-  } else {
-    selectedCandles = [{
+  if (bar) {
+    bar.h = Math.max(bar.h, p);
+    bar.l = Math.min(bar.l, p);
+    bar.c = p;
+    bar.v = Number(bar.v || 0);
+  } else if (wasEmpty) {
+    bar = {
       time:bucket,
       ts:bucket,
       o:p,
@@ -1950,7 +1954,12 @@ async function seedLivePriceBar(price, timestampMs = Date.now()) {
       l:p,
       c:p,
       v:0
-    }];
+    };
+    selectedCandles = [bar];
+  } else {
+    // A real historical chart has arrived. Never append a synthetic bar
+    // outside its current bucket or overwrite that history.
+    return false;
   }
 
   chartDataSource = "LIVE_PRICE";
@@ -1959,16 +1968,25 @@ async function seedLivePriceBar(price, timestampMs = Date.now()) {
   updateActivePrice(p, timestampMs);
 
   if (chartInitialized) {
-    renderChart(
-      selectedCandles.slice(-MAX_HISTORY_BARS),
-      true
-    );
+    if (wasEmpty) {
+      // One full render only: this is the first visible bar.
+      renderChart(
+        selectedCandles.slice(-MAX_HISTORY_BARS),
+        true
+      );
+    } else {
+      // Every later price tick updates only the active bar.
+      updateRealtimeChart(bar);
+      renderTape();
+    }
+
     $("chartMode").textContent =
       "LIVE PRICE · " + timeframeLabel() + " · HISTORY LOADING";
   }
 
   return true;
 }
+
 
 async function selectToken(mint) {
   if (!mint) return;
