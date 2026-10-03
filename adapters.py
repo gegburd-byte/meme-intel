@@ -119,174 +119,6 @@ class DexScreenerAdapter:
             }
         }, None
 
-    async def historical_trade_candles(
-        self,
-        mint: str,
-        timeframe: int = 1,
-        lookback_minutes: int = 120,
-        max_signatures: int = 1500,
-        rpc_base: str | None = None,
-    ):
-        """Rebuild real OHLC from on-chain trades for a bounded recent window."""
-        if not self.key and not rpc_base:
-            return [], "NOT_CONFIGURED"
-
-        mint = (mint or "").strip()
-        timeframe = int(timeframe or 1)
-        default_lookback = int(os.getenv("CHART_HISTORY_MINUTES", "120"))
-        lookback_minutes = max(30, min(int(lookback_minutes or default_lookback), 120))
-        max_signatures = max(100, min(int(max_signatures or 1500), 1500))
-
-        cache_key = (mint, timeframe, lookback_minutes, max_signatures, rpc_base or "helius")
-        cached = self._chart_cache.get(cache_key)
-        if cached and time.time() - cached["time"] < 20:
-            return cached["candles"], cached["error"]
-
-        cutoff = int(time.time()) - lookback_minutes * 60
-        rows = []
-        seen = set()
-        before = None
-
-        while len(rows) < max_signatures:
-            page_limit = min(100 if rpc_base else 1000, max_signatures - len(rows))
-            params = {
-                "limit": page_limit,
-                "commitment": "confirmed",
-            }
-            if before:
-                params["before"] = before
-
-            signatures, sig_err = await self._rpc(
-                "getSignaturesForAddress",
-                [mint, params],
-                rpc_base=rpc_base,
-            )
-
-            if sig_err or not signatures:
-                if not rows:
-                    return [], sig_err or "NO_SIGNATURES"
-                break
-
-            page = [
-                item for item in signatures
-                if isinstance(item, dict) and item.get("signature")
-            ]
-
-            for item in page:
-                signature = str(item["signature"])
-                if signature in seen:
-                    continue
-                seen.add(signature)
-                rows.append(item)
-
-            block_times = [
-                int(item.get("blockTime"))
-                for item in page
-                if item.get("blockTime") is not None
-            ]
-
-            if block_times and min(block_times) <= cutoff:
-                break
-
-            if len(page) < page_limit:
-                break
-
-            before = str(page[-1]["signature"])
-
-        rows = [
-            item for item in rows
-            if item.get("blockTime") is None
-            or int(item.get("blockTime")) >= cutoff
-        ]
-
-        trades = []
-        sem = asyncio.Semaphore(8)
-
-        async def load_one(item):
-            async with sem:
-                signature = str(item["signature"])
-                result, err = await self._rpc(
-                    "getTransaction",
-                    [
-                        signature,
-                        {
-                            "encoding": "jsonParsed",
-                            "commitment": "confirmed",
-                            "maxSupportedTransactionVersion": 1,
-                        },
-                    ],
-                    rpc_base=rpc_base,
-                )
-                if err or not result:
-                    return None
-
-                return parse_live_trade_from_transaction(
-                    result,
-                    mint,
-                    signature=signature,
-                    slot=result.get("slot") or item.get("slot"),
-                    block_time=result.get("blockTime") or item.get("blockTime"),
-                )
-
-        results = await asyncio.gather(
-            *(load_one(item) for item in rows),
-            return_exceptions=True,
-        )
-
-        trades = [
-            trade for trade in results
-            if isinstance(trade, dict)
-        ]
-        trades.sort(key=lambda x: int(x.get("timestamp") or 0))
-
-        span = max(60, timeframe * 60)
-        buckets = {}
-
-        for trade in trades:
-            ts = int(trade.get("timestamp") or 0)
-            price = float(trade.get("price") or 0)
-            if ts <= 0 or price <= 0 or ts < cutoff:
-                continue
-
-            bucket = (ts // span) * span
-            row = buckets.get(bucket)
-
-            if row is None:
-                buckets[bucket] = {
-                    "ts": bucket,
-                    "o": price,
-                    "h": price,
-                    "l": price,
-                    "c": price,
-                    "v": float(trade.get("volume_sol") or 0),
-                }
-            else:
-                row["h"] = max(row["h"], price)
-                row["l"] = min(row["l"], price)
-                row["c"] = price
-                row["v"] += float(trade.get("volume_sol") or 0)
-
-        candles = [
-            Candle(
-                ts=int(row["ts"]),
-                o=float(row["o"]),
-                h=float(row["h"]),
-                l=float(row["l"]),
-                c=float(row["c"]),
-                v=float(row["v"]),
-            )
-            for row in buckets.values()
-        ]
-
-        candles.sort(key=lambda x: x.ts)
-        self._chart_cache[cache_key] = {
-            "time": time.time(),
-            "candles": candles,
-            "error": None if candles else "NO_TRADES_DECODED",
-        }
-
-        return candles, None if candles else "NO_TRADES_DECODED"
-
     async def security(self, mint):
         return None, "NOT_AVAILABLE"
 
@@ -573,6 +405,175 @@ class HeliusAdapter:
                     await asyncio.sleep(0.25 * (2 ** attempt))
 
         return None, last_error or "HELIUS_RPC_FAILED"
+
+    async def historical_trade_candles(
+        self,
+        mint: str,
+        timeframe: int = 1,
+        lookback_minutes: int = 120,
+        max_signatures: int = 1500,
+        rpc_base: str | None = None,
+    ):
+        """Rebuild real OHLC from on-chain trades for a bounded recent window."""
+        if not self.key and not rpc_base:
+            return [], "NOT_CONFIGURED"
+
+        mint = (mint or "").strip()
+        timeframe = int(timeframe or 1)
+        default_lookback = int(os.getenv("CHART_HISTORY_MINUTES", "120"))
+        lookback_minutes = max(30, min(int(lookback_minutes or default_lookback), 120))
+        max_signatures = max(100, min(int(max_signatures or 1500), 1500))
+
+        cache_key = (mint, timeframe, lookback_minutes, max_signatures, rpc_base or "helius")
+        cached = self._chart_cache.get(cache_key)
+        if cached and time.time() - cached["time"] < 20:
+            return cached["candles"], cached["error"]
+
+        cutoff = int(time.time()) - lookback_minutes * 60
+        rows = []
+        seen = set()
+        before = None
+
+        while len(rows) < max_signatures:
+            page_limit = min(100 if rpc_base else 1000, max_signatures - len(rows))
+            params = {
+                "limit": page_limit,
+                "commitment": "confirmed",
+            }
+            if before:
+                params["before"] = before
+
+            signatures, sig_err = await self._rpc(
+                "getSignaturesForAddress",
+                [mint, params],
+                rpc_base=rpc_base,
+            )
+
+            if sig_err or not signatures:
+                if not rows:
+                    return [], sig_err or "NO_SIGNATURES"
+                break
+
+            page = [
+                item for item in signatures
+                if isinstance(item, dict) and item.get("signature")
+            ]
+
+            for item in page:
+                signature = str(item["signature"])
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                rows.append(item)
+
+            block_times = [
+                int(item.get("blockTime"))
+                for item in page
+                if item.get("blockTime") is not None
+            ]
+
+            if block_times and min(block_times) <= cutoff:
+                break
+
+            if len(page) < page_limit:
+                break
+
+            before = str(page[-1]["signature"])
+
+        rows = [
+            item for item in rows
+            if item.get("blockTime") is None
+            or int(item.get("blockTime")) >= cutoff
+        ]
+
+        trades = []
+        sem = asyncio.Semaphore(8)
+
+        async def load_one(item):
+            async with sem:
+                signature = str(item["signature"])
+                result, err = await self._rpc(
+                    "getTransaction",
+                    [
+                        signature,
+                        {
+                            "encoding": "jsonParsed",
+                            "commitment": "confirmed",
+                            "maxSupportedTransactionVersion": 1,
+                        },
+                    ],
+                    rpc_base=rpc_base,
+                )
+                if err or not result:
+                    return None
+
+                return parse_live_trade_from_transaction(
+                    result,
+                    mint,
+                    signature=signature,
+                    slot=result.get("slot") or item.get("slot"),
+                    block_time=result.get("blockTime") or item.get("blockTime"),
+                )
+
+        results = await asyncio.gather(
+            *(load_one(item) for item in rows),
+            return_exceptions=True,
+        )
+
+        trades = [
+            trade for trade in results
+            if isinstance(trade, dict)
+        ]
+        trades.sort(key=lambda x: int(x.get("timestamp") or 0))
+
+        span = max(60, timeframe * 60)
+        buckets = {}
+
+        for trade in trades:
+            ts = int(trade.get("timestamp") or 0)
+            price = float(trade.get("price") or 0)
+            if ts <= 0 or price <= 0 or ts < cutoff:
+                continue
+
+            bucket = (ts // span) * span
+            row = buckets.get(bucket)
+
+            if row is None:
+                buckets[bucket] = {
+                    "ts": bucket,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": float(trade.get("volume_sol") or 0),
+                }
+            else:
+                row["h"] = max(row["h"], price)
+                row["l"] = min(row["l"], price)
+                row["c"] = price
+                row["v"] += float(trade.get("volume_sol") or 0)
+
+        candles = [
+            Candle(
+                ts=int(row["ts"]),
+                o=float(row["o"]),
+                h=float(row["h"]),
+                l=float(row["l"]),
+                c=float(row["c"]),
+                v=float(row["v"]),
+            )
+            for row in buckets.values()
+        ]
+
+        candles.sort(key=lambda x: x.ts)
+        self._chart_cache[cache_key] = {
+            "time": time.time(),
+            "candles": candles,
+            "error": None if candles else "NO_TRADES_DECODED",
+        }
+
+        return candles, None if candles else "NO_TRADES_DECODED"
+
 
     async def asset(self, mint):
         if not self.key:
