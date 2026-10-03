@@ -420,6 +420,7 @@ document.addEventListener("DOMContentLoaded", function() {
   $("analyze").addEventListener("click", analyze);
   $("liveToggle").addEventListener("click", toggleLive);
   $("paperOpen").addEventListener("click", paperOpen);
+  $("radarRefresh").addEventListener("click", refreshRadar);
 
   $("mint").addEventListener("keydown", function(e) {
     if (e.key === "Enter") analyze();
@@ -433,3 +434,61 @@ document.addEventListener("DOMContentLoaded", function() {
   loadTrades();
   setInterval(health, 15000);
 });
+
+function renderRadar(candidates) {
+  const list = candidates || [];
+  if (!list.length) {
+    $("radarList").innerHTML = "<div class=\"muted\">No fresh contract-address candidates were found.</div>";
+    return;
+  }
+
+  $("radarList").innerHTML = list.map(function(c, i) {
+    const ticker = (c.ticker_hints || []).length ? " · $" + c.ticker_hints[0] : "";
+    const top = c.top_author ? "@" + c.top_author : "unknown";
+    return "<div class=\"radarRow\">" +
+      "<div class=\"radarRank\">#" + (i + 1) + "</div>" +
+      "<div class=\"radarMain\">" +
+        "<div class=\"radarTitle\"><b>" + escapeHtml(ticker || c.mint.slice(0, 8) + "…") + "</b> <span>" + escapeHtml(c.mint) + "</span></div>" +
+        "<div class=\"radarSub\">" + c.posts_15m + " posts · " + c.unique_authors + " authors · " + Number(c.mention_velocity || 0).toFixed(2) + "/min · accel " + Number(c.acceleration || 0).toFixed(2) + "x · copy risk " + Number(c.coordination_risk || 0).toFixed(0) + "</div>" +
+      "</div>" +
+      "<div class=\"radarScore\">" + Number(c.score || 0).toFixed(0) + "</div>" +
+      "<button class=\"secondary smallButton\" data-ca=\"" + escapeHtml(c.mint) + "\">ANALYZE</button>" +
+    "</div>";
+  }).join("");
+
+  document.querySelectorAll("[data-ca]").forEach(function(btn) {
+    btn.addEventListener("click", function() {
+      $("mint").value = btn.getAttribute("data-ca") || "";
+      analyze();
+      window.scrollTo({top: 0, behavior: "smooth"});
+    });
+  });
+}
+
+async function refreshRadar() {
+  const button = $("radarRefresh");
+  button.textContent = "SCANNING…";
+  button.disabled = true;
+
+  try {
+    const r = await fetch("/api/x/radar", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        query: $("query").value.trim() || "lang:en -is:retweet",
+        max_results: 100
+      })
+    });
+
+    const data = await r.json();
+    renderRadar(data.candidates || []);
+    if (data.state && data.state !== "READY") {
+      $("radarList").innerHTML = "<div class=\"muted\">X radar: " + escapeHtml(data.state) + "</div>";
+    }
+  } catch (e) {
+    $("radarList").innerHTML = "<div class=\"muted\">Radar error: " + escapeHtml(e.message || e) + "</div>";
+  } finally {
+    button.textContent = "REFRESH RADAR";
+    button.disabled = false;
+  }
+}
