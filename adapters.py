@@ -538,6 +538,100 @@ class HeliusAdapter:
 
 
 
+class JupiterAdapter:
+    WSOL = "So11111111111111111111111111111111111111112"
+    BASE = "https://lite-api.jup.ag/swap/v1/quote"
+
+    def __init__(self):
+        self.source = Source("Jupiter", True)
+        self._cache = {}
+
+    async def sell_probe(
+        self,
+        mint: str,
+        decimals: int | None,
+        supply: int | float | None,
+        amount_ui: float | None = None,
+    ):
+        mint = (mint or "").strip()
+        if not mint or mint == self.WSOL:
+            return None, "INVALID_SELL_PROBE"
+
+        cached = self._cache.get(mint)
+        if cached and time.time() - cached["time"] < 12:
+            return cached["data"], cached["error"]
+
+        try:
+            decimals = int(decimals if decimals is not None else 6)
+            total_supply_ui = (
+                float(supply) / (10 ** decimals)
+                if supply is not None
+                else 0
+            )
+
+            if amount_ui is None:
+                # Small deterministic probe: enough to test routing without
+                # making the quote meaningfully dependent on whale size.
+                amount_ui = min(
+                    max(total_supply_ui * 0.00001, 1.0),
+                    total_supply_ui * 0.001 if total_supply_ui > 0 else 10000.0,
+                )
+
+            amount_atomic = max(
+                1,
+                int(round(amount_ui * (10 ** decimals))),
+            )
+
+            params = {
+                "inputMint": mint,
+                "outputMint": self.WSOL,
+                "amount": amount_atomic,
+                "slippageBps": 100,
+                "swapMode": "ExactIn",
+            }
+
+            async with httpx.AsyncClient(
+                timeout=3.5,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "Meme-Intel/2.2",
+                },
+            ) as c:
+                r = await c.get(self.BASE, params=params)
+
+            if r.status_code == 200:
+                payload = r.json()
+                route = payload.get("routePlan") or []
+                result = {
+                    "state": "ROUTE_FOUND" if route else "NO_ROUTE",
+                    "probe_tokens": amount_ui,
+                    "in_amount": payload.get("inAmount"),
+                    "out_amount": payload.get("outAmount"),
+                    "price_impact_pct": _num(payload.get("priceImpactPct")),
+                    "route_count": len(route),
+                }
+                self._cache[mint] = {
+                    "time": time.time(),
+                    "data": result,
+                    "error": None,
+                }
+                return result, None
+
+            error = f"HTTP_{r.status_code}"
+        except Exception as exc:
+            error = str(exc)
+
+        result = {
+            "state": "UNAVAILABLE",
+        }
+        self._cache[mint] = {
+            "time": time.time(),
+            "data": result,
+            "error": error,
+        }
+        return result, error
+
+
 class RugCheckAdapter:
     """Read-only RugCheck token report with a short cache.
 
