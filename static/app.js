@@ -7,6 +7,7 @@ let reconnectTimer = null;
 let pricePollTimer = null;
 let currentCandleSyncTimer = null;
 let currentCandleSyncInFlight = false;
+let currentCandleSyncPromise = null;
 let currentCandleSyncQueued = false;
 
 let pumpEvents = [];
@@ -1424,56 +1425,70 @@ async function syncCurrentPumpCandle() {
 
   if (currentCandleSyncInFlight) {
     currentCandleSyncQueued = true;
+    // Callers that need a seeded active candle wait for the in-flight
+    // authoritative Pump.fun snapshot instead of returning immediately.
+    if (currentCandleSyncPromise) {
+      await currentCandleSyncPromise;
+    }
     return;
   }
 
   currentCandleSyncInFlight = true;
 
-  try {
-    const generation = historyGeneration;
+  const work = (async()=>{
+    try {
+      const generation = historyGeneration;
 
-    const r = await fetch(
-      "/api/chart/current?mint=" +
-      encodeURIComponent(selectedMint) +
-      "&timeframe=" + chartTimeframe +
-      "&t=" + Date.now(),
-      {
-        cache:"no-store"
+      const r = await fetch(
+        "/api/chart/current?mint=" +
+        encodeURIComponent(selectedMint) +
+        "&timeframe=" + chartTimeframe +
+        "&t=" + Date.now(),
+        {
+          cache:"no-store"
+        }
+      );
+
+      if (!r.ok) return;
+
+      const j = await readJsonResponse(r);
+
+      if (
+        generation !== historyGeneration ||
+        !selectedMint
+      ) {
+        return;
       }
-    );
 
-    if (!r.ok) return;
+      const candles = (j.candles || [])
+        .map(normalizeCandle)
+        .filter(Boolean);
 
-    const j = await readJsonResponse(r);
+      if (!candles.length) return;
 
-    if (
-      generation !== historyGeneration ||
-      !selectedMint
-    ) {
-      return;
+      mergePage(candles);
+
+      const last = selectedCandles[
+        selectedCandles.length - 1
+      ];
+
+      chartDataSource = String(
+        j.source || chartDataSource
+      );
+
+      updateRealtimeChart(last);
+    } catch {
+      // The websocket/tape remains live if the lightweight HTTP snapshot
+      // temporarily fails; the next scheduled tick will retry.
     }
+  })();
 
-    const candles = (j.candles || [])
-      .map(normalizeCandle)
-      .filter(Boolean);
+  currentCandleSyncPromise = work;
 
-    if (!candles.length) return;
-
-    mergePage(candles);
-
-    const last = selectedCandles[
-      selectedCandles.length - 1
-    ];
-
-    chartDataSource = String(
-      j.source || chartDataSource
-    );
-
-    updateRealtimeChart(last);
-  } catch {
-    // The websocket/tape remains live if the lightweight HTTP snapshot
-    // temporarily fails; the next scheduled tick will retry.
+  try {
+    await work;
   } finally {
+    currentCandleSyncPromise = null;
     currentCandleSyncInFlight = false;
 
     if (currentCandleSyncQueued) {
