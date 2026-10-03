@@ -680,6 +680,16 @@ def decision_engine(*, setup, market, social, risk, overview):
         target1 = trigger + 1.5 * risk_per_unit
         target2 = trigger + 2.5 * risk_per_unit
 
+    exit_action = "HOLD / MONITOR"
+    if price is not None and stop is not None and price <= stop:
+        exit_action = "EXIT NOW"
+    elif state in {"INVALIDATED", "FAILED"}:
+        exit_action = "EXIT NOW"
+    elif target2 is not None and price is not None and price >= target2:
+        exit_action = "TAKE PROFIT / EXIT"
+    elif target1 is not None and price is not None and price >= target1:
+        exit_action = "TAKE PARTIAL AT T1"
+
     exits = [
         "1m close below invalidation / higher low",
         "Failed breakout that closes back below the trigger",
@@ -690,6 +700,7 @@ def decision_engine(*, setup, market, social, risk, overview):
 
     return {
         "action": action,
+        "exit_action": exit_action,
         "confidence": confidence,
         "score": signal["score"],
         "entry_style": entry_style,
