@@ -94,6 +94,7 @@ function startPumpFeed() {
 
 let topTimer = null;
 let topBusy = false;
+let autoMint = "";
 
 function setGate(gate) {
   gate = gate || {};
@@ -139,6 +140,26 @@ function renderTop(data) {
   $("topReason").textContent =
     (top.decision && top.decision.reason) ||
     "No current decision text.";
+
+  // Automatically follow the scanner's current clean candidate until
+  // the user enters a different CA manually.
+  const currentMint = $("mint").value.trim();
+  if (
+    top.eligible &&
+    top.mint &&
+    (currentMint === "" || currentMint === autoMint)
+  ) {
+    autoMint = top.mint;
+    $("mint").value = top.mint;
+
+    if (!live) {
+      live = true;
+      $("liveToggle").textContent = "LIVE ON · 20s";
+      if (timer) clearInterval(timer);
+      analyze();
+      timer = setInterval(analyze, 20000);
+    }
+  }
 
   const reasons = (top.security_gate && top.security_gate.reasons) || [];
   $("topGateReasons").innerHTML = reasons.map(function(r) {
