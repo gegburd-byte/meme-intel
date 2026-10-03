@@ -81,3 +81,43 @@ def test_critical_risk_blocks_long_signal():
     assert risk["overall"] == "CRITICAL"
     assert decision["action"] == "NO TRADE"
     assert decision["invalidation"] == 1.18
+
+
+def test_missing_x_social_is_optional_for_market_signal():
+    cs = candles([1 + i * 0.01 for i in range(60)])
+    market = market_metrics(cs, [], {
+        "liquidity": 50000,
+        "v5mUSD": 10000,
+        "txns": {"m5": {"buys": 70, "sells": 30}},
+    })
+
+    setup = Setup(
+        state="HIGHER_LOW",
+        prev_high=1.45,
+        higher_low=1.30,
+        stop=1.27,
+    )
+
+    decision = decision_engine(
+        setup=setup,
+        market=market,
+        social={"state": "X_CREDITS_DEPLETED"},
+        risk={"overall": "LOW", "flags": []},
+        overview={"liquidity": 50000, "v5mUSD": 10000},
+    )
+
+    assert decision["social_available"] is False
+    assert decision["confirmation_total"] == 5
+
+
+def test_risk_flags_accepts_social_and_extension_inputs():
+    risk = risk_flags(
+        liquidity_usd=25000,
+        market_cap=50000,
+        coordination_risk=60,
+        vertical_move_pct=22,
+    )
+
+    codes = {flag["code"] for flag in risk["flags"]}
+    assert "SOCIAL_COORDINATION" in codes
+    assert "EXTENDED_MOVE" in codes
