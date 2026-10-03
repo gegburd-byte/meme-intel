@@ -1,224 +1,138 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Meme Intel — Intelligence Terminal</title>
+<title>Meme Intel — Live Solana Scanner</title>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-<div class="shell">
-<header class="top">
-  <div>
-    <div class="eyebrow">SOLANA MEME INTELLIGENCE</div>
-    <h1>MEME INTEL</h1>
-    <p>Live X intelligence + market structure + flow + 70% value area + paper signal engine</p>
-  </div>
-  <div id="health" class="pill">CHECKING…</div>
-</header>
-
-<section class="sourcebar">
-  <div><span class="dot" id="dotX"></span>X <b id="srcX">—</b></div>
-  <div><span class="dot" id="dotDS"></span>DEXSCREENER <b id="srcDS">—</b></div>
-  <div><span class="dot" id="dotGT"></span>GECKO <b id="srcGT">—</b></div>
-  <div><span class="dot" id="dotHE"></span>HELIUS <b id="srcHE">—</b></div>
-  <div><span class="dot" id="dotSEC"></span>SECURITY <b id="srcSEC">—</b></div>
-  <div><span class="dot" id="dotPF"></span>PUMP FEED <b id="srcPF">—</b></div>
-  <div class="muted">Research + paper trading only</div>
-</section>
-
-<section class="topOpportunity panel">
-  <div class="panelhead">
+<div class="app">
+  <header class="header">
     <div>
-      <div class="eyebrow">AUTOMATIC MARKET SCAN</div>
-      <h2 id="topTitle">TOP CURRENT PAPER SETUP</h2>
+      <div class="eyebrow">SOLANA MEME INTELLIGENCE</div>
+      <h1>MEME INTEL</h1>
+      <p>Find a live setup, click it, and watch the price + signals update.</p>
     </div>
-    <div class="topActions">
-      <span id="topUpdated" class="stage">—</span>
-      <button id="scanTop" class="secondary smallButton">SCAN NOW</button>
-    </div>
-  </div>
+    <div id="health" class="statusPill">CONNECTING…</div>
+  </header>
 
-  <div class="topGrid">
-    <div class="topIdentity">
-      <div id="topSymbol" class="topSymbol">—</div>
-      <div id="topMint" class="topMint">—</div>
-      <div id="rugGate" class="gate">SECURITY UNKNOWN</div>
-      <div id="topReason" class="decisionReason">Waiting for the first automatic scan.</div>
-    </div>
-    <div class="topLevels">
-      <div><small>RESEARCH RANK</small><strong id="topRank">—</strong></div>
-      <div><small>ENTRY TRIGGER</small><strong id="topEntry">—</strong></div>
-      <div><small>INVALIDATION</small><strong id="topStop">—</strong></div>
-      <div><small>T1 / T2</small><strong id="topTargets">—</strong></div>
-      <div><small>X / SOCIAL</small><strong id="topSocial">—</strong></div>
-      <div><small>RISK</small><strong id="topRisk">—</strong></div>
-    </div>
-  </div>
+  <section class="sourceStrip">
+    <span><i id="dotPump" class="dot"></i>PUMP FEED <b id="pumpState">—</b></span>
+    <span><i id="dotMarket" class="dot"></i>MARKET DATA <b id="marketState">—</b></span>
+    <span><i id="dotHelius" class="dot"></i>SECURITY <b id="securityState">—</b></span>
+    <span><i id="dotX" class="dot"></i>X <b id="xState">—</b></span>
+  </section>
 
-  <div id="topGateReasons" class="gateReasons"></div>
-  <div id="topCandidates" class="topCandidates"></div>
-</section>
-
-<section class="controls panel">
-  <div class="field grow">
-    <label>Solana contract / mint</label>
-    <input id="mint" placeholder="Paste Pump.fun / Solana CA" autocomplete="off">
-  </div>
-  <div class="field wide">
-    <label>X context filter (token terms are added automatically)</label>
-    <input id="query" value="lang:en -is:retweet" autocomplete="off">
-  </div>
-  <button id="analyze" class="primary">ANALYZE LIVE</button>
-  <button id="liveToggle" class="secondary">LIVE OFF</button>
-</section>
-
-<section class="command panel">
-  <div class="commandMain">
-    <div class="eyebrow">TRADE COMMAND</div>
-    <div id="action" class="action">NO DATA</div>
-    <div id="decisionReason" class="decisionReason">Paste a contract and analyze.</div>
-  </div>
-  <div class="commandStats">
-    <div><small>SCORE</small><strong id="decisionScore">—</strong></div>
-    <div><small>CONFIDENCE</small><strong id="confidence">—</strong></div>
-    <div><small>CONFIRMATIONS</small><strong id="confirmations">—</strong></div>
-    <div><small>ENTRY TRIGGER</small><strong id="entryTrigger">—</strong></div>
-    <div><small>EXIT STATE</small><strong id="exitAction">—</strong></div>
-    <div><small>DATA MODE</small><strong id="dataMode">—</strong></div>
-  </div>
-</section>
-
-<section class="grid">
-  <article class="panel hero">
-    <div class="panelhead"><h2>SETUP ENGINE</h2><span id="setupState" class="stage">—</span></div>
-    <div class="setupgrid">
-      <div><small>PREVIOUS HIGH</small><strong id="prevHigh">—</strong></div>
-      <div><small>HIGHER LOW</small><strong id="higherLow">—</strong></div>
-      <div><small>INVALIDATION</small><strong id="stop">—</strong></div>
-      <div><small>ENTRY STYLE</small><strong id="entryStyle">—</strong></div>
-    </div>
-    <div id="path" class="path">5M IMPULSE → PULLBACK → HIGHER LOW → 1M CLOSE → CONFIRMATION</div>
-  </article>
-
-  <article class="panel chartPanel">
-    <div class="panelhead">
-      <h2>LIVE 1M CHART</h2>
-      <span id="chartMeta" class="stage">—</span>
-    </div>
-    <div class="chartWrap">
-      <canvas id="chart" height="360"></canvas>
-    </div>
-    <div class="legend">
-      <span><i class="lineKey pocKey"></i>POC</span>
-      <span><i class="lineKey vahKey"></i>VAH</span>
-      <span><i class="lineKey valKey"></i>VAL</span>
-      <span><i class="lineKey vwapKey"></i>VWAP</span>
-      <span><i class="lineKey entryKey"></i>TRIGGER</span>
-      <span><i class="lineKey stopKey"></i>STOP</span>
-    </div>
-  </article>
-
-  <article class="panel">
-    <div class="panelhead"><h2>MARKET PROFILE</h2><span class="stage">70% VALUE AREA</span></div>
-    <div class="metrics four">
-      <div><small>POC</small><strong id="poc">—</strong></div>
-      <div><small>VAH</small><strong id="vah">—</strong></div>
-      <div><small>VAL</small><strong id="val">—</strong></div>
-      <div><small>VWAP</small><strong id="vwap">—</strong></div>
-    </div>
-    <div class="rows compact" id="profileRows"></div>
-  </article>
-
-  <article class="panel">
-    <div class="panelhead"><h2>MOMENTUM / FLOW</h2><span id="trendState" class="stage">—</span></div>
-    <div class="metrics four">
-      <div><small>RSI 14</small><strong id="rsi">—</strong></div>
-      <div><small>EMA 9 / 21</small><strong id="ema">—</strong></div>
-      <div><small>BUY RATIO</small><strong id="buyRatio">—</strong></div>
-      <div><small>VOL SPIKE</small><strong id="volSpike">—</strong></div>
-    </div>
-    <div class="rows compact" id="flowRows"></div>
-  </article>
-
-  <article class="panel pumpPanel">
-    <div class="panelhead">
+  <section class="panel scanner">
+    <div class="panelHeader">
       <div>
-        <div class="eyebrow">REAL-TIME LAUNCH FEED</div>
-        <h2>PUMP.FUN NEW-TOKEN STREAM</h2>
+        <div class="eyebrow">AUTO SCANNER</div>
+        <h2>TOP CURRENT CANDIDATES</h2>
       </div>
-      <span id="pumpFeedState" class="stage">CONNECTING…</span>
+      <button id="scanNow" class="ghost">REFRESH</button>
     </div>
-    <div class="radarNote muted">Optional live event feed. New contracts appear here without refreshing the page; every candidate still needs the deeper security + market scan.</div>
-    <div id="pumpFeedList" class="pumpFeedList"><div class="muted">Waiting for live Pump.fun events…</div></div>
-  </article>
-
-  <article class="panel radarPanel">
-    <div class="panelhead">
-      <h2>X RADAR — EARLY CONTRACT DISCOVERY</h2>
-      <button id="radarRefresh" class="secondary smallButton">REFRESH RADAR</button>
+    <div id="candidateList" class="candidateList">
+      <div class="empty">Waiting for live Pump.fun launches…</div>
     </div>
-    <div class="radarNote muted">Scans recent X posts for Solana contract addresses and ranks speed, independent authors, engagement, sentiment, and coordination risk. Manual refresh only, so the dashboard does not burn X credits in the background.</div>
-    <div id="radarList" class="radarList"><div class="muted">Press refresh to scan X.</div></div>
-  </article>
+    <div class="scannerNote">Ranking is a live research heuristic from launch activity and market data. It is not a guarantee.</div>
+  </section>
 
-  <article class="panel socialPanel">
-    <div class="panelhead"><h2>X INTELLIGENCE</h2><span id="socialState">—</span></div>
-    <div class="metrics five">
-      <div><small>POSTS 15M</small><strong id="posts">—</strong></div>
-      <div><small>POSTS/MIN</small><strong id="vel">—</strong></div>
-      <div><small>ACCELERATION</small><strong id="accel">—</strong></div>
-      <div><small>AUTHORS</small><strong id="authors">—</strong></div>
-      <div><small>SENTIMENT</small><strong id="sentiment">—</strong></div>
+  <section class="panel selected">
+    <div class="selectedTop">
+      <div>
+        <div class="eyebrow">SELECTED TOKEN</div>
+        <div id="selectedTitle" class="selectedTitle">NO TOKEN SELECTED</div>
+        <div id="selectedMint" class="mintText">Click a candidate above.</div>
+      </div>
+      <div class="selectedActions">
+        <div id="signalBadge" class="signal wait">WAIT</div>
+        <button id="analyzeButton" class="primary">ANALYZE</button>
+      </div>
     </div>
-    <div class="metrics four second">
-      <div><small>AUTHOR QUALITY</small><strong id="authorQuality">—</strong></div>
-      <div><small>ENGAGEMENT/MIN</small><strong id="engagement">—</strong></div>
-      <div><small>COPY RISK</small><strong id="copyRisk">—</strong></div>
-      <div><small>TOP ACCOUNT</small><strong id="topAuthor">—</strong></div>
+
+    <div class="signalBanner">
+      <div>
+        <div class="eyebrow">CURRENT SIGNAL</div>
+        <div id="signalText" class="signalText">WAIT</div>
+        <div id="signalReason" class="signalReason">Select a token to start the live signal engine.</div>
+      </div>
+      <div class="signalMeta">
+        <div><span>PRICE</span><b id="livePrice">—</b></div>
+        <div><span>CHANGE</span><b id="liveChange">—</b></div>
+        <div><span>RSI</span><b id="liveRsi">—</b></div>
+        <div><span>EMA 9 / 21</span><b id="liveEma">—</b></div>
+      </div>
     </div>
-    <div id="tweets" class="tweets"><div class="muted">No X data yet.</div></div>
-  </article>
 
-  <article class="panel">
-    <div class="panelhead"><h2>RISK GATE</h2><span id="riskLevel" class="risk">—</span></div>
-    <div id="securityGate" class="gate security-unknown">SECURITY UNKNOWN</div>
-    <div id="riskRows" class="rows"></div>
-  </article>
-
-  <article class="panel">
-    <div class="panelhead"><h2>TARGET MAP</h2><span class="stage">PAPER ONLY</span></div>
-    <div class="metrics four">
-      <div><small>TRIGGER</small><strong id="targetTrigger">—</strong></div>
-      <div><small>INVALIDATION</small><strong id="targetStop">—</strong></div>
-      <div><small>TARGET 1</small><strong id="target1">—</strong></div>
-      <div><small>TARGET 2</small><strong id="target2">—</strong></div>
+    <div class="chartCard">
+      <div class="chartHeader">
+        <div>
+          <h3>LIVE PRICE CHART</h3>
+          <span id="chartMode" class="muted">Waiting for data</span>
+        </div>
+        <div class="legend">
+          <span><i class="key priceKey"></i>PRICE</span>
+          <span><i class="key ema9Key"></i>EMA 9</span>
+          <span><i class="key ema21Key"></i>EMA 21</span>
+          <span><i class="key meanKey"></i>MEAN / VWAP</span>
+          <span><i class="key buyKey"></i>BUY</span>
+          <span><i class="key sellKey"></i>SELL</span>
+        </div>
+      </div>
+      <canvas id="chart" height="420"></canvas>
     </div>
-    <div id="exitRules" class="rows compact"></div>
-  </article>
 
-  <article class="panel">
-    <div class="panelhead"><h2>TOKEN</h2><span id="tokenName">—</span></div>
-    <div id="tokenRows" class="rows"></div>
-  </article>
-
-  <article class="panel paper">
-    <div class="panelhead"><h2>PAPER TRADE</h2><span class="muted">No real orders</span></div>
-    <div class="paperform">
-      <input id="pEntry" placeholder="Entry price">
-      <input id="pQty" placeholder="Qty / units">
-      <input id="pNote" placeholder="Note">
-      <button id="paperOpen">OPEN PAPER LONG</button>
+    <div class="indicatorGrid">
+      <div class="metric"><span>RSI 14</span><b id="metricRsi">—</b></div>
+      <div class="metric"><span>EMA 9</span><b id="metricEma9">—</b></div>
+      <div class="metric"><span>EMA 21</span><b id="metricEma21">—</b></div>
+      <div class="metric"><span>PRICE vs MEAN</span><b id="metricMean">—</b></div>
+      <div class="metric"><span>UP TICKS</span><b id="metricPressure">—</b></div>
+      <div class="metric"><span>CONFIRMATION</span><b id="metricConfirm">—</b></div>
     </div>
-    <div id="paperTrades" class="papertrades"></div>
-    <div class="muted paperHint">Paper trades are local research records only. Use CLOSE to record the current paper exit price.</div>
-  </article>
 
-  <article class="panel full">
-    <div class="panelhead"><h2>DATA / DEBUG</h2><span id="queryUsed" class="muted">—</span></div>
-    <pre id="raw" class="raw">Nothing loaded.</pre>
-  </article>
-</section>
+    <div class="belowGrid">
+      <article class="subpanel">
+        <div class="panelHeader">
+          <div>
+            <div class="eyebrow">SECURITY</div>
+            <h3>RISK CHECK</h3>
+          </div>
+          <div id="securityBadge" class="miniBadge">UNKNOWN</div>
+        </div>
+        <div id="securityRows" class="rows">
+          <div class="empty">Select a token.</div>
+        </div>
+      </article>
+
+      <article class="subpanel">
+        <div class="panelHeader">
+          <div>
+            <div class="eyebrow">LIVE TAPE</div>
+            <h3>RECENT UP / DOWN TICKS</h3>
+          </div>
+          <span id="lastUpdate" class="muted">—</span>
+        </div>
+        <div id="tape" class="tape">
+          <div class="empty">No price updates yet.</div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="panel manual">
+    <div class="panelHeader">
+      <div>
+        <div class="eyebrow">MANUAL</div>
+        <h2>OPEN ANY SOLANA TOKEN</h2>
+      </div>
+    </div>
+    <div class="manualRow">
+      <input id="mintInput" placeholder="Paste contract address">
+      <button id="openMint" class="primary">OPEN TOKEN</button>
+    </div>
+  </section>
 </div>
 <script src="/static/app.js"></script>
 </body>
