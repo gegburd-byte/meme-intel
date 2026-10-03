@@ -22,6 +22,7 @@ from adapters import (
     DexScreenerAdapter,
     GeckoTerminalAdapter,
     HeliusAdapter,
+    PumpFunAdapter,
     XAdapter,
     x_items,
     social_metrics,
@@ -49,6 +50,7 @@ store = Store()
 ds = DexScreenerAdapter()
 gt = GeckoTerminalAdapter()
 he = HeliusAdapter()
+pf = PumpFunAdapter()
 xa = XAdapter()
 
 
@@ -201,6 +203,58 @@ def parse_candles(data):
 async def skipped_x():
     return None, "X_SKIPPED_FOR_MARKET_SCREEN"
 
+
+
+def parse_pump_candles(payload):
+    """Normalize Pump.fun frontend OHLC candles into the app's Candle shape."""
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        items = (
+            payload.get("candles")
+            or payload.get("data")
+            or payload.get("results")
+            or []
+        )
+    else:
+        items = []
+
+    candles = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = item.get("timestamp", item.get("time", item.get("ts")))
+            if ts is None:
+                continue
+            ts = int(float(ts))
+            if ts > 10_000_000_000:
+                ts //= 1000
+
+            o = item.get("open", item.get("o"))
+            h = item.get("high", item.get("h"))
+            l = item.get("low", item.get("l"))
+            c = item.get("close", item.get("c"))
+            v = item.get("volume", item.get("v", 0))
+            if any(x is None for x in (o, h, l, c)):
+                continue
+
+            candles.append(Candle(
+                ts=ts,
+                o=float(o),
+                h=float(h),
+                l=float(l),
+                c=float(c),
+                v=float(v or 0),
+            ))
+        except (TypeError, ValueError):
+            continue
+
+    candles.sort(key=lambda x: x.ts)
+    deduped = {}
+    for candle in candles:
+        deduped[candle.ts] = candle
+    return list(sorted(deduped.values(), key=lambda x: x.ts))
 
 def closed_candles(candles, seconds_per_candle):
     now = int(time.time())
@@ -500,6 +554,47 @@ async def analyze(req: AnalyzeReq):
 
 
 PRICE_CACHE = {}
+
+
+
+@app.get("/api/chart")
+async def chart(mint: str, limit: int = 300):
+    """Fast read-only Pump.fun OHLC feed for the selected token."""
+    mint = (mint or "").strip()
+    if len(mint) < 32 or len(mint) > 44:
+        raise HTTPException(400, "Invalid mint")
+
+    payload, err = await pf.candles(mint, limit=limit, timeframe=1)
+    candles = parse_pump_candles(payload)
+    source = "PUMP.FUN"
+
+    # Newly launched / unindexed tokens can briefly have no Pump.fun candles.
+    # Fall back to GeckoTerminal rather than returning an empty chart.
+    if not candles:
+        fallback, fallback_err = await gt.candles(mint, "1m")
+        candles = parse_candles(fallback)
+        if candles:
+            source = "GECKOTERMINAL"
+        elif err is None:
+            err = fallback_err
+
+    return {
+        "state": "READY" if candles else "NO_CANDLES",
+        "source": source if candles else "NONE",
+        "candles": [
+            {
+                "ts": c.ts,
+                "o": c.o,
+                "h": c.h,
+                "l": c.l,
+                "c": c.c,
+                "v": c.v,
+            }
+            for c in candles[-max(25, min(int(limit or 300), 1000)):]
+        ],
+        "error": None if candles else (err or "NO_CANDLES"),
+        "timestamp": int(time.time()),
+    }
 
 
 @app.get("/api/live/price")
