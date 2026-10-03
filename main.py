@@ -212,51 +212,63 @@ async def skipped_x():
 
 
 def parse_pump_candles(payload):
-    """Normalize Pump.fun frontend OHLC candles into the app's Candle shape."""
+    """Normalize several Pump.fun/market OHLC response shapes into Candle."""
     if isinstance(payload, list):
         items = payload
     elif isinstance(payload, dict):
-        items = payload.get("candles") or payload.get("results") or payload.get("data") or []
-        if isinstance(items, dict):
-            items = items.get("candles") or items.get("data") or items.get("results") or []
+        data = payload.get("data") or payload.get("result") or payload
+        if isinstance(data, dict):
+            items = (
+                data.get("candles")
+                or data.get("results")
+                or data.get("ohlcv_list")
+                or data.get("items")
+                or []
+            )
+        else:
+            items = data
     else:
         items = []
 
     candles = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
+
+    for item in items or []:
         try:
-            ts = item.get("timestamp", item.get("time", item.get("ts")))
-            if ts is None:
+            if isinstance(item, dict):
+                ts = item.get("timestamp", item.get("time", item.get("ts")))
+                o = item.get("open", item.get("o"))
+                h = item.get("high", item.get("h"))
+                l = item.get("low", item.get("l"))
+                close = item.get("close", item.get("c"))
+                volume = item.get("volume", item.get("v", 0))
+            elif isinstance(item, (list, tuple)) and len(item) >= 5:
+                # Common array order: time, open, high, low, close, volume.
+                ts = item[0]
+                o, h, l, close = item[1], item[2], item[3], item[4]
+                volume = item[5] if len(item) > 5 else 0
+            else:
                 continue
+
+            if ts is None or any(x is None for x in (o, h, l, close)):
+                continue
+
             ts = int(float(ts))
             if ts > 10_000_000_000:
                 ts //= 1000
-
-            o = item.get("open", item.get("o"))
-            h = item.get("high", item.get("h"))
-            l = item.get("low", item.get("l"))
-            c = item.get("close", item.get("c"))
-            v = item.get("volume", item.get("v", 0))
-            if any(x is None for x in (o, h, l, c)):
-                continue
 
             candles.append(Candle(
                 ts=ts,
                 o=float(o),
                 h=float(h),
                 l=float(l),
-                c=float(c),
-                v=float(v or 0),
+                c=float(close),
+                v=float(volume or 0),
             ))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, IndexError):
             continue
 
     candles.sort(key=lambda x: x.ts)
-    deduped = {}
-    for candle in candles:
-        deduped[candle.ts] = candle
+    deduped = {c.ts: c for c in candles}
     return list(sorted(deduped.values(), key=lambda x: x.ts))
 
 def closed_candles(candles, seconds_per_candle):
