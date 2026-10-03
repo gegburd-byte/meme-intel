@@ -1,823 +1,562 @@
+const $ = (id) => document.getElementById(id);
 
 let pumpSocket = null;
 let pumpEvents = [];
+let marketCandidates = [];
+let selectedMint = "";
+let selectedInfo = {};
+let selectedHistory = [];
+let selectedSignals = [];
+let liveTimer = null;
+let analyzeTimer = null;
+let busy = false;
 
-function setPumpFeedStatus(ok, text) {
-  const dot = $("dotPF");
-  const label = $("srcPF");
-  const state = $("pumpFeedState");
-  if (dot) dot.className = "dot " + (ok ? "ok" : "bad");
-  if (label) label.textContent = text;
-  if (state) state.textContent = text;
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, Number(v) || 0));
 }
-
-function renderPumpEvents() {
-  const list = pumpEvents.slice(0, 12);
-
-  $("pumpFeedList").innerHTML = list.map(function(e) {
-    return "<div class=\"pumpRow\">" +
-      "<div class=\"pumpTime\">" + escapeHtml(e.time) + "</div>" +
-      "<div class=\"pumpMain\">" +
-        "<b>$" + escapeHtml(e.symbol || e.name || "NEW") + "</b>" +
-        "<span>" + escapeHtml(e.mint || "") + "</span>" +
-      "</div>" +
-      "<div class=\"pumpMeta\">" +
-        "new token" + (e.creator ? " · " + escapeHtml(e.creator.slice(0, 8)) + "…" : "") +
-      "</div>" +
-      "<button class=\"secondary smallButton\" data-pump-ca=\"" + escapeHtml(e.mint || "") + "\">ANALYZE</button>" +
-    "</div>";
-  }).join("") || "<div class=\"muted\">Waiting for live Pump.fun events…</div>";
-
-  document.querySelectorAll("[data-pump-ca]").forEach(function(btn) {
-    btn.addEventListener("click", function() {
-      $("mint").value = btn.getAttribute("data-pump-ca") || "";
-      analyze();
-      window.scrollTo({top: 0, behavior: "smooth"});
-    });
-  });
-}
-
-function startPumpFeed() {
-  if (pumpSocket) return;
-
-  try {
-    pumpSocket = new WebSocket("wss://pumpportal.fun/api/data");
-
-    pumpSocket.addEventListener("open", function() {
-      setPumpFeedStatus(true, "LIVE");
-      pumpSocket.send(JSON.stringify({method: "subscribeNewToken"}));
-    });
-
-    pumpSocket.addEventListener("message", function(event) {
-      try {
-        const data = JSON.parse(event.data);
-        const mint = data.mint || data.tokenAddress;
-        if (!mint) return;
-
-        const symbol = data.symbol || data.tokenSymbol || "";
-        const name = data.name || data.tokenName || "";
-        const creator = data.traderPublicKey || data.creator || "";
-
-        pumpEvents.unshift({
-          mint: mint,
-          symbol: symbol,
-          name: name,
-          creator: creator,
-          time: new Date().toLocaleTimeString()
-        });
-
-        const seen = new Set();
-        pumpEvents = pumpEvents.filter(function(x) {
-          if (seen.has(x.mint)) return false;
-          seen.add(x.mint);
-          return true;
-        }).slice(0, 30);
-
-        renderPumpEvents();
-      } catch (e) {}
-    });
-
-    pumpSocket.addEventListener("close", function() {
-      setPumpFeedStatus(false, "RECONNECTING…");
-      pumpSocket = null;
-      setTimeout(startPumpFeed, 5000);
-    });
-
-    pumpSocket.addEventListener("error", function() {
-      setPumpFeedStatus(false, "UNAVAILABLE");
-    });
-  } catch (e) {
-    setPumpFeedStatus(false, "UNAVAILABLE");
-  }
-}
-
-
-let topTimer = null;
-let topBusy = false;
-let autoMint = "";
-
-function setGate(gate) {
-  gate = gate || {};
-  const el = $("rugGate");
-  el.textContent = gate.label || "SECURITY UNKNOWN";
-  el.className = "gate " + String(gate.label || "SECURITY UNKNOWN").toLowerCase().replace(/[^a-z]+/g, "-");
-}
-
-function renderTopRows(rows) {
-  rows = rows || [];
-  $("topCandidates").innerHTML = rows.slice(0, 8).map(function(x, i) {
-    const gateLabel = x.security_gate && x.security_gate.label
-      ? x.security_gate.label
-      : "UNKNOWN";
-    const action = x.decision && x.decision.action
-      ? x.decision.action
-      : "NO DATA";
-
-    return "<div class=\"topRow\">" +
-      "<div class=\"topRowRank\">#" + (i + 1) + "</div>" +
-      "<div class=\"topRowMain\">" +
-        "<b>$" + escapeHtml(x.symbol || x.name || "UNKNOWN") + "</b>" +
-        "<span>" + escapeHtml(x.mint || "") + "</span>" +
-      "</div>" +
-      "<div class=\"topRowAction\">" + escapeHtml(action) + "</div>" +
-      "<div class=\"topRowGate\">" + escapeHtml(gateLabel) + "</div>" +
-      "<div class=\"topRowScore\">" + Number(x.research_rank || 0).toFixed(0) + "</div>" +
-      "<button class=\"secondary smallButton\" data-top-ca=\"" + escapeHtml(x.mint || "") + "\">LOAD</button>" +
-    "</div>";
-  }).join("") || "<div class=\"muted\">No candidates passed the initial market/security screen.</div>";
-
-  document.querySelectorAll("[data-top-ca]").forEach(function(btn) {
-    btn.addEventListener("click", function() {
-      $("mint").value = btn.getAttribute("data-top-ca") || "";
-      analyze();
-      window.scrollTo({top: 0, behavior: "smooth"});
-    });
-  });
-}
-
-function renderTop(data) {
-  const top = data && data.top;
-
-  $("topUpdated").textContent = data && data.updated_at
-    ? "UPDATED " + new Date(data.updated_at * 1000).toLocaleTimeString()
-    : "NO UPDATE";
-
-  if (!top) {
-    $("topSymbol").textContent = "NO FULLY CHECKED SETUP";
-    $("topMint").textContent = "No candidate passed every required security/risk/structure gate.";
-    setGate({label: "SECURITY UNKNOWN"});
-    $("topReason").textContent =
-      "The scanner is still working, or the available data is incomplete. Candidate rows below show what was screened.";
-    $("topRank").textContent = "—";
-    $("topEntry").textContent = "—";
-    $("topStop").textContent = "—";
-    $("topTargets").textContent = "— / —";
-    $("topSocial").textContent = "—";
-    $("topRisk").textContent = "—";
-    $("topGateReasons").innerHTML = "";
-    renderTopRows(data && data.candidates);
-    return;
-  }
-
-
-
-  $("topSymbol").textContent = "$" + (top.symbol || top.name || "UNKNOWN");
-  $("topMint").textContent = top.mint || "—";
-  setGate(top.security_gate);
-
-  $("topRank").textContent = top.research_rank == null ? "—" : top.research_rank + "/100";
-  $("topEntry").textContent = safe(top.decision && top.decision.entry_trigger);
-  $("topStop").textContent = safe(top.decision && top.decision.invalidation);
-  $("topTargets").textContent =
-    safe(top.decision && top.decision.target1) + " / " +
-    safe(top.decision && top.decision.target2);
-  $("topSocial").textContent = top.social && top.social.sentiment != null
-    ? Number(top.social.sentiment).toFixed(0)
-    : "—";
-  $("topRisk").textContent = top.risk && top.risk.overall
-    ? top.risk.overall
-    : "—";
-
-  $("topReason").textContent =
-    (top.decision && top.decision.reason) ||
-    "No current decision text.";
-
-  // Automatically follow the scanner's current clean candidate until
-  // the user enters a different CA manually.
-  const currentMint = $("mint").value.trim();
-  if (
-    top.eligible &&
-    top.mint &&
-    (currentMint === "" || currentMint === autoMint)
-  ) {
-    autoMint = top.mint;
-    $("mint").value = top.mint;
-
-    if (!live) {
-      live = true;
-      $("liveToggle").textContent = "LIVE ON · 30s";
-      if (timer) clearInterval(timer);
-      analyze();
-      timer = setInterval(analyze, 20000);
-    }
-  }
-
-  const reasons = (top.security_gate && top.security_gate.reasons) || [];
-  $("topGateReasons").innerHTML = reasons.map(function(r) {
-    return "<div class=\"muted gateReason\">• " + escapeHtml(r) + "</div>";
-  }).join("");
-
-  renderTopRows(data.candidates || []);
-
-}
-
-async function scanTop() {
-  if (topBusy) return;
-
-  topBusy = true;
-  $("scanTop").textContent = "SCANNING…";
-  $("scanTop").disabled = true;
-
-  try {
-    const r = await fetch("/api/top?x=" + Date.now(), { cache: "no-store" });
-    const data = await r.json();
-
-    if (!r.ok) {
-      throw new Error(data.detail || "Top scan failed");
-    }
-
-    renderTop(data);
-  } catch (e) {
-    $("topReason").textContent = "Scanner error: " + (e.message || e);
-  } finally {
-    $("scanTop").textContent = "SCAN NOW";
-    $("scanTop").disabled = false;
-    topBusy = false;
-  }
-}
-
-function startAutopilot() {
-  if (topTimer) clearInterval(topTimer);
-  scanTop();
-  topTimer = setInterval(scanTop, 60000);
-}
-
-const $ = (id) => document.getElementById(id);
-
-let live = false;
-let timer = null;
-let lastData = null;
 
 function safe(v, digits = 6) {
   if (v == null || !Number.isFinite(Number(v))) return "—";
-  return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits });
+  return Number(v).toLocaleString(undefined, {maximumFractionDigits: digits});
 }
 
 function usd(v) {
   if (v == null || !Number.isFinite(Number(v))) return "—";
-  return "$" + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return "$" + Number(v).toLocaleString(undefined, {maximumFractionDigits: 2});
 }
 
-function pct(v, digits = 2) {
+function pct(v, digits = 1) {
   if (v == null || !Number.isFinite(Number(v))) return "—";
   return Number(v).toFixed(digits) + "%";
 }
 
-function row(name, value) {
-  return "<div class=\"row\"><span>" + name + "</span><b>" + value + "</b></div>";
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, function(c) {
-    const map = {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"};
-    return map[c] || c;
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, function(c) {
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",""":"&quot;","'":"&#039;"}[c];
   });
 }
 
-function setSource(dotId, textId, source) {
-  if (!source) return;
-  const ok = source.configured === true || source.state === "READY" || source.state === "CONFIGURED";
-  $(dotId).className = "dot " + (ok ? "ok" : "bad");
-  $(textId).textContent = source.state || "UNKNOWN";
+function setSource(dotId, textId, state, goodStates) {
+  const dot = $(dotId);
+  const label = $(textId);
+  if (!dot || !label) return;
+  const good = goodStates.includes(state);
+  dot.className = "dot " + (good ? "ok" : "bad");
+  label.textContent = state || "UNKNOWN";
 }
 
 async function health() {
   try {
-    const r = await fetch("/api/health?x=" + Date.now(), { cache: "no-store" });
+    const r = await fetch("/api/health?t=" + Date.now(), {cache:"no-store"});
     const j = await r.json();
     $("health").textContent = j.status || "ONLINE";
-    setSource("dotX", "srcX", j.sources && j.sources.X);
-    setSource("dotDS", "srcDS", j.sources && j.sources.DexScreener);
-    setSource("dotGT", "srcGT", j.sources && j.sources.GeckoTerminal);
-    setSource("dotHE", "srcHE", j.sources && j.sources.Helius);
-    setSource("dotSEC", "srcSEC", j.sources && j.sources.Security);
-  } catch (e) {
+    setSource("dotPump","pumpState","LIVE",["LIVE"]);
+    setSource("dotMarket","marketState",j.sources?.DexScreener?.state || "UNKNOWN",["READY"]);
+    setSource("dotHelius","securityState",j.sources?.Security?.state || "UNKNOWN",["READY"]);
+    setSource("dotX","xState",j.sources?.X?.state || "UNKNOWN",["READY","CONFIGURED"]);
+  } catch {
     $("health").textContent = "BACKEND ERROR";
   }
 }
 
-function renderDecision(d) {
-  d = d || {};
-  $("action").textContent = d.action || "NO DATA";
-  if ($("exitAction")) $("exitAction").textContent = d.exit_action || "—";
-  $("decisionScore").textContent = d.score == null ? "—" : d.score + "/100";
-  $("confidence").textContent = d.confidence || "—";
-  $("confirmations").textContent =
-    d.confirmation_count == null
-      ? "—"
-      : d.confirmation_count + "/" + (d.confirmation_total || 7);
-  $("entryTrigger").textContent = safe(d.entry_trigger);
-  $("decisionReason").textContent = d.reason || "—";
-  if ($("dataMode") && lastData) {
-    $("dataMode").textContent =
-      lastData.data_quality && lastData.data_quality.mode
-        ? lastData.data_quality.mode
-        : "—";
+function ema(values, period) {
+  if (values.length < period) return null;
+  let out = values.slice(0, period).reduce((a,b)=>a+b,0) / period;
+  const alpha = 2 / (period + 1);
+  for (let i = period; i < values.length; i++) out = (values[i] - out) * alpha + out;
+  return out;
+}
+
+function rsi(values, period = 14) {
+  if (values.length < period + 1) return null;
+  let gain = 0, loss = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = values[i] - values[i-1];
+    gain += Math.max(0, d);
+    loss += Math.max(0, -d);
   }
-  $("entryStyle").textContent = d.entry_style || "—";
-
-  $("targetTrigger").textContent = safe(d.entry_trigger);
-  $("targetStop").textContent = safe(d.invalidation);
-  $("target1").textContent = safe(d.target1);
-  $("target2").textContent = safe(d.target2);
-
-  $("exitRules").innerHTML = (d.exit_rules || []).map(function(x) {
-    return "<div class=\"muted rule\">• " + escapeHtml(x) + "</div>";
-  }).join("");
+  let avgGain = gain / period;
+  let avgLoss = loss / period;
+  for (let i = period + 1; i < values.length; i++) {
+    const d = values[i] - values[i-1];
+    avgGain = ((avgGain * (period - 1)) + Math.max(0,d)) / period;
+    avgLoss = ((avgLoss * (period - 1)) + Math.max(0,-d)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 }
 
-function renderSetup(s) {
-  s = s || {};
-  $("setupState").textContent = s.state || "DATA NOT AVAILABLE";
-  $("prevHigh").textContent = safe(s.prev_high);
-  $("higherLow").textContent = safe(s.higher_low);
-  $("stop").textContent = safe(s.stop);
+function mean(values) {
+  if (!values.length) return null;
+  return values.reduce((a,b)=>a+b,0) / values.length;
 }
 
-function renderMarket(m) {
-  m = m || {};
-  const p = m.profile || {};
-
-  $("poc").textContent = safe(p.poc);
-  $("vah").textContent = safe(p.vah);
-  $("val").textContent = safe(p.val);
-  $("vwap").textContent = safe(m.vwap);
-
-  $("rsi").textContent = safe(m.rsi14, 2);
-  $("ema").textContent = safe(m.ema9) + " / " + safe(m.ema21);
-  $("buyRatio").textContent = m.buy_ratio_5m == null ? "—" : pct(Number(m.buy_ratio_5m) * 100, 1);
-  $("volSpike").textContent = m.volume_spike == null ? "—" : Number(m.volume_spike).toFixed(2) + "x";
-  $("trendState").textContent = m.ema_trend || "—";
-
-  $("profileRows").innerHTML =
-    row("Price vs VAH", pct(m.distance_vah_pct)) +
-    row("Price vs POC", pct(m.distance_poc_pct)) +
-    row("Price vs VAL", pct(m.distance_val_pct)) +
-    row("ATR", pct(m.atr_pct));
-
-  $("flowRows").innerHTML =
-    row("1m", pct(m.return_1m_pct)) +
-    row("5m", pct(m.return_5m_pct)) +
-    row("15m", pct(m.return_15m_pct)) +
-    row("30m", pct(m.return_30m_pct)) +
-    row("Volume / Liquidity", m.volume_liquidity_ratio == null ? "—" : Number(m.volume_liquidity_ratio).toFixed(3));
-}
-
-function renderSocial(s, items) {
-  s = s || {};
-
-  const socialLabel = {
-    "X_CREDITS_DEPLETED": "X CREDITS DEPLETED",
-    "X_RATE_LIMITED": "X RATE LIMITED",
-    "X_AUTH_401": "X AUTH ERROR",
-    "X_AUTH_403": "X ACCESS ERROR",
-    "NOT_CONFIGURED": "X NOT CONFIGURED",
-    "NO_POSTS": "NO TOKEN POSTS",
-    "READY": "READY",
-  }[s.state] || s.state || "—";
-  $("socialState").textContent = socialLabel;
-  $("posts").textContent = s.recent_15m == null ? "—" : s.recent_15m;
-  $("vel").textContent = s.mention_velocity == null ? "—" : Number(s.mention_velocity).toFixed(2);
-  $("accel").textContent = s.velocity_acceleration == null ? "—" : Number(s.velocity_acceleration).toFixed(2) + "x";
-  $("authors").textContent = s.unique_author_count == null ? "—" : s.unique_author_count;
-  $("sentiment").textContent = s.sentiment == null ? "—" : Number(s.sentiment).toFixed(0);
-  $("authorQuality").textContent = s.author_quality == null ? "—" : Number(s.author_quality).toFixed(0);
-  $("engagement").textContent = s.engagement_velocity == null ? "—" : Number(s.engagement_velocity).toFixed(1);
-  $("copyRisk").textContent = s.coordination_risk == null ? "—" : Number(s.coordination_risk).toFixed(0);
-  $("topAuthor").textContent = s.top_authors && s.top_authors.length ? "@" + s.top_authors[0].username : "—";
-
-  const list = items || [];
-  $("tweets").innerHTML = list.slice(0, 12).map(function(t) {
-    const age = t.age_seconds == null ? "" : " · " + Math.max(0, Math.round(t.age_seconds / 60)) + "m";
-    const verify = t.verified ? " ✓" : "";
-    return "<div class=\"tweet\">" +
-      "<div class=\"meta\">@" + escapeHtml(t.username || "unknown") + verify +
-      " · " + Number(t.followers || 0).toLocaleString() +
-      " followers · " + Number(t.engagement || 0).toLocaleString() + " eng" + age + "</div>" +
-      "<p>" + escapeHtml(t.text || "") + "</p>" +
-      "<a target=\"_blank\" rel=\"noopener\" href=\"" + escapeHtml(t.url || "#") + "\">OPEN ON X ↗</a>" +
-      "</div>";
-  }).join("") || "<div class=\"muted\">No posts returned for the token-specific query.</div>";
-}
-
-function renderRisk(r) {
-  r = r || {};
-
-  $("riskLevel").textContent = r.overall || "UNKNOWN";
-
-  const sg = lastData && lastData.security_gate ? lastData.security_gate : {};
-  const gate = $("securityGate");
-  if (gate) {
-    gate.textContent = sg.label || "SECURITY UNKNOWN";
-    gate.className = "gate " + String(sg.label || "SECURITY UNKNOWN").toLowerCase().replace(/[^a-z]+/g, "-");
+function deriveSignal(history) {
+  const prices = history.map(x=>x.price);
+  if (prices.length < 8) {
+    return {
+      state:"WAIT", reason:"Building live price history…", rsi:null,
+      ema9:null, ema21:null, mean:null, pressure:null, score:0
+    };
   }
 
-  const security = lastData && lastData.security && typeof lastData.security === "object"
-    ? lastData.security
-    : {};
-  const securitySummary =
-    row("Holder coverage", security.coverage_ratio == null ? "—" : pct(Number(security.coverage_ratio) * 100, 0)) +
-    row("Top holder", security.top_holder_share == null ? "—" : pct(Number(security.top_holder_share) * 100, 1)) +
-    row("Top 10 holders", security.top10_holder_share == null ? "—" : pct(Number(security.top10_holder_share) * 100, 1)) +
-    row("Mint authority", security.mint_authority ? "ACTIVE" : security.state ? "OFF" : "—") +
-    row("Freeze authority", security.freeze_authority ? "ACTIVE" : security.state ? "OFF" : "—");
+  const p = prices[prices.length - 1];
+  const e9 = ema(prices, 9);
+  const e21 = ema(prices, 21);
+  const r = rsi(prices, 14);
+  const m = mean(prices.slice(-30));
+  const recent = prices.slice(-12);
+  let up = 0;
+  for (let i=1;i<recent.length;i++) if (recent[i] > recent[i-1]) up++;
+  const pressure = recent.length > 1 ? up / (recent.length - 1) : 0.5;
+  const momentum = p && prices[0] ? (p / prices[Math.max(0, prices.length-5)] - 1) * 100 : 0;
 
-  const riskFlags = (r.flags || []).map(function(flag) {
-    return row(escapeHtml(flag.code || "FLAG"), escapeHtml(flag.level || "UNKNOWN")) +
-      "<div class=\"muted\">" + escapeHtml(flag.reason || "") + "</div>";
-  }).join("");
+  let score = 50;
+  if (e9 != null && e21 != null) score += e9 > e21 ? 18 : -18;
+  if (r != null) {
+    if (r >= 52 && r <= 70) score += 12;
+    if (r < 45) score -= 14;
+    if (r > 78) score -= 8;
+  }
+  if (m != null) score += p > m ? 10 : -10;
+  if (pressure >= 0.65) score += 10;
+  if (pressure <= 0.35) score -= 10;
+  if (momentum > 1) score += 8;
+  if (momentum < -1) score -= 8;
+  score = clamp(score,0,100);
 
-  $("riskRows").innerHTML =
-    securitySummary +
-    riskFlags +
-    (riskFlags ? "" : "<div class=\"muted\">No additional risk flags returned.</div>");
+  let state = "WAIT";
+  if (e9 != null && e21 != null && r != null) {
+    if (score >= 72 && e9 > e21 && p > m && r >= 52 && r <= 70 && pressure >= 0.58) {
+      state = "BUY";
+    } else if (score <= 32 && e9 < e21 && p < m && r <= 48 && pressure <= 0.42) {
+      state = "SELL";
+    }
+  }
+
+  let reason = "Mixed conditions — wait for confirmation.";
+  if (state === "BUY") reason = "EMA 9 is above EMA 21, price is above the mean, momentum is positive, and upside ticks dominate.";
+  if (state === "SELL") reason = "EMA 9 is below EMA 21, price is below the mean, momentum is negative, and downside ticks dominate.";
+
+  return {state,reason,rsi:r,ema9:e9,ema21:e21,mean:m,pressure,momentum,score};
 }
 
-function renderToken(o) {
-  if (!o || typeof o !== "object") {
-    $("tokenName").textContent = "DATA NOT AVAILABLE";
-    $("tokenRows").innerHTML = "";
+function launchScore(e) {
+  const age = Math.max(0, (Date.now() - e.ts) / 1000);
+  const freshness = clamp(25 - age / 12, 0, 25);
+  const progress = Number(e.vSolInBondingCurve || 0);
+  const progressScore = progress > 0 ? clamp(30 - Math.abs(progress - 46) * 0.55, 0, 30) : 10;
+  const mcap = Number(e.marketCapSol || 0);
+  const mcapScore = clamp(Math.log10(Math.max(1,mcap)) * 8, 0, 25);
+  const initialBuy = Number(e.initialBuy || 0);
+  const buyScore = initialBuy > 0 ? clamp(Math.log10(initialBuy + 1) * 3, 0, 15) : 5;
+  return Math.round(clamp(freshness + progressScore + mcapScore + buyScore,0,100));
+}
+
+function normalizePumpEvent(raw) {
+  const mint = raw.mint || raw.tokenAddress;
+  if (!mint) return null;
+  return {
+    mint,
+    symbol: raw.symbol || raw.tokenSymbol || "NEW",
+    name: raw.name || raw.tokenName || "",
+    creator: raw.traderPublicKey || raw.creator || "",
+    marketCapSol: Number(raw.marketCapSol || 0),
+    vSolInBondingCurve: Number(raw.vSolInBondingCurve || 0),
+    initialBuy: Number(raw.initialBuy || 0),
+    ts: Date.now(),
+    source:"PUMP.FUN",
+    score:0
+  };
+}
+
+function mergedCandidates() {
+  const map = new Map();
+
+  for (const e of pumpEvents) {
+    const row = {...e, score:launchScore(e)};
+    map.set(e.mint,row);
+  }
+
+  for (const x of marketCandidates) {
+    const row = {
+      mint:x.address,
+      symbol:x.symbol || "TOKEN",
+      name:x.name || "",
+      score:Math.round(Number(x.researchScore || 0)),
+      source:x.pumpLane ? "PUMPSWAP" : "MARKET",
+      price:Number(x.priceUsd || 0),
+      liquidity:Number(x.liquidityUsd || 0),
+      change5m:Number(x.priceChange5m || 0),
+      age: x.pairCreatedAt ? Date.now() - Number(x.pairCreatedAt) : null
+    };
+    const old = map.get(row.mint);
+    if (!old || row.score > old.score) map.set(row.mint,row);
+  }
+
+  return [...map.values()]
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,8);
+}
+
+function renderCandidates() {
+  const rows = mergedCandidates();
+  const el = $("candidateList");
+
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">Waiting for live Pump.fun launches…</div>';
     return;
   }
 
-  $("tokenName").textContent = o.symbol || o.name || "TOKEN";
-  $("tokenRows").innerHTML =
-    row("Price", safe(o.price, 10)) +
-    row("Liquidity", usd(o.liquidity)) +
-    row("Market Cap", usd(o.marketCap)) +
-    row("5m Volume", usd(o.v5mUSD)) +
-    row("1h Volume", usd(o.v1hUSD)) +
-    row("24h Volume", usd(o.v24hUSD)) +
-    row("DEX", o.dexId || "—");
+  el.innerHTML = rows.map((x,i)=>{
+    const progress = x.vSolInBondingCurve ? clamp((x.vSolInBondingCurve/85)*100,0,100) : null;
+    const stat = x.marketCapSol
+      ? "MC " + safe(x.marketCapSol,1) + " SOL"
+      : x.liquidity
+        ? "Liq " + usd(x.liquidity)
+        : "LIVE";
+    return '<button class="candidate '+(x.mint===selectedMint?'selected':'')+'" data-mint="'+esc(x.mint)+'">' +
+      '<div class="rank">#'+(i+1)+'</div>' +
+      '<div class="candidateMain"><b>$'+esc(x.symbol)+'</b><span>'+esc(x.mint)+'</span></div>' +
+      '<div class="candidateStats"><b>'+x.score+'</b><span>'+esc(stat)+'</span></div>' +
+      '<div class="candidateTag">'+esc(x.source || "PUMP.FUN")+'</div>' +
+      (progress != null ? '<div class="progress"><i style="width:'+progress+'%"></i></div>' : '') +
+      '</button>';
+  }).join("");
+
+  el.querySelectorAll("[data-mint]").forEach(btn=>{
+    btn.addEventListener("click",()=>selectToken(btn.getAttribute("data-mint")));
+  });
 }
 
-function renderChart(data) {
+function renderSignal(signal) {
+  const state = signal.state || "WAIT";
+  $("signalBadge").textContent = state;
+  $("signalBadge").className = "signal " + state.toLowerCase();
+  $("signalText").textContent = state;
+  $("signalText").className = "signalText " + state.toLowerCase();
+  $("signalReason").textContent = signal.reason || "Waiting for more data.";
+
+  $("liveRsi").textContent = signal.rsi == null ? "—" : Number(signal.rsi).toFixed(1);
+  $("liveEma").textContent = safe(signal.ema9,8) + " / " + safe(signal.ema21,8);
+  $("metricRsi").textContent = signal.rsi == null ? "—" : Number(signal.rsi).toFixed(1);
+  $("metricEma9").textContent = safe(signal.ema9,8);
+  $("metricEma21").textContent = safe(signal.ema21,8);
+  $("metricMean").textContent = signal.mean == null || !selectedHistory.length
+    ? "—"
+    : pct((selectedHistory[selectedHistory.length-1].price / signal.mean - 1) * 100);
+  $("metricPressure").textContent = signal.pressure == null ? "—" : pct(signal.pressure*100,0);
+  $("metricConfirm").textContent = signal.score + "/100";
+}
+
+function renderSecurity(data) {
+  const gate = data?.security_gate || {};
+  $("securityBadge").textContent = gate.label || "UNKNOWN";
+  $("securityBadge").className = "miniBadge " + String(gate.label || "UNKNOWN").toLowerCase().replace(/[^a-z]+/g,"-");
+
+  const s = data?.security;
+  if (!s || typeof s !== "object") {
+    $("securityRows").innerHTML = '<div class="empty">Security data unavailable.</div>';
+    return;
+  }
+
+  $("securityRows").innerHTML =
+    '<div class="row"><span>Holder coverage</span><b>'+pct(Number(s.coverage_ratio || 0)*100,0)+'</b></div>' +
+    '<div class="row"><span>Top holder</span><b>'+pct(Number(s.top_holder_share || 0)*100,1)+'</b></div>' +
+    '<div class="row"><span>Top 10</span><b>'+pct(Number(s.top10_holder_share || 0)*100,1)+'</b></div>' +
+    '<div class="row"><span>Mint authority</span><b>'+ (s.mint_authority ? "ACTIVE" : "OFF") +'</b></div>' +
+    '<div class="row"><span>Freeze authority</span><b>'+ (s.freeze_authority ? "ACTIVE" : "OFF") +'</b></div>';
+}
+
+function renderTape() {
+  const rows = selectedHistory.slice(-12).reverse();
+  if (!rows.length) {
+    $("tape").innerHTML = '<div class="empty">No price updates yet.</div>';
+    return;
+  }
+  $("tape").innerHTML = rows.map((x,i)=>{
+    const prev = selectedHistory[selectedHistory.length-1-i-1];
+    const up = !prev || x.price >= prev.price;
+    return '<div class="tick '+(up?'up':'down')+'"><span>'+new Date(x.ts).toLocaleTimeString()+'</span><b>'+safe(x.price,8)+'</b><i>'+ (up ? "▲" : "▼") +'</i></div>';
+  }).join("");
+}
+
+function updateChart(signal) {
   const canvas = $("chart");
-  if (!canvas || !data) return;
-
-  const candles = data.candles || [];
-  if (!candles.length) {
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    $("chartMeta").textContent = "NO CANDLE DATA";
-    return;
-  }
-
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(320, Math.floor(rect.width));
-  const height = 360;
-
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(height * dpr);
-
+  const w = Math.max(320,Math.floor(rect.width));
+  const h = 420;
+  canvas.width = w*dpr;
+  canvas.height = h*dpr;
   const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
-
-  const left = 8;
-  const right = width - 8;
-  const top = 12;
-  const bottom = 305;
-  const volumeTop = 315;
-  const volumeBottom = 350;
-
-  let lo = Math.min.apply(null, candles.map(c => Number(c.l)));
-  let hi = Math.max.apply(null, candles.map(c => Number(c.h)));
-
-  const p = data.market && data.market.profile ? data.market.profile : {};
-  const levels = [
-    p.poc, p.vah, p.val,
-    data.market && data.market.vwap,
-    data.decision && data.decision.entry_trigger,
-    data.decision && data.decision.invalidation,
-    data.decision && data.decision.target1,
-    data.decision && data.decision.target2
-  ].filter(v => v != null && Number.isFinite(Number(v))).map(Number);
-
-  if (levels.length) {
-    lo = Math.min(lo, Math.min.apply(null, levels));
-    hi = Math.max(hi, Math.max.apply(null, levels));
-  }
-
-  const pad = Math.max((hi - lo) * 0.08, hi * 0.0001);
-  lo -= pad;
-  hi += pad;
-
-  function y(price) {
-    return bottom - ((price - lo) / Math.max(hi - lo, 1e-12)) * (bottom - top);
-  }
-
-  function x(i) {
-    return left + (i + 0.5) * ((right - left) / candles.length);
-  }
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
 
   ctx.fillStyle = "#071019";
-  ctx.fillRect(0, 0, width, height);
+  ctx.fillRect(0,0,w,h);
 
-  ctx.strokeStyle = "#182633";
-  ctx.lineWidth = 1;
-
-  for (let i = 0; i <= 4; i++) {
-    const gy = top + (i / 4) * (bottom - top);
-    ctx.beginPath();
-    ctx.moveTo(left, gy);
-    ctx.lineTo(right, gy);
-    ctx.stroke();
+  if (!selectedHistory.length) {
+    ctx.fillStyle = "#7f90a5";
+    ctx.font = "13px system-ui";
+    ctx.fillText("Waiting for live price data…",20,34);
+    return;
   }
 
-  const maxVol = Math.max.apply(null, candles.map(c => Number(c.v) || 0).concat([1]));
-  const step = (right - left) / candles.length;
-  const candleW = Math.max(1, step * 0.62);
+  const values = selectedHistory.map(x=>x.price);
+  const ema9s = [];
+  const ema21s = [];
+  for(let i=0;i<values.length;i++){
+    ema9s.push(ema(values.slice(0,i+1),9));
+    ema21s.push(ema(values.slice(0,i+1),21));
+  }
 
-  candles.forEach(function(c, i) {
-    const open = Number(c.o);
-    const close = Number(c.c);
-    const high = Number(c.h);
-    const low = Number(c.l);
-    const xx = x(i);
-    const up = close >= open;
+  const meanV = signal.mean;
+  const all = values.concat(ema9s.filter(v=>v!=null),ema21s.filter(v=>v!=null),meanV || []);
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const pad = Math.max((hi-lo)*0.12,hi*0.001 || 1);
+  lo -= pad; hi += pad;
 
-    ctx.strokeStyle = up ? "#35d889" : "#ff6374";
-    ctx.fillStyle = up ? "#35d889" : "#ff6374";
-    ctx.lineWidth = 1;
+  const left=48,right=w-15,top=20,bottom=h-42;
+  const x = i=>left+(i/(Math.max(1,values.length-1)))*(right-left);
+  const y = p=>bottom-((p-lo)/(hi-lo))*(bottom-top);
 
-    ctx.beginPath();
-    ctx.moveTo(xx, y(high));
-    ctx.lineTo(xx, y(low));
-    ctx.stroke();
+  ctx.strokeStyle="#172634";
+  ctx.lineWidth=1;
+  for(let i=0;i<5;i++){
+    const yy=top+i*(bottom-top)/4;
+    ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();
+  }
 
-    const bodyTop = y(Math.max(open, close));
-    const bodyBottom = y(Math.min(open, close));
-    ctx.fillRect(
-      xx - candleW / 2,
-      bodyTop,
-      candleW,
-      Math.max(1, bodyBottom - bodyTop)
-    );
-
-    const volH = ((Number(c.v) || 0) / maxVol) * (volumeBottom - volumeTop);
-    ctx.globalAlpha = 0.35;
-    ctx.fillRect(xx - candleW / 2, volumeBottom - volH, candleW, volH);
-    ctx.globalAlpha = 1;
-  });
-
-  function line(value, color, label, dashed) {
-    if (value == null || !Number.isFinite(Number(value))) return;
-    const yy = y(Number(value));
-
+  function drawSeries(series, lineWidth, dash) {
     ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    if (dashed) ctx.setLineDash([5, 4]);
-    ctx.beginPath();
-    ctx.moveTo(left, yy);
-    ctx.lineTo(right, yy);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = color;
-    ctx.font = "10px system-ui";
-    ctx.fillText(label + " " + safe(value, 6), left + 6, Math.max(11, yy - 4));
+    ctx.lineWidth=lineWidth;
+    ctx.strokeStyle="#a9b7c8";
+    if(dash) ctx.setLineDash(dash);
+    let started=false;
+    series.forEach((v,i)=>{
+      if(v==null) return;
+      if(!started){ctx.beginPath();ctx.moveTo(x(i),y(v));started=true;}
+      else ctx.lineTo(x(i),y(v));
+    });
+    if(started)ctx.stroke();
     ctx.restore();
   }
 
-  line(p.poc, "#e8c75f", "POC", false);
-  line(p.vah, "#66a9ff", "VAH", true);
-  line(p.val, "#66a9ff", "VAL", true);
-  line(data.market && data.market.vwap, "#a7b4c3", "VWAP", true);
-  line(data.decision && data.decision.entry_trigger, "#39dc89", "TRIGGER", false);
-  line(data.decision && data.decision.invalidation, "#ff6575", "STOP", true);
-  line(data.decision && data.decision.target1, "#39dc89", "T1", true);
-  line(data.decision && data.decision.target2, "#39dc89", "T2", true);
+  ctx.strokeStyle="#e7eef7";
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  values.forEach((v,i)=>i===0?ctx.moveTo(x(i),y(v)):ctx.lineTo(x(i),y(v)));
+  ctx.stroke();
 
-  const last = candles[candles.length - 1];
-  $("chartMeta").textContent = candles.length + " closed 1m candles · last " + safe(last.c, 8);
-}
+  ctx.strokeStyle="#39dc89";
+  ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ema9s.forEach((v,i)=>{if(v==null)return;i===0?ctx.moveTo(x(i),y(v)):ctx.lineTo(x(i),y(v));});
+  ctx.stroke();
 
-function renderAll(data) {
-  lastData = data;
+  ctx.strokeStyle="#ffbd54";
+  ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ema21s.forEach((v,i)=>{if(v==null)return;i===0?ctx.moveTo(x(i),y(v)):ctx.lineTo(x(i),y(v));});
+  ctx.stroke();
 
-  renderDecision(data.decision);
-  renderSetup(data.setup);
-  renderMarket(data.market);
-  renderChart(data);
-  renderSocial(data.social, data.social_items);
-  renderRisk(data.risk);
-  renderToken(data.overview);
-
-  $("queryUsed").textContent = data.x_query_used || "—";
-  $("raw").textContent = JSON.stringify(data, null, 2);
-
-  const currentPrice = data.market && data.market.price;
-  if (currentPrice != null && $("pEntry").value === "") {
-    $("pEntry").value = currentPrice;
+  if(meanV!=null){
+    ctx.save();ctx.strokeStyle="#6da8ff";ctx.setLineDash([6,5]);ctx.beginPath();ctx.moveTo(left,y(meanV));ctx.lineTo(right,y(meanV));ctx.stroke();ctx.restore();
   }
 
-  loadTrades();
-}
-
-async function analyze() {
-  const mint = $("mint").value.trim();
-
-  if (!mint) {
-    $("decisionReason").textContent = "Paste a Solana contract address first.";
-    return;
-  }
-
-  $("action").textContent = "ANALYZING…";
-  $("decisionReason").textContent = "Pulling market structure, flow, risk and token-specific X posts…";
-
-  try {
-    const r = await fetch("/api/analyze", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        mint: mint,
-        x_query: $("query").value.trim()
-      })
-    });
-
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || "Analyze request failed");
-
-    renderAll(data);
-  } catch (e) {
-    $("action").textContent = "ERROR";
-    $("decisionReason").textContent = e.message || "Unknown error";
-    $("raw").textContent = String(e && e.stack ? e.stack : e);
-  }
-}
-
-function toggleLive() {
-  live = !live;
-  $("liveToggle").textContent = live ? "LIVE ON · 30s" : "LIVE OFF";
-
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-
-  if (live) {
-    analyze();
-    timer = setInterval(analyze, 30000);
-  }
-}
-
-async function loadTrades() {
-  try {
-    const r = await fetch("/api/paper/trades?x=" + Date.now());
-    const j = await r.json();
-
-    $("paperTrades").innerHTML =
-      (j.trades || []).slice(0, 10).map(function(t) {
-        const open = t.pnl == null;
-        return "<div class=\"trade\">" +
-          "<span>#"+ t.id + " " + String(t.mint || "").slice(0, 8) + "… · " +
-          (open ? "OPEN" : "CLOSED") + "</span>" +
-          "<b>" + (open ? "OPEN" : usd(t.pnl)) + "</b>" +
-          (open
-            ? "<button class=\"secondary smallButton\" data-close-trade=\"" + t.id + "\">CLOSE</button>"
-            : "") +
-          "</div>";
-      }).join("") ||
-      "<div class=\"muted\">No paper trades yet.</div>";
-
-    document.querySelectorAll("[data-close-trade]").forEach(function(btn) {
-      btn.addEventListener("click", function() {
-        const id = Number(btn.getAttribute("data-close-trade"));
-        const price = Number(prompt("Paper exit price:"));
-        if (!Number.isFinite(price) || price <= 0) return;
-        paperClose(id, price);
-      });
-    });
-  } catch (e) {}
-}
-
-async function paperClose(tradeId, exitPrice) {
-  try {
-    const r = await fetch("/api/paper/close", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({
-        trade_id: tradeId,
-        exit: exitPrice
-      })
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || "Paper close failed");
-    await loadTrades();
-  } catch (e) {
-    $("decisionReason").textContent = "Paper close error: " + (e.message || e);
-  }
-}
-
-async function paperOpen() {
-  const mint = $("mint").value.trim();
-  const entry = Number($("pEntry").value || (lastData && lastData.market && lastData.market.price));
-  const qty = Number($("pQty").value);
-
-  if (!mint || !Number.isFinite(entry) || !Number.isFinite(qty) || qty <= 0) {
-    $("decisionReason").textContent = "Enter a mint, entry price, and quantity.";
-    return;
-  }
-
-  await fetch("/api/paper/open", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({
-      mint: mint,
-      entry: entry,
-      qty: qty,
-      note: $("pNote").value,
-      side: "LONG"
-    })
+  selectedSignals.forEach(sig=>{
+    const idx=selectedHistory.findIndex(v=>v.ts===sig.ts);
+    if(idx<0)return;
+    const yy=y(sig.price),xx=x(idx);
+    const isBuy=sig.state==="BUY";
+    ctx.fillStyle=isBuy?"#39dc89":"#ff6575";
+    ctx.beginPath();ctx.arc(xx,yy,5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=isBuy?"#39dc89":"#ff6575";
+    ctx.font="bold 11px system-ui";
+    ctx.fillText(isBuy?"BUY":"SELL",Math.min(right-34,xx+7),Math.max(14,yy-7));
   });
 
-  loadTrades();
+  ctx.fillStyle="#7f90a5";
+  ctx.font="10px system-ui";
+  ctx.fillText("PRICE",left,12);
+  ctx.fillText(safe(hi,8),left+4,top+10);
+  ctx.fillText(safe(lo,8),left+4,bottom);
+
+  $("chartMode").textContent = selectedHistory.length >= 21
+    ? "LIVE 5s PRICE · EMA 9/21 · RSI 14"
+    : "BUILDING LIVE HISTORY";
 }
 
-document.addEventListener("DOMContentLoaded", function() {
-  $("analyze").addEventListener("click", analyze);
-  $("liveToggle").addEventListener("click", toggleLive);
-  $("paperOpen").addEventListener("click", paperOpen);
-  $("radarRefresh").addEventListener("click", refreshRadar);
-  $("scanTop").addEventListener("click", scanTop);
+function applyLivePoint(price, timestamp) {
+  if (!Number.isFinite(Number(price))) return;
 
-  $("mint").addEventListener("keydown", function(e) {
-    if (e.key === "Enter") analyze();
+  const point={price:Number(price),ts:Number(timestamp||Date.now())* (Number(timestamp||0)>2e10?1:1000)};
+  if (selectedHistory.length && point.ts <= selectedHistory[selectedHistory.length-1].ts) return;
+
+  selectedHistory.push(point);
+  if (selectedHistory.length > 180) selectedHistory.shift();
+
+  const signal=deriveSignal(selectedHistory);
+  const prior=selectedSignals.length ? selectedSignals[selectedSignals.length-1].state : "WAIT";
+  if (signal.state !== "WAIT" && signal.state !== prior) {
+    selectedSignals.push({state:signal.state,price:point.price,ts:point.ts});
+    if(selectedSignals.length>12)selectedSignals.shift();
+  }
+
+  $("livePrice").textContent=safe(point.price,10);
+  const first=selectedHistory[0]?.price;
+  $("liveChange").textContent=first?pct((point.price/first-1)*100):"—";
+  $("lastUpdate").textContent=new Date(point.ts).toLocaleTimeString();
+
+  renderSignal(signal);
+  renderTape();
+  updateChart(signal);
+}
+
+async function pollLivePrice() {
+  if (!selectedMint) return;
+  try {
+    const r=await fetch("/api/live/price?mint="+encodeURIComponent(selectedMint)+"&t="+Date.now(),{cache:"no-store"});
+    const j=await r.json();
+    if(j.price!=null) applyLivePoint(j.price,j.timestamp);
+  } catch {}
+}
+
+async function analyzeSelected() {
+  if (!selectedMint || busy) return;
+  busy=true;
+  $("analyzeButton").textContent="ANALYZING…";
+  try {
+    const r=await fetch("/api/analyze",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({mint:selectedMint,include_x:false})
+    });
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.detail || "Analysis failed");
+
+    renderSecurity(data);
+    const overview = data.overview && typeof data.overview === "object" ? data.overview : {};
+    const asset = data.asset && typeof data.asset === "object" ? data.asset : {};
+    const meta = asset.token_info || {};
+    selectedInfo.symbol = overview.symbol || meta.symbol || selectedInfo.symbol || "TOKEN";
+    selectedInfo.name = overview.name || selectedInfo.name || "";
+    $("selectedTitle").textContent="$"+selectedInfo.symbol;
+    $("selectedMint").textContent=selectedMint;
+
+    if(Array.isArray(data.candles) && data.candles.length) {
+      selectedHistory = data.candles.map(c=>({price:Number(c.c),ts:Number(c.ts)*1000})).slice(-120);
+      selectedSignals=[];
+      const s=deriveSignal(selectedHistory);
+      $("livePrice").textContent=safe(selectedHistory[selectedHistory.length-1].price,10);
+      renderSignal(s);
+      updateChart(s);
+      renderTape();
+    }
+
+    $("securityState").textContent=(data.security_gate?.label || "UNKNOWN");
+  } catch(e) {
+    $("signalReason").textContent=e.message || "Analysis failed.";
+  } finally {
+    busy=false;
+    $("analyzeButton").textContent="ANALYZE";
+  }
+}
+
+async function selectToken(mint) {
+  selectedMint=mint;
+  selectedHistory=[];
+  selectedSignals=[];
+  const all=mergedCandidates();
+  selectedInfo=all.find(x=>x.mint===mint) || {mint};
+  $("selectedTitle").textContent="$"+(selectedInfo.symbol || "TOKEN");
+  $("selectedMint").textContent=mint;
+  $("securityRows").innerHTML='<div class="empty">Checking security…</div>';
+  $("securityBadge").textContent="CHECKING";
+  $("securityBadge").className="miniBadge";
+  $("signalText").textContent="WAIT";
+  $("signalText").className="signalText wait";
+  $("signalBadge").textContent="WAIT";
+  $("signalBadge").className="signal wait";
+  $("signalReason").textContent="Building live price history…";
+  renderCandidates();
+  await analyzeSelected();
+  if(liveTimer)clearInterval(liveTimer);
+  await pollLivePrice();
+  liveTimer=setInterval(pollLivePrice,5000);
+}
+
+function startPumpFeed() {
+  if (pumpSocket) return;
+  try {
+    pumpSocket = new WebSocket("wss://pumpportal.fun/api/data");
+    pumpSocket.addEventListener("open",()=>{
+      $("pumpState").textContent="LIVE";
+      setSource("dotPump","pumpState","LIVE",["LIVE"]);
+      pumpSocket.send(JSON.stringify({method:"subscribeNewToken"}));
+    });
+    pumpSocket.addEventListener("message",ev=>{
+      try{
+        const raw=JSON.parse(ev.data);
+        const item=normalizePumpEvent(raw);
+        if(!item)return;
+        const old=pumpEvents.find(x=>x.mint===item.mint);
+        if(old) Object.assign(old,item,{ts:old.ts});
+        else pumpEvents.unshift(item);
+        pumpEvents=pumpEvents.slice(0,60);
+        renderCandidates();
+        if(!selectedMint && pumpEvents.length>=3){
+          const top=mergedCandidates()[0];
+          if(top)selectToken(top.mint);
+        }
+      }catch{}
+    });
+    pumpSocket.addEventListener("close",()=>{
+      $("pumpState").textContent="RECONNECTING";
+      setTimeout(startPumpFeed,5000);
+    });
+    pumpSocket.addEventListener("error",()=>{
+      $("pumpState").textContent="UNAVAILABLE";
+    });
+  }catch{
+    $("pumpState").textContent="UNAVAILABLE";
+  }
+}
+
+async function refreshMarketCandidates() {
+  try{
+    const r=await fetch("/api/discover?t="+Date.now(),{cache:"no-store"});
+    const j=await r.json();
+    marketCandidates=j.candidates || [];
+    renderCandidates();
+  }catch{}
+}
+
+function setSource(dotId,textId,state,goodStates){const dot=$(dotId);const lab=$(textId);if(!dot||!lab)return;dot.className="dot "+(goodStates.includes(state)?"ok":"bad");lab.textContent=state||"UNKNOWN";}
+
+document.addEventListener("DOMContentLoaded",()=>{
+  $("openMint").addEventListener("click",()=>{
+    const mint=$("mintInput").value.trim();
+    if(mint)selectToken(mint);
   });
-
-  $("query").addEventListener("keydown", function(e) {
-    if (e.key === "Enter") analyze();
+  $("mintInput").addEventListener("keydown",e=>{
+    if(e.key==="Enter")$("openMint").click();
+  });
+  $("analyzeButton").addEventListener("click",analyzeSelected);
+  $("scanNow").addEventListener("click",async()=>{
+    await refreshMarketCandidates();
+    renderCandidates();
   });
 
   health();
-  loadTrades();
-  startAutopilot();
+  refreshMarketCandidates();
   startPumpFeed();
-  setInterval(health, 15000);
-  window.addEventListener("resize", function() {
-    if (lastData) renderChart(lastData);
+  setInterval(health,15000);
+  setInterval(refreshMarketCandidates,30000);
+  window.addEventListener("resize",()=>{
+    const s=deriveSignal(selectedHistory);
+    updateChart(s);
   });
 });
-
-function renderRadar(candidates) {
-  const list = candidates || [];
-  if (!list.length) {
-    $("radarList").innerHTML = "<div class=\"muted\">No fresh contract-address candidates were found.</div>";
-    return;
-  }
-
-  $("radarList").innerHTML = list.map(function(c, i) {
-    const ticker = (c.ticker_hints || []).length ? " · $" + c.ticker_hints[0] : "";
-    const top = c.top_author ? "@" + c.top_author : "unknown";
-    return "<div class=\"radarRow\">" +
-      "<div class=\"radarRank\">#" + (i + 1) + "</div>" +
-      "<div class=\"radarMain\">" +
-        "<div class=\"radarTitle\"><b>" + escapeHtml(ticker || c.mint.slice(0, 8) + "…") + "</b> <span>" + escapeHtml(c.mint) + "</span></div>" +
-        "<div class=\"radarSub\">" + c.posts_15m + " posts · " + c.unique_authors + " authors · " + Number(c.mention_velocity || 0).toFixed(2) + "/min · accel " + Number(c.acceleration || 0).toFixed(2) + "x · copy risk " + Number(c.coordination_risk || 0).toFixed(0) + "</div>" +
-      "</div>" +
-      "<div class=\"radarScore\">" + Number(c.score || 0).toFixed(0) + "</div>" +
-      "<button class=\"secondary smallButton\" data-ca=\"" + escapeHtml(c.mint) + "\">ANALYZE</button>" +
-    "</div>";
-  }).join("");
-
-  document.querySelectorAll("[data-ca]").forEach(function(btn) {
-    btn.addEventListener("click", function() {
-      $("mint").value = btn.getAttribute("data-ca") || "";
-      analyze();
-      window.scrollTo({top: 0, behavior: "smooth"});
-    });
-  });
-}
-
-async function refreshRadar() {
-  const button = $("radarRefresh");
-  button.textContent = "SCANNING…";
-  button.disabled = true;
-
-  try {
-    const r = await fetch("/api/x/radar", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({
-        query: $("query").value.trim() || "lang:en -is:retweet",
-        max_results: 100
-      })
-    });
-
-    const data = await r.json();
-    renderRadar(data.candidates || []);
-    if (data.state && data.state !== "READY") {
-      const radarMessage = data.state === "X_CREDITS_DEPLETED"
-        ? "X radar is paused because the X API project has depleted its credits."
-        : "X radar: " + data.state;
-      $("radarList").innerHTML = "<div class=\"muted\">" + escapeHtml(radarMessage) + "</div>";
-    }
-  } catch (e) {
-    $("radarList").innerHTML = "<div class=\"muted\">Radar error: " + escapeHtml(e.message || e) + "</div>";
-  } finally {
-    button.textContent = "REFRESH RADAR";
-    button.disabled = false;
-  }
-}
