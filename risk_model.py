@@ -49,6 +49,13 @@ def build_safety_profile(
         risk += rc_score * 0.45
         evidence += 24
 
+        rc_status = "safe" if rc_score < 15 else "warn" if rc_score < 35 else "danger"
+        checks.append({
+            "name": "RugCheck aggregate",
+            "status": rc_status,
+            "detail": f"RugCheck normalized risk score: {rc_score:.0f}/100.",
+        })
+
     rc_risks = rugcheck.get("risks") or []
     rc_danger = 0
     rc_warn = 0
@@ -196,6 +203,42 @@ def build_safety_profile(
                     "safe",
                     f"Top 10 wallets control about {top10_pct:.1f}% of supply.",
                 )
+
+    if security.get("state") != "READY":
+        holders = rugcheck.get("topHolders") or []
+        holder_pcts = []
+
+        for holder in holders:
+            if isinstance(holder, dict):
+                pct = _num(holder.get("pct"))
+                if pct is not None:
+                    holder_pcts.append(max(0.0, pct))
+
+        if holder_pcts:
+            top10_pct = sum(holder_pcts[:10])
+
+            if top10_pct > 70:
+                risk += 16
+                checks.append({
+                    "name": "Top 10 concentration",
+                    "status": "danger",
+                    "detail": f"RugCheck reports about {top10_pct:.1f}% in its top 10 holders.",
+                })
+            elif top10_pct > 50:
+                risk += 8
+                checks.append({
+                    "name": "Top 10 concentration",
+                    "status": "warn",
+                    "detail": f"RugCheck reports about {top10_pct:.1f}% in its top 10 holders.",
+                })
+            else:
+                checks.append({
+                    "name": "Top 10 concentration",
+                    "status": "safe",
+                    "detail": f"RugCheck reports about {top10_pct:.1f}% in its top 10 holders.",
+                })
+
+            evidence += 8
 
     extensions = [
         str(x).lower()
