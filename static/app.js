@@ -5,6 +5,7 @@ let liveTradeSocket = null;
 let fallbackTimer = null;
 let reconnectTimer = null;
 let pricePollTimer = null;
+let currentCandleSyncTimer = null;
 
 let pumpEvents = [];
 let marketCandidates = [];
@@ -35,7 +36,7 @@ let renderScheduled = false;
 let liveTradeBackoff = 500;
 
 const PAGE_SIZE = 30;
-const MAX_HISTORY_BARS = 30;
+const MAX_HISTORY_BARS = 120;
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, Number(v) || 0));
@@ -1091,6 +1092,10 @@ function mergePage(page) {
     selectedCandles.map(x=>[x.time,x])
   );
 
+  const currentBucket = Math.floor(
+    Date.now() / 1000 / (chartTimeframe * 60)
+  ) * (chartTimeframe * 60);
+
   for (const item of page) {
     const existing = byTime.get(item.time);
 
@@ -1099,22 +1104,23 @@ function mergePage(page) {
       continue;
     }
 
-    // Keep the live current value while taking the historical wick/volume
-    // from the authoritative Pump.fun candle page.
-    existing.o = item.o;
-    existing.h = Math.max(existing.h,item.h);
-    existing.l = Math.min(existing.l,item.l);
-
-    if (
-      item.time <
-      selectedCandles[selectedCandles.length - 1]?.time
-    ) {
-      existing.c = item.c;
+    // Pump.fun is authoritative. For closed candles, replace the bar exactly
+    // instead of combining values from different providers.
+    if (item.time !== currentBucket) {
+      Object.assign(existing,item);
+      continue;
     }
 
+    // The current forming candle may have a newer websocket trade than the
+    // cached Pump.fun HTTP response. Preserve the newer live close/wick while
+    // taking the authoritative opening value from Pump.fun.
+    existing.o = item.o;
+    existing.h = Math.max(item.h, existing.h);
+    existing.l = Math.min(item.l, existing.l);
+    existing.c = existing.c;
     existing.v = Math.max(
-      Number(existing.v) || 0,
-      Number(item.v) || 0
+      Number(item.v) || 0,
+      Number(existing.v) || 0
     );
   }
 
@@ -1317,6 +1323,9 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
   const bucket = Math.floor(tSec / span) * span;
 
   let current = selectedCandles[selectedCandles.length - 1];
+  const liveVolume = recordTrade
+    ? Math.max(0, Number(recordTrade.volumeSol) || 0)
+    : 0;
 
   if (!current || bucket > current.time) {
     current = {
@@ -1326,13 +1335,17 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
       h: price,
       l: price,
       c: price,
-      v: 0
+      v: liveVolume
     };
     selectedCandles.push(current);
   } else if (bucket === current.time) {
     current.h = Math.max(current.h, price);
     current.l = Math.min(current.l, price);
     current.c = price;
+    current.v = Math.max(
+      Number(current.v) || 0,
+      (Number(current.v) || 0) + liveVolume
+    );
   } else {
     const old = selectedCandles.find(x => x.time === bucket);
     if (old) {
@@ -1398,10 +1411,57 @@ async function pollLivePrice() {
   } catch {}
 }
 
+async function syncCurrentPumpCandle() {
+  if (!selectedMint) return;
+
+  try {
+    const r = await fetch(
+      "/api/chart?mint=" +
+      encodeURIComponent(selectedMint) +
+      "&limit=30&offset=0&timeframe=" +
+      chartTimeframe +
+      "&t=" + Date.now(),
+      {cache:"no-store"}
+    );
+
+    if (!r.ok) return;
+
+    const j = await readJsonResponse(r);
+    const candles = (j.candles || [])
+      .map(normalizeCandle)
+      .filter(Boolean);
+
+    if (!candles.length || !selectedMint) return;
+
+    mergePage(candles);
+    chartDataSource = String(j.source || chartDataSource);
+
+    renderChart(selectedCandles,false);
+  } catch {
+    // The Helius trade websocket keeps the chart moving if HTTP reconciliation
+    // is temporarily unavailable.
+  }
+}
+
 function startLivePricePoll() {
   if (pricePollTimer) clearInterval(pricePollTimer);
   pricePollTimer = setInterval(pollLivePrice, 1200);
   pollLivePrice();
+}
+
+function startCurrentCandleSync() {
+  if (currentCandleSyncTimer) {
+    clearInterval(currentCandleSyncTimer);
+  }
+
+  // One-second reconciliation against the same Pump.fun candle feed used for
+  // history. WebSocket trades fill the gap between HTTP snapshots.
+  currentCandleSyncTimer = setInterval(
+    syncCurrentPumpCandle,
+    1000
+  );
+
+  syncCurrentPumpCandle();
 }
 
 function disconnectLiveTrade() {
@@ -1413,6 +1473,16 @@ function disconnectLiveTrade() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  }
+
+  if (pricePollTimer) {
+    clearInterval(pricePollTimer);
+    pricePollTimer = null;
+  }
+
+  if (currentCandleSyncTimer) {
+    clearInterval(currentCandleSyncTimer);
+    currentCandleSyncTimer = null;
   }
 
   if (liveTradeSocket) {
@@ -1774,6 +1844,7 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
+  startCurrentCandleSync();
 
   await fetchInitialHistory();
 
