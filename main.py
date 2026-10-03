@@ -860,10 +860,28 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             (name, rows, chart_data_quality(rows, minimum_bars=3))
             for name, rows in options
         ]
-        best_source, best_candles, best_quality = max(
-            scored,
-            key=lambda row: (row[2], len(row[1])),
-        )
+        # Prefer reconstructed on-chain trades whenever they are available.
+        # They use the same SOL/token price unit as the live trade websocket,
+        # eliminating frontend-feed unit/format surprises.
+        onchain_rows = [
+            row for row in scored
+            if row[0] in {"HELIUS_ONCHAIN_TRADES", "SOLANA_PUBLIC_RPC"}
+        ]
+        valid_onchain = [
+            row for row in onchain_rows
+            if row[2] > 0
+        ]
+
+        if valid_onchain:
+            best_source, best_candles, best_quality = max(
+                valid_onchain,
+                key=lambda row: (row[2], len(row[1])),
+            )
+        else:
+            best_source, best_candles, best_quality = max(
+                scored,
+                key=lambda row: (row[2], len(row[1])),
+            )
 
         if best_quality > 0:
             candles = sorted(best_candles, key=lambda x: x.ts)[-limit:]
