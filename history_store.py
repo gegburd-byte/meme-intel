@@ -1,10 +1,16 @@
+import os
 import sqlite3
 import time
+from pathlib import Path
 
-DB = "market_history.db"
+DB = os.getenv(
+    "HISTORY_DATABASE_PATH",
+    str(Path(os.getenv("DATABASE_PATH", "./data/meme_intel.db")).with_name("market_history.db")),
+)
 
 
 def connect():
+    Path(DB).parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB)
 
 
@@ -30,8 +36,10 @@ def init_db():
 
 
 def save_candles(mint, candles):
-    init_db()
+    if not candles:
+        return
 
+    init_db()
     now = int(time.time())
 
     with connect() as con:
@@ -61,7 +69,7 @@ def token_counts(min_candles=1):
     init_db()
 
     with connect() as con:
-        rows = con.execute(
+        return con.execute(
             """
             SELECT mint, COUNT(*) AS candle_count
             FROM candles
@@ -72,14 +80,12 @@ def token_counts(min_candles=1):
             (min_candles,),
         ).fetchall()
 
-    return rows
-
 
 def load_candles(mint):
     init_db()
 
     with connect() as con:
-        rows = con.execute(
+        return con.execute(
             """
             SELECT ts, o, h, l, c, v
             FROM candles
@@ -88,8 +94,6 @@ def load_candles(mint):
             """,
             (mint,),
         ).fetchall()
-
-    return rows
 
 
 init_db()
