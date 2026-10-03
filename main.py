@@ -484,7 +484,10 @@ async def analyze(req: AnalyzeReq):
     if not mint:
         raise HTTPException(400, "Mint required")
 
-    overview, overview_err = await ds.overview(mint)
+    try:
+        overview, overview_err = await ds.overview(mint)
+    except Exception as exc:
+        overview, overview_err = None, f"OVERVIEW_ERROR:{str(exc)[:220]}"
     data = overview.get("data", {}) if isinstance(overview, dict) else {}
     x_query = build_token_x_query(mint, data.get("symbol"), data.get("name"), req.x_query)
 
@@ -493,16 +496,43 @@ async def analyze(req: AnalyzeReq):
     rugcheck_task = rc.report(mint)
     x_task = xa.recent(x_query, 60) if req.include_x else skipped_x()
 
-    (
-        (security, security_err),
-        (d1, e1),
-        (rugcheck, rugcheck_err),
-        (xp, xerr),
-    ) = await asyncio.gather(
+    provider_results = await asyncio.gather(
         security_task,
         candles_task,
         rugcheck_task,
         x_task,
+        return_exceptions=True,
+    )
+
+    def unpack_provider(result, default_value, label):
+        if isinstance(result, Exception):
+            return default_value, f"{label}_ERROR:{str(result)[:220]}"
+        if (
+            isinstance(result, tuple) and
+            len(result) == 2
+        ):
+            return result
+        return default_value, f"{label}_MALFORMED_RESPONSE"
+
+    (security, security_err) = unpack_provider(
+        provider_results[0],
+        (None, "NO_SECURITY_DATA"),
+        "SECURITY",
+    )
+    (d1, e1) = unpack_provider(
+        provider_results[1],
+        (None, "NO_MARKET_HISTORY"),
+        "GECKO",
+    )
+    (rugcheck, rugcheck_err) = unpack_provider(
+        provider_results[2],
+        (None, "NO_RUGCHECK_DATA"),
+        "RUGCHECK",
+    )
+    (xp, xerr) = unpack_provider(
+        provider_results[3],
+        (None, "X_UNAVAILABLE"),
+        "X",
     )
 
     asset = (
@@ -536,7 +566,11 @@ async def analyze(req: AnalyzeReq):
     raw1 = parse_candles(d1)
     c1 = closed_candles(raw1, 60)
     if c1:
-        save_candles(mint, c1)
+        try:
+            save_candles(mint, c1)
+        except Exception:
+            # Persistent history is useful but must never break live analysis.
+            pass
     c5 = aggregate_5m_from_1m(c1)
     setup = evaluate_setup(c5, c1) if c5 and c1 else None
 
@@ -553,12 +587,22 @@ async def analyze(req: AnalyzeReq):
 
     sec_gate = security_gate(security)
 
-    safety_profile = build_safety_profile(
-        security=security,
-        rugcheck=rugcheck,
-        overview=data,
-        sell_probe=sell_probe,
-    )
+    try:
+        safety_profile = build_safety_profile(
+            security=security,
+            rugcheck=rugcheck,
+            overview=data,
+            sell_probe=sell_probe,
+        )
+    except Exception as exc:
+        safety_profile = {
+            "status": "UNKNOWN",
+            "safety_percent": None,
+            "rug_risk_percent": None,
+            "confidence_percent": 0,
+            "checks": [],
+            "error": f"SAFETY_MODEL_ERROR:{str(exc)[:220]}",
+        }
 
     risk = risk_flags(
         liquidity_usd=data.get("liquidity"),
