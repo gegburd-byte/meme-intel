@@ -164,12 +164,156 @@ function renderToken(o) {
     row("DEX", o.dexId || "—");
 }
 
+function renderChart(data) {
+  const canvas = $("chart");
+  if (!canvas || !data) return;
+
+  const candles = data.candles || [];
+  if (!candles.length) {
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    $("chartMeta").textContent = "NO CANDLE DATA";
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(320, Math.floor(rect.width));
+  const height = 360;
+
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const left = 8;
+  const right = width - 8;
+  const top = 12;
+  const bottom = 305;
+  const volumeTop = 315;
+  const volumeBottom = 350;
+
+  let lo = Math.min.apply(null, candles.map(c => Number(c.l)));
+  let hi = Math.max.apply(null, candles.map(c => Number(c.h)));
+
+  const p = data.market && data.market.profile ? data.market.profile : {};
+  const levels = [
+    p.poc, p.vah, p.val,
+    data.market && data.market.vwap,
+    data.decision && data.decision.entry_trigger,
+    data.decision && data.decision.invalidation,
+    data.decision && data.decision.target1,
+    data.decision && data.decision.target2
+  ].filter(v => v != null && Number.isFinite(Number(v))).map(Number);
+
+  if (levels.length) {
+    lo = Math.min(lo, Math.min.apply(null, levels));
+    hi = Math.max(hi, Math.max.apply(null, levels));
+  }
+
+  const pad = Math.max((hi - lo) * 0.08, hi * 0.0001);
+  lo -= pad;
+  hi += pad;
+
+  function y(price) {
+    return bottom - ((price - lo) / Math.max(hi - lo, 1e-12)) * (bottom - top);
+  }
+
+  function x(i) {
+    return left + (i + 0.5) * ((right - left) / candles.length);
+  }
+
+  ctx.fillStyle = "#071019";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.strokeStyle = "#182633";
+  ctx.lineWidth = 1;
+
+  for (let i = 0; i <= 4; i++) {
+    const gy = top + (i / 4) * (bottom - top);
+    ctx.beginPath();
+    ctx.moveTo(left, gy);
+    ctx.lineTo(right, gy);
+    ctx.stroke();
+  }
+
+  const maxVol = Math.max.apply(null, candles.map(c => Number(c.v) || 0).concat([1]));
+  const step = (right - left) / candles.length;
+  const candleW = Math.max(1, step * 0.62);
+
+  candles.forEach(function(c, i) {
+    const open = Number(c.o);
+    const close = Number(c.c);
+    const high = Number(c.h);
+    const low = Number(c.l);
+    const xx = x(i);
+    const up = close >= open;
+
+    ctx.strokeStyle = up ? "#35d889" : "#ff6374";
+    ctx.fillStyle = up ? "#35d889" : "#ff6374";
+    ctx.lineWidth = 1;
+
+    ctx.beginPath();
+    ctx.moveTo(xx, y(high));
+    ctx.lineTo(xx, y(low));
+    ctx.stroke();
+
+    const bodyTop = y(Math.max(open, close));
+    const bodyBottom = y(Math.min(open, close));
+    ctx.fillRect(
+      xx - candleW / 2,
+      bodyTop,
+      candleW,
+      Math.max(1, bodyBottom - bodyTop)
+    );
+
+    const volH = ((Number(c.v) || 0) / maxVol) * (volumeBottom - volumeTop);
+    ctx.globalAlpha = 0.35;
+    ctx.fillRect(xx - candleW / 2, volumeBottom - volH, candleW, volH);
+    ctx.globalAlpha = 1;
+  });
+
+  function line(value, color, label, dashed) {
+    if (value == null || !Number.isFinite(Number(value))) return;
+    const yy = y(Number(value));
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2;
+    if (dashed) ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(left, yy);
+    ctx.lineTo(right, yy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.font = "10px system-ui";
+    ctx.fillText(label + " " + safe(value, 6), left + 6, Math.max(11, yy - 4));
+    ctx.restore();
+  }
+
+  line(p.poc, "#e8c75f", "POC", false);
+  line(p.vah, "#66a9ff", "VAH", true);
+  line(p.val, "#66a9ff", "VAL", true);
+  line(data.market && data.market.vwap, "#a7b4c3", "VWAP", true);
+  line(data.decision && data.decision.entry_trigger, "#39dc89", "TRIGGER", false);
+  line(data.decision && data.decision.invalidation, "#ff6575", "STOP", true);
+  line(data.decision && data.decision.target1, "#39dc89", "T1", true);
+  line(data.decision && data.decision.target2, "#39dc89", "T2", true);
+
+  const last = candles[candles.length - 1];
+  $("chartMeta").textContent = candles.length + " closed 1m candles · last " + safe(last.c, 8);
+}
+
 function renderAll(data) {
   lastData = data;
 
   renderDecision(data.decision);
   renderSetup(data.setup);
   renderMarket(data.market);
+  renderChart(data);
   renderSocial(data.social, data.social_items);
   renderRisk(data.risk);
   renderToken(data.overview);
