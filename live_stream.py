@@ -13,6 +13,9 @@ import websockets
 
 
 HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
+HELIUS_ENHANCED_WS = "wss://atlas-mainnet.helius-rpc.com/?api-key={key}"
+
+ANCHOR_SELF_CPI_TAG = bytes([0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d])
 
 PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMP_AMM_PROGRAM = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
@@ -28,6 +31,84 @@ def _u64(data: bytes, offset: int) -> int:
 
 def _i64(data: bytes, offset: int) -> int:
     return struct.unpack_from("<q", data, offset)[0]
+
+
+def _base58_decode(value: str) -> bytes | None:
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    if not value:
+        return b""
+
+    lookup = {char: index for index, char in enumerate(alphabet)}
+
+    try:
+        number = 0
+        for char in value:
+            number = number * 58 + lookup[char]
+        raw = number.to_bytes(
+            max(1, (number.bit_length() + 7) // 8),
+            "big",
+        )
+        leading = 0
+        for char in value:
+            if char == "1":
+                leading += 1
+            else:
+                break
+        return b"\\x00" * leading + (raw.lstrip(b"\\x00") if number else b"")
+    except (KeyError, ValueError):
+        return None
+
+
+def _iter_inner_instruction_data(transaction: dict[str, Any] | None):
+    meta = ((transaction or {}).get("meta") or {})
+    for group in meta.get("innerInstructions") or []:
+        for instruction in group.get("instructions") or []:
+            data = instruction.get("data")
+            if isinstance(data, str):
+                decoded = _base58_decode(data)
+                if decoded:
+                    yield decoded
+
+
+def parse_live_trade_from_transaction(
+    transaction: dict[str, Any] | None,
+    mint: str,
+    signature: str = "",
+    slot: int | None = None,
+) -> dict[str, Any] | None:
+    tx = transaction or {}
+    meta = tx.get("meta") or {}
+
+    trade = parse_live_trade(
+        meta.get("logMessages") or [],
+        mint,
+        signature=signature,
+        slot=slot,
+    )
+
+    if trade:
+        return trade
+
+    for payload in _iter_inner_instruction_data(tx):
+        # PumpSwap emit_cpi events are encoded as:
+        # [anchor self-cpi tag][8-byte event discriminator][borsh payload].
+        if not payload.startswith(ANCHOR_SELF_CPI_TAG):
+            continue
+
+        pseudo_log = "Program data: " + base64.b64encode(
+            payload[8:]
+        ).decode()
+
+        trade = parse_live_trade(
+            [pseudo_log],
+            mint,
+            signature=signature,
+            slot=slot,
+        )
+        if trade and trade["source"] == "PUMPSWAP":
+            return trade
+
+    return None
 
 
 def _event_bytes(log: str) -> bytes | None:
@@ -180,6 +261,8 @@ class LiveTradeHub:
         self.state = "NOT_CONFIGURED" if not self.api_key else "IDLE"
         self.last_error = ""
         self._send_lock = asyncio.Lock()
+        self.enhanced_state: bool | None = None
+        self.stream_mode = "STANDARD"
 
     def active(self) -> bool:
         return bool(self.api_key)
@@ -217,15 +300,38 @@ class LiveTradeHub:
         request_id = self.request_id
         self.request_id += 1
         self.pending[request_id] = mint
-        await self._send({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "logsSubscribe",
-            "params": [
-                {"mentions": [mint]},
-                {"commitment": "processed"},
-            ],
-        })
+
+        if self.stream_mode == "ENHANCED":
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "transactionSubscribe",
+                "params": [
+                    {
+                        "accountInclude": [mint],
+                        "vote": False,
+                        "failed": False,
+                    },
+                    {
+                        "commitment": "processed",
+                        "encoding": "jsonParsed",
+                        "transactionDetails": "full",
+                        "maxSupportedTransactionVersion": 1,
+                    },
+                ],
+            }
+        else:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "logsSubscribe",
+                "params": [
+                    {"mentions": [mint]},
+                    {"commitment": "processed"},
+                ],
+            }
+
+        await self._send(payload)
 
     async def _unsubscribe(self, mint: str) -> None:
         ids = [sub_id for sub_id, sub_mint in self.subscription_to_mint.items() if sub_mint == mint]
@@ -270,7 +376,13 @@ class LiveTradeHub:
         while self.clients:
             try:
                 self.state = "CONNECTING"
-                url = HELIUS_WS.format(key=self.api_key)
+
+                if self.enhanced_state is not False:
+                    self.stream_mode = "ENHANCED"
+                    url = HELIUS_ENHANCED_WS.format(key=self.api_key)
+                else:
+                    self.stream_mode = "STANDARD"
+                    url = HELIUS_WS.format(key=self.api_key)
 
                 async with websockets.connect(
                     url,
@@ -297,16 +409,34 @@ class LiveTradeHub:
                         except Exception:
                             continue
 
+                        if "id" in message and "error" in message:
+                            failed_request = self.pending.pop(
+                                int(message["id"]),
+                                None
+                            )
+                            if (
+                                failed_request and
+                                self.stream_mode == "ENHANCED" and
+                                self.enhanced_state is not False
+                            ):
+                                self.enhanced_state = False
+                                self.stream_mode = "STANDARD"
+                                await self._status_all(
+                                    "RECONNECTING",
+                                    "Enhanced WSS unavailable; using standard WSS."
+                                )
+                                await ws.close()
+                            continue
+
                         if "id" in message and "result" in message:
                             mint = self.pending.pop(int(message["id"]), None)
                             if mint:
                                 try:
                                     self.subscription_to_mint[int(message["result"])] = mint
+                                    if self.stream_mode == "ENHANCED":
+                                        self.enhanced_state = True
                                 except (TypeError, ValueError):
                                     pass
-                            continue
-
-                        if message.get("method") != "logsNotification":
                             continue
 
                         params = message.get("params") or {}
@@ -315,16 +445,35 @@ class LiveTradeHub:
                         if not mint:
                             continue
 
-                        result = ((params.get("result") or {}).get("value") or {})
-                        if result.get("err") is not None:
+                        if message.get("method") == "transactionNotification":
+                            result = params.get("result") or {}
+                            tx = result.get("transaction") or {}
+                            meta = tx.get("meta") or {}
+
+                            if meta.get("err") is not None:
+                                continue
+
+                            trade = parse_live_trade_from_transaction(
+                                tx,
+                                mint,
+                                signature=str(result.get("signature") or ""),
+                                slot=result.get("slot"),
+                            )
+                        elif message.get("method") == "logsNotification":
+                            result = ((params.get("result") or {}).get("value") or {})
+
+                            if result.get("err") is not None:
+                                continue
+
+                            trade = parse_live_trade(
+                                result.get("logs") or [],
+                                mint,
+                                signature=str(result.get("signature") or ""),
+                                slot=(params.get("result") or {}).get("context", {}).get("slot"),
+                            )
+                        else:
                             continue
 
-                        trade = parse_live_trade(
-                            result.get("logs") or [],
-                            mint,
-                            signature=str(result.get("signature") or ""),
-                            slot=(params.get("result") or {}).get("context", {}).get("slot"),
-                        )
                         if trade:
                             await self._broadcast(mint, {
                                 "type": "trade",
@@ -357,6 +506,7 @@ class LiveTradeHub:
                     backoff = min(5.0, backoff * 2)
 
         self.state = "IDLE"
+        self.stream_mode = "STANDARD"
 
 
 trade_hub = LiveTradeHub()
