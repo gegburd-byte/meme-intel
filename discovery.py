@@ -92,18 +92,25 @@ def score_pair(pair: dict) -> tuple[float, dict]:
     }
 
 
-def qualifies(pair: dict, minimum_liquidity: float) -> bool:
+def qualifies(pair: dict, minimum_liquidity: float, pump_only: bool = False) -> bool:
     liq = num((pair.get("liquidity") or {}).get("usd"))
     vol5 = num((pair.get("volume") or {}).get("m5"))
     buys = num((pair.get("txns") or {}).get("m5", {}).get("buys"))
     sells = num((pair.get("txns") or {}).get("m5", {}).get("sells"))
     ch5 = num((pair.get("priceChange") or {}).get("m5"))
 
+    is_pump_lane = (
+        str(pair.get("dexId") or "").lower() in {"pumpswap", "pump"}
+        or "pump.fun" in str(pair.get("url") or "").lower()
+        or "pumpswap" in str(pair.get("url") or "").lower()
+    )
+
     return (
         liq >= minimum_liquidity
         and vol5 >= 500
         and buys + sells >= 8
         and ch5 >= -12
+        and (not pump_only or is_pump_lane)
     )
 
 
@@ -124,6 +131,7 @@ async def fetch(client: httpx.AsyncClient, path: str) -> list[dict]:
 async def discover_candidates(
     limit: int = 15,
     min_liquidity: float = 15000,
+    pump_only: bool = False,
 ) -> list[dict]:
 
     async with httpx.AsyncClient() as client:
@@ -175,7 +183,7 @@ async def discover_candidates(
         token = pair.get("baseToken") or {}
         address = token.get("address")
 
-        if not address or not qualifies(pair, min_liquidity):
+        if not address or not qualifies(pair, min_liquidity, pump_only=pump_only):
             continue
 
         score, metrics = score_pair(pair)
@@ -217,6 +225,11 @@ async def discover_candidates(
             "fdv": num(pair.get("fdv")),
             "pairCreatedAt": pair.get("pairCreatedAt"),
             "boosted": address in boosted,
+            "pumpLane": (
+                str(pair.get("dexId") or "").lower() in {"pumpswap", "pump"}
+                or "pump.fun" in str(pair.get("url") or "").lower()
+                or "pumpswap" in str(pair.get("url") or "").lower()
+            ),
             "researchScore": score,
             "metrics": metrics,
         }
