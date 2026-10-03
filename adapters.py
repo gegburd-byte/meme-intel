@@ -277,13 +277,13 @@ class PumpFunAdapter:
     def __init__(self):
         self.source = Source("Pump.fun", True)
         self._cache = {}
-        self._cache_ttl = 0.75
+        self._cache_ttl = 0.50
         self.base_urls = (
             "https://frontend-api-v3.pump.fun",
             "https://frontend-api.pump.fun",
         )
         self._client = httpx.AsyncClient(
-            timeout=4.5,
+            timeout=3.5,
             headers={
                 "User-Agent": "Mozilla/5.0 (compatible; MemeIntel/2.3)",
                 "Accept": "application/json",
