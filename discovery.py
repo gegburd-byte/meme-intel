@@ -103,6 +103,7 @@ def qualifies(pair: dict, minimum_liquidity: float, pump_only: bool = False) -> 
         str(pair.get("dexId") or "").lower() in {"pumpswap", "pump"}
         or "pump.fun" in str(pair.get("url") or "").lower()
         or "pumpswap" in str(pair.get("url") or "").lower()
+        or str((pair.get("baseToken") or {}).get("address") or "").lower().endswith("pump")
     )
 
     return (
@@ -164,7 +165,7 @@ async def discover_candidates(
             if item.get("chainId") == "solana" and item.get("tokenAddress"):
                 boosted.add(item["tokenAddress"])
 
-        addresses = list(addresses)[:30]
+        addresses = list(addresses)[:80]
 
         if not addresses:
             return []
@@ -243,6 +244,7 @@ async def discover_candidates(
 
     rows.sort(
         key=lambda x: (
+            x["pumpLane"],
             x["researchScore"],
             x["priceChange5m"],
             x["metrics"]["buyRatio"],
