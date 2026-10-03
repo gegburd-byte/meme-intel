@@ -1,72 +1,128 @@
 <!doctype html>
 <html>
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Meme Intel</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meme Intel — Intelligence Terminal</title>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 <div class="shell">
-<header>
-  <div><h1>MEME INTEL</h1><p>Solana research terminal · 5m → 1m setup · social corroboration · paper trading</p></div>
+<header class="top">
+  <div>
+    <div class="eyebrow">SOLANA MEME INTELLIGENCE</div>
+    <h1>MEME INTEL</h1>
+    <p>Live X intelligence + market structure + flow + 70% value area + paper signal engine</p>
+  </div>
   <div id="health" class="pill">CHECKING…</div>
 </header>
 
 <section class="sourcebar">
   <div><span class="dot" id="dotX"></span>X <b id="srcX">—</b></div>
-  <div><span class="dot" id="dotBE"></span>Birdeye <b id="srcBE">—</b></div>
-  <div><span class="dot" id="dotHE"></span>Helius <b id="srcHE">—</b></div>
-  <div class="muted">No wallet connection · paper only</div>
+  <div><span class="dot" id="dotDS"></span>DEXSCREENER <b id="srcDS">—</b></div>
+  <div><span class="dot" id="dotGT"></span>GECKO <b id="srcGT">—</b></div>
+  <div><span class="dot" id="dotHE"></span>HELIUS <b id="srcHE">—</b></div>
+  <div class="muted">Research + paper trading only</div>
 </section>
 
 <section class="controls panel">
-  <div class="field grow"><label>Solana mint / contract</label><input id="mint" placeholder="Paste token CA here"></div>
-  <div class="field wide"><label>X query</label><input id="query" value='(solana OR "pump.fun" OR memecoin OR $SOL) lang:en -is:retweet'></div>
-  <button id="analyze" class="primary">ANALYZE</button>
+  <div class="field grow">
+    <label>Solana contract / mint</label>
+    <input id="mint" placeholder="Paste Pump.fun / Solana CA" autocomplete="off">
+  </div>
+  <div class="field wide">
+    <label>X context filter (token terms are added automatically)</label>
+    <input id="query" value="lang:en -is:retweet" autocomplete="off">
+  </div>
+  <button id="analyze" class="primary">ANALYZE LIVE</button>
+  <button id="liveToggle" class="secondary">LIVE OFF</button>
+</section>
+
+<section class="command panel">
+  <div class="commandMain">
+    <div class="eyebrow">TRADE COMMAND</div>
+    <div id="action" class="action">NO DATA</div>
+    <div id="decisionReason" class="decisionReason">Paste a contract and analyze.</div>
+  </div>
+  <div class="commandStats">
+    <div><small>SCORE</small><strong id="decisionScore">—</strong></div>
+    <div><small>CONFIDENCE</small><strong id="confidence">—</strong></div>
+    <div><small>CONFIRMATIONS</small><strong id="confirmations">—</strong></div>
+    <div><small>ENTRY TRIGGER</small><strong id="entryTrigger">—</strong></div>
+  </div>
 </section>
 
 <section class="grid">
   <article class="panel hero">
-    <div class="panelhead"><h2>LIVE SETUP</h2><span id="setupState" class="stage">—</span></div>
+    <div class="panelhead"><h2>SETUP ENGINE</h2><span id="setupState" class="stage">—</span></div>
     <div class="setupgrid">
       <div><small>PREVIOUS HIGH</small><strong id="prevHigh">—</strong></div>
       <div><small>HIGHER LOW</small><strong id="higherLow">—</strong></div>
-      <div><small>STOP</small><strong id="stop">—</strong></div>
-      <div><small>WHY</small><strong id="setupWhy">—</strong></div>
+      <div><small>INVALIDATION</small><strong id="stop">—</strong></div>
+      <div><small>ENTRY STYLE</small><strong id="entryStyle">—</strong></div>
     </div>
-    <div id="path" class="path">PUMP → PULLBACK → HIGHER LOW → 1M CLOSE ABOVE HIGH</div>
+    <div id="path" class="path">5M IMPULSE → PULLBACK → HIGHER LOW → 1M CLOSE → CONFIRMATION</div>
   </article>
 
   <article class="panel">
-    <div class="panelhead"><h2>OPPORTUNITY SCORE</h2><span id="score">—</span></div>
-    <div id="scoreRows" class="rows"></div>
-    <p class="muted">Research heuristic, not a probability or prediction.</p>
+    <div class="panelhead"><h2>MARKET PROFILE</h2><span class="stage">70% VALUE AREA</span></div>
+    <div class="metrics four">
+      <div><small>POC</small><strong id="poc">—</strong></div>
+      <div><small>VAH</small><strong id="vah">—</strong></div>
+      <div><small>VAL</small><strong id="val">—</strong></div>
+      <div><small>VWAP</small><strong id="vwap">—</strong></div>
+    </div>
+    <div class="rows compact" id="profileRows"></div>
   </article>
 
   <article class="panel">
-    <div class="panelhead"><h2>RISK</h2><span id="riskLevel" class="risk">—</span></div>
+    <div class="panelhead"><h2>MOMENTUM / FLOW</h2><span id="trendState" class="stage">—</span></div>
+    <div class="metrics four">
+      <div><small>RSI 14</small><strong id="rsi">—</strong></div>
+      <div><small>EMA 9 / 21</small><strong id="ema">—</strong></div>
+      <div><small>BUY RATIO</small><strong id="buyRatio">—</strong></div>
+      <div><small>VOL SPIKE</small><strong id="volSpike">—</strong></div>
+    </div>
+    <div class="rows compact" id="flowRows"></div>
+  </article>
+
+  <article class="panel socialPanel">
+    <div class="panelhead"><h2>X INTELLIGENCE</h2><span id="socialState">—</span></div>
+    <div class="metrics five">
+      <div><small>POSTS 15M</small><strong id="posts">—</strong></div>
+      <div><small>POSTS/MIN</small><strong id="vel">—</strong></div>
+      <div><small>ACCELERATION</small><strong id="accel">—</strong></div>
+      <div><small>AUTHORS</small><strong id="authors">—</strong></div>
+      <div><small>SENTIMENT</small><strong id="sentiment">—</strong></div>
+    </div>
+    <div class="metrics four second">
+      <div><small>AUTHOR QUALITY</small><strong id="authorQuality">—</strong></div>
+      <div><small>ENGAGEMENT/MIN</small><strong id="engagement">—</strong></div>
+      <div><small>COPY RISK</small><strong id="copyRisk">—</strong></div>
+      <div><small>TOP ACCOUNT</small><strong id="topAuthor">—</strong></div>
+    </div>
+    <div id="tweets" class="tweets"><div class="muted">No X data yet.</div></div>
+  </article>
+
+  <article class="panel">
+    <div class="panelhead"><h2>RISK GATE</h2><span id="riskLevel" class="risk">—</span></div>
     <div id="riskRows" class="rows"></div>
   </article>
 
   <article class="panel">
-    <div class="panelhead"><h2>SOCIAL</h2><span id="socialState">—</span></div>
-    <div class="metrics">
-      <div><small>POSTS</small><strong id="posts">—</strong></div>
-      <div><small>MENTION/MIN</small><strong id="vel">—</strong></div>
-      <div><small>SENTIMENT</small><strong id="sentiment">—</strong></div>
-      <div><small>DOMINATION</small><strong id="domination">—</strong></div>
-      <div><small>DUPES</small><strong id="dupes">—</strong></div>
+    <div class="panelhead"><h2>TARGET MAP</h2><span class="stage">PAPER ONLY</span></div>
+    <div class="metrics four">
+      <div><small>TRIGGER</small><strong id="targetTrigger">—</strong></div>
+      <div><small>INVALIDATION</small><strong id="targetStop">—</strong></div>
+      <div><small>TARGET 1</small><strong id="target1">—</strong></div>
+      <div><small>TARGET 2</small><strong id="target2">—</strong></div>
     </div>
+    <div id="exitRules" class="rows compact"></div>
   </article>
 
   <article class="panel">
-    <div class="panelhead"><h2>TOKEN DATA</h2><span id="tokenName">—</span></div>
+    <div class="panelhead"><h2>TOKEN</h2><span id="tokenName">—</span></div>
     <div id="tokenRows" class="rows"></div>
-  </article>
-
-  <article class="panel">
-    <div class="panelhead"><h2>X SIGNALS</h2><span id="tweetCount">—</span></div>
-    <div id="tweets" class="tweets"><div class="muted">Analyze a mint or search X.</div></div>
   </article>
 
   <article class="panel paper">
@@ -75,13 +131,13 @@
       <input id="pEntry" placeholder="Entry price">
       <input id="pQty" placeholder="Qty / units">
       <input id="pNote" placeholder="Note">
-      <button id="paperOpen">OPEN LONG</button>
+      <button id="paperOpen">OPEN PAPER LONG</button>
     </div>
     <div id="paperTrades" class="papertrades"></div>
   </article>
 
   <article class="panel full">
-    <div class="panelhead"><h2>DATA STATUS</h2><span class="muted">Transparent missing-data handling</span></div>
+    <div class="panelhead"><h2>DATA / DEBUG</h2><span id="queryUsed" class="muted">—</span></div>
     <pre id="raw" class="raw">Nothing loaded.</pre>
   </article>
 </section>
