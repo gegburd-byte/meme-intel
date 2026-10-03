@@ -210,12 +210,9 @@ def parse_pump_candles(payload):
     if isinstance(payload, list):
         items = payload
     elif isinstance(payload, dict):
-        items = (
-            payload.get("candles")
-            or payload.get("data")
-            or payload.get("results")
-            or []
-        )
+        items = payload.get("candles") or payload.get("results") or payload.get("data") or []
+        if isinstance(items, dict):
+            items = items.get("candles") or items.get("data") or items.get("results") or []
     else:
         items = []
 
@@ -571,7 +568,13 @@ async def chart(mint: str, limit: int = 300):
     # Newly launched / unindexed tokens can briefly have no Pump.fun candles.
     # Fall back to GeckoTerminal rather than returning an empty chart.
     if not candles:
-        fallback, fallback_err = await gt.candles(mint, "1m")
+        try:
+            fallback, fallback_err = await asyncio.wait_for(
+                gt.candles(mint, "1m"),
+                timeout=3.0,
+            )
+        except asyncio.TimeoutError:
+            fallback, fallback_err = None, "GECKO_TIMEOUT"
         candles = parse_candles(fallback)
         if candles:
             source = "GECKOTERMINAL"
