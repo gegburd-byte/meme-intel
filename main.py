@@ -27,7 +27,6 @@ from adapters import (
     RugCheckAdapter,
     JupiterAdapter,
     XAdapter,
-    public_rpc_endpoints,
     x_items,
     social_metrics,
     x_radar_candidates,
@@ -1011,70 +1010,6 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
                     "timestamp": int(time.time()),
                 }
 
-    async def load_public_history(public_rpc):
-        try:
-            result = await asyncio.wait_for(
-                he.historical_trade_candles(
-                    mint,
-                    timeframe=timeframe,
-                    lookback_minutes=120,
-                    max_signatures=180,
-                    rpc_base=public_rpc,
-                ),
-                timeout=4.5,
-            )
-            return public_rpc, result
-        except asyncio.TimeoutError:
-            return public_rpc, ([], "PUBLIC_RPC_HISTORY_TIMEOUT")
-        except Exception as exc:
-            return public_rpc, ([], str(exc)[:240])
-
-    public_results = await asyncio.gather(
-        *(load_public_history(rpc) for rpc in public_rpc_endpoints())
-    )
-
-    for public_rpc, result in public_results:
-        public_candles, public_err = result
-        quality = chart_data_quality(
-            public_candles or [],
-            minimum_bars=3,
-        )
-        if quality > 0:
-            candles = sorted(public_candles, key=lambda x: x.ts)[-limit:]
-            return {
-                "state": "READY",
-                "source": "SOLANA_PUBLIC_RPC",
-                "offset": 0,
-                "limit": limit,
-                "timeframe": timeframe,
-                "has_more": False,
-                "candles": [
-                    {"ts": c.ts, "o": c.o, "h": c.h, "l": c.l, "c": c.c, "v": c.v}
-                    for c in candles
-                ],
-                "error": None,
-                "diagnostics": {
-                    "exact_native": False,
-                    "primary": "SOLANA_PUBLIC_RPC",
-                    "sources": {
-                        "PUMP.FUN": {
-                            "bars": len(native),
-                            "quality": round(native_quality, 2),
-                        },
-                        "SOLANA_PUBLIC_RPC": {
-                            "bars": len(candles),
-                            "quality": round(quality, 2),
-                        },
-                    },
-                    "pump_error": native_err,
-                    "helius_error": onchain_err,
-                    "gecko_error": gecko_err,
-                    "public_rpc_errors": public_errors,
-                },
-                "timestamp": int(time.time()),
-            }
-        public_errors.append(f"{public_rpc}:{public_err}")
-
     return {
         "state": "NO_CANDLES",
         "source": "NONE",
@@ -1084,8 +1019,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
         "has_more": False,
         "candles": [],
         "error": (
-            "; ".join(public_errors)
-            or onchain_err
+            onchain_err
             or gecko_err
             or native_err
             or "NO_VALID_CANDLES"
@@ -1121,7 +1055,6 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
             },
             "helius_error": onchain_err,
             "gecko_error": gecko_err,
-            "public_rpc_errors": public_errors,
             "pump_error": native_err,
         },
         "timestamp": int(time.time()),
@@ -1130,10 +1063,8 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
 
 @app.get("/api/chart/current")
 async def chart_current(mint: str, timeframe: int = 1):
-    """Fast current-bar endpoint used by the realtime chart loop.
-
-    It uses Pump.fun as the authoritative active candle. It never reconstructs
-    history on the one-second realtime path.
+    """Fast active-bar endpoint. Pump.fun is authoritative; live price is
+    used only as a clearly-labeled fallback when no native bar is available.
     """
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
@@ -1150,55 +1081,84 @@ async def chart_current(mint: str, timeframe: int = 1):
                 timeframe=timeframe,
                 offset=0,
             ),
-            timeout=2.5,
+            timeout=1.8,
         )
     except asyncio.TimeoutError:
-        return {
-            "state": "TIMEOUT",
-            "source": "PUMP.FUN",
-            "timeframe": timeframe,
-            "candles": [],
-            "error": "PUMPFUN_CURRENT_TIMEOUT",
-            "timestamp": int(time.time()),
-        }
+        payload, err = None, "PUMPFUN_CURRENT_TIMEOUT"
     except Exception as exc:
-        return {
-            "state": "ERROR",
-            "source": "PUMP.FUN",
-            "timeframe": timeframe,
-            "candles": [],
-            "error": str(exc)[:240],
-            "timestamp": int(time.time()),
-        }
+        payload, err = None, str(exc)[:240]
 
     native = parse_pump_candles(payload)
-    if not native:
+    if native:
+        current = max(native, key=lambda x: x.ts)
         return {
-            "state": "NO_CANDLES",
+            "state": "READY",
             "source": "PUMP.FUN",
             "timeframe": timeframe,
-            "candles": [],
-            "error": err or "NO_CURRENT_CANDLE",
+            "candles": [{
+                "ts": current.ts,
+                "o": current.o,
+                "h": current.h,
+                "l": current.l,
+                "c": current.c,
+                "v": current.v,
+            }],
+            "error": None,
             "timestamp": int(time.time()),
         }
 
-    current = max(native, key=lambda x: x.ts)
+    # Fast fallback: the live-price route populates PRICE_CACHE, so most
+    # refreshes never make another provider call. On first load, use Helius
+    # directly with a tight timeout rather than waiting on slow history APIs.
+    now = time.time()
+    cached = PRICE_CACHE.get(mint)
+    price = None
+
+    if cached and now - cached.get("time", 0) < 3.0:
+        price = (cached.get("data") or {}).get("price")
+
+    if price is None and he.source.configured:
+        try:
+            asset, _ = await asyncio.wait_for(
+                he.asset(mint),
+                timeout=1.2,
+            )
+            token_info = (asset or {}).get("token_info") or {}
+            price_info = token_info.get("price_info") or {}
+            price = float(price_info.get("price_per_token"))
+        except Exception:
+            price = None
+
+    if price is not None and float(price) > 0:
+        span = timeframe * 60
+        bucket = int(time.time() // span) * span
+        p = float(price)
+        return {
+            "state": "READY",
+            "source": "LIVE_PRICE",
+            "timeframe": timeframe,
+            "candles": [{
+                "ts": bucket,
+                "o": p,
+                "h": p,
+                "l": p,
+                "c": p,
+                "v": 0,
+            }],
+            "error": None,
+            "fallback": True,
+            "timestamp": int(time.time()),
+        }
 
     return {
-        "state": "READY",
+        "state": "NO_CANDLES",
         "source": "PUMP.FUN",
         "timeframe": timeframe,
-        "candles": [{
-            "ts": current.ts,
-            "o": current.o,
-            "h": current.h,
-            "l": current.l,
-            "c": current.c,
-            "v": current.v,
-        }],
-        "error": None,
+        "candles": [],
+        "error": err or "NO_CURRENT_CANDLE",
         "timestamp": int(time.time()),
     }
+
 
 @app.get("/api/live/price")
 async def live_price(mint: str):
