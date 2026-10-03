@@ -375,6 +375,13 @@ async def analyze(req: AnalyzeReq):
 
     social_items = x_items(xp) if not xerr else []
     sm = social_metrics(social_items)
+    if xerr and xerr != "X_SKIPPED_FOR_MARKET_SCREEN":
+        sm["state"] = xerr
+        sm["available"] = False
+        sm["error"] = xerr
+    elif xerr == "X_SKIPPED_FOR_MARKET_SCREEN":
+        sm["state"] = "SKIPPED"
+        sm["available"] = False
     market = market_metrics(c1, c5, data)
 
     sec_gate = security_gate(security)
