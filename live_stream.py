@@ -59,8 +59,18 @@ def _base58_decode(value: str) -> bytes | None:
         return None
 
 
-def _iter_inner_instruction_data(transaction: dict[str, Any] | None):
-    meta = ((transaction or {}).get("meta") or {})
+def _iter_instruction_data(transaction: dict[str, Any] | None):
+    """Yield raw instruction payloads from both top-level and CPI instructions."""
+    tx = transaction or {}
+    message = ((tx.get("transaction") or {}).get("message") or {})
+    for instruction in message.get("instructions") or []:
+        data = instruction.get("data")
+        if isinstance(data, str):
+            decoded = _base58_decode(data)
+            if decoded:
+                yield decoded
+
+    meta = tx.get("meta") or {}
     for group in meta.get("innerInstructions") or []:
         for instruction in group.get("instructions") or []:
             data = instruction.get("data")
@@ -95,7 +105,7 @@ def parse_live_trade_from_transaction(
     # Scan every inner instruction payload for the event discriminator rather
     # than requiring a specific wrapper/tag, because current transactions can
     # encode the event directly in instruction data.
-    for payload in _iter_inner_instruction_data(tx):
+    for payload in _iter_instruction_data(tx):
         if PUMP_TRADE_DISC in payload or PUMP_AMM_BUY_DISC in payload or PUMP_AMM_SELL_DISC in payload:
             pseudo_log = "Program data: " + base64.b64encode(payload).decode()
             trade = parse_live_trade(
