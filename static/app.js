@@ -33,7 +33,7 @@ let historyBarsLoaded = 0;
 let renderScheduled = false;
 let liveTradeBackoff = 500;
 
-const PAGE_SIZE = 1000;
+const PAGE_SIZE = 30;
 const MAX_HISTORY_BARS = 30;
 
 function clamp(v, lo, hi) {
