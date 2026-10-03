@@ -487,7 +487,7 @@ class HeliusAdapter:
         ]
 
         trades = []
-        sem = asyncio.Semaphore(8)
+        sem = asyncio.Semaphore(20)
 
         async def load_one(item):
             async with sem:
