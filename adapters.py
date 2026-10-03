@@ -310,14 +310,14 @@ class PumpFunAdapter:
                         f"{base}/candlesticks/{mint}",
                         params=params,
                     )
-                        if r.status_code >= 400:
-                            last_error = f"HTTP_{r.status_code}"
-                            continue
-                        payload = r.json()
-                        self._cache[key] = {"time": time.time(), "payload": payload}
-                        return payload, None
-                    except Exception as exc:
-                        last_error = str(exc)
+                    if r.status_code >= 400:
+                        last_error = f"HTTP_{r.status_code}"
+                        continue
+                    payload = r.json()
+                    self._cache[key] = {"time": time.time(), "payload": payload}
+                    return payload, None
+                except Exception as exc:
+                    last_error = str(exc)
         except Exception as exc:
             last_error = str(exc)
 
