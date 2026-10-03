@@ -266,33 +266,165 @@ class HeliusAdapter:
             "HELIUS_API_KEY missing" if not self.key else ""
         )
 
-    async def asset(self, mint):
+    async def _rpc(self, method, params):
         if not self.key:
             return None, "NOT_CONFIGURED"
 
         url = f"{HELIUS_RPC}/?api-key={self.key}"
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(
+                    url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "meme-intel",
+                        "method": method,
+                        "params": params,
+                    },
+                )
+                if r.status_code >= 400:
+                    return None, f"HTTP_{r.status_code}"
+                payload = r.json()
+                if payload.get("error"):
+                    return None, str(payload["error"])
+                return payload.get("result"), None
+        except Exception as exc:
+            return None, str(exc)
 
-        body = {
-            "jsonrpc": "2.0",
-            "id": "meme-intel",
-            "method": "getAsset",
-            "params": {
+    async def asset(self, mint):
+        if not self.key:
+            return None, "NOT_CONFIGURED"
+
+        return await self._rpc(
+            "getAsset",
+            {
                 "id": mint,
                 "displayOptions": {
                     "showFungible": True
                 }
-            }
-        }
+            },
+        )
 
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post(url, json=body)
+    async def security(self, mint):
+        if not self.key:
+            return None, "NOT_CONFIGURED"
 
-            if r.status_code >= 400:
-                return None, f"HTTP_{r.status_code}"
+        asset_task = self.asset(mint)
+        account_task = self._rpc(
+            "getAccountInfo",
+            [
+                mint,
+                {"encoding": "jsonParsed"},
+            ],
+        )
+        holders_task = self._rpc(
+            "getTokenAccounts",
+            {
+                "mint": mint,
+                "page": 1,
+                "limit": 1000,
+                "displayOptions": {},
+            },
+        )
 
-            j = r.json()
+        asset, asset_err = await asset_task
+        account, account_err = await account_task
+        holders, holders_err = await holders_task
 
-            return j.get("result"), None
+        if asset_err and account_err and holders_err:
+            return None, (
+                asset_err or account_err or holders_err
+            )
+
+        parsed = (
+            (account or {})
+            .get("value", {})
+            .get("data", {})
+            .get("parsed", {})
+            .get("info", {})
+        )
+
+        mint_authority = parsed.get("mintAuthority")
+        freeze_authority = parsed.get("freezeAuthority")
+
+        token_accounts = (
+            (holders or {}).get("token_accounts")
+            or []
+        )
+
+        owner_balances = {}
+        raw_total = 0
+
+        for row in token_accounts:
+            owner = row.get("owner")
+            amount = row.get("amount")
+
+            try:
+                amount = int(amount or 0)
+            except Exception:
+                amount = 0
+
+            if owner:
+                owner_balances[owner] = (
+                    owner_balances.get(owner, 0) + amount
+                )
+
+            raw_total += amount
+
+        ranked = sorted(
+            owner_balances.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        supply = (
+            ((asset or {}).get("token_info") or {}).get("supply")
+        )
+
+        try:
+            supply = int(supply) if supply is not None else raw_total
+        except Exception:
+            supply = raw_total
+
+        top_share = (
+            ranked[0][1] / supply
+            if ranked and supply > 0
+            else None
+        )
+
+        top10_share = (
+            sum(v for _, v in ranked[:10]) / supply
+            if ranked and supply > 0
+            else None
+        )
+
+        return {
+            "state": "READY",
+            "mint_authority": bool(mint_authority),
+            "freeze_authority": bool(freeze_authority),
+            "holder_count": len(ranked),
+            "top_holder_share": top_share,
+            "top10_holder_share": top10_share,
+            "sampled_accounts": len(token_accounts),
+            "supply": supply,
+            "top_holders": [
+                {
+                    "owner": owner,
+                    "raw_amount": amount,
+                    "share": amount / supply if supply > 0 else None,
+                }
+                for owner, amount in ranked[:10]
+            ],
+            "warnings": [
+                warning for warning in [
+                    "MINT_AUTHORITY_ACTIVE" if mint_authority else None,
+                    "FREEZE_AUTHORITY_ACTIVE" if freeze_authority else None,
+                    "TOP_HOLDER_OVER_50PCT" if top_share is not None and top_share > 0.50 else None,
+                    "TOP10_OVER_70PCT" if top10_share is not None and top10_share > 0.70 else None,
+                ]
+                if warning
+            ],
+        }, None
 
 
 class XAdapter:
