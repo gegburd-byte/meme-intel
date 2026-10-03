@@ -32,7 +32,7 @@ function pct(v, digits = 1) {
 
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, function(c) {
-    return {"&":"&amp;","<":"&lt;",">":"&gt;",""":"&quot;","'":"&#039;"}[c];
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c];
   });
 }
 
