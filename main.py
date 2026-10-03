@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import asyncio
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -31,7 +32,7 @@ load_dotenv()
 
 app = FastAPI(
     title="Meme Intel",
-    version="1.1"
+    version="2.0"
 )
 
 app.mount(
