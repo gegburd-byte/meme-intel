@@ -199,40 +199,83 @@ def evaluate_setup(c5: list[Candle], c1: list[Candle],
         last_reason="WAITING_FOR_1M_CLOSE"
     )
 
-def risk_flags(*, liquidity_usd=None, market_cap=None, holder_concentration=None,
-               mint_authority=None, freeze_authority=None, creator_blacklisted=None,
-               social_domination=None):
+def risk_flags(
+    *,
+    liquidity_usd=None,
+    market_cap=None,
+    holder_concentration=None,
+    mint_authority=None,
+    freeze_authority=None,
+    creator_blacklisted=None,
+    social_domination=None,
+    coordination_risk=None,
+    vertical_move_pct=None,
+):
     flags = []
+
     def add(level, code, why):
-        flags.append({"level": level, "code": code, "reason": why})
+        flags.append({
+            "level": level,
+            "code": code,
+            "reason": why,
+        })
+
     if liquidity_usd is None:
-        add("UNKNOWN","NO_LIQUIDITY_DATA","Liquidity data unavailable")
+        add("UNKNOWN", "NO_LIQUIDITY_DATA", "Liquidity data unavailable.")
     elif liquidity_usd < 5000:
-        add("CRITICAL","VERY_LOW_LIQUIDITY","Liquidity is extremely thin")
+        add("CRITICAL", "VERY_LOW_LIQUIDITY", "Liquidity is extremely thin.")
     elif liquidity_usd < 20000:
-        add("HIGH","LOW_LIQUIDITY","Liquidity is low")
+        add("HIGH", "LOW_LIQUIDITY", "Liquidity is low.")
 
     if market_cap is not None and market_cap < 10000:
-        add("HIGH","TINY_MARKET_CAP","Very small market capitalization")
+        add("HIGH", "TINY_MARKET_CAP", "Very small market capitalization.")
 
-    if holder_concentration is not None and holder_concentration > 0.50:
-        add("HIGH","CONCENTRATED_HOLDERS","One/few holders control a large share")
+    if holder_concentration is not None:
+        if holder_concentration > 0.50:
+            add("HIGH", "CONCENTRATED_HOLDERS", "One/few holders control a large share.")
+        elif holder_concentration > 0.25:
+            add("MEDIUM", "ELEVATED_HOLDER_CONCENTRATION", "Top holder concentration is elevated.")
 
     if mint_authority:
-        add("HIGH","MINT_AUTHORITY","Mint authority appears active")
-    if freeze_authority:
-        add("HIGH","FREEZE_AUTHORITY","Freeze authority appears active")
-    if creator_blacklisted:
-        add("CRITICAL","CREATOR_FLAG","Creator matched a configured blacklist")
-    if social_domination is not None and social_domination > 0.55:
-        add("HIGH","SOCIAL_DOMINATION","A small number of accounts dominate the conversation")
+        add("HIGH", "MINT_AUTHORITY", "Mint authority appears active.")
 
-    order = {"CRITICAL":4,"HIGH":3,"MEDIUM":2,"UNKNOWN":1,"LOW":1}
+    if freeze_authority:
+        add("HIGH", "FREEZE_AUTHORITY", "Freeze authority appears active.")
+
+    if creator_blacklisted:
+        add("CRITICAL", "CREATOR_FLAG", "Creator matched a configured blacklist.")
+
+    if social_domination is not None and social_domination > 0.55:
+        add("HIGH", "SOCIAL_DOMINATION", "A small number of accounts dominate the conversation.")
+
+    if coordination_risk is not None:
+        if coordination_risk >= 75:
+            add("HIGH", "SOCIAL_COORDINATION", "X activity shows strong copy/paste or concentrated-account behavior.")
+        elif coordination_risk >= 55:
+            add("MEDIUM", "SOCIAL_COORDINATION", "X activity shows possible coordinated promotion.")
+
+    if vertical_move_pct is not None:
+        if vertical_move_pct >= 35:
+            add("HIGH", "EXTENDED_MOVE", "Recent price expansion is extremely vertical; chasing is risky.")
+        elif vertical_move_pct >= 20:
+            add("MEDIUM", "EXTENDED_MOVE", "Recent price expansion is extended.")
+
+    order = {
+        "CRITICAL": 5,
+        "HIGH": 4,
+        "MEDIUM": 3,
+        "UNKNOWN": 2,
+        "LOW": 1,
+    }
     overall = "LOW"
-    for f in flags:
-        if order.get(f["level"],0) > order.get(overall,0):
-            overall = f["level"]
-    return {"overall": overall, "flags": flags}
+    for flag in flags:
+        if order.get(flag["level"], 0) > order.get(overall, 0):
+            overall = flag["level"]
+
+    return {
+        "overall": overall,
+        "flags": flags,
+    }
 
 def opportunity_score(*, technical, social_velocity, sentiment,
                       liquidity, corroboration, risk_penalty,
@@ -557,17 +600,22 @@ def signal_score(*, setup, market, social, risk, overview):
             flow -= 8
     flow = _clamp2(flow)
 
-    velocity = float(social.get("mention_velocity") or 0)
-    velocity_score = _clamp2(velocity * 18)
-    sentiment = float(social.get("sentiment") or 0)
-    author_quality = float(social.get("author_quality") or 0)
-    coordination = float(social.get("coordination_risk") or 0)
-    social_score = _clamp2(
-        velocity_score * 0.35
-        + sentiment * 0.25
-        + author_quality * 0.30
-        + (100 - coordination) * 0.10
-    )
+    social_state = str(social.get("state") or "UNAVAILABLE")
+    if social_state == "READY":
+        velocity = float(social.get("mention_velocity") or 0)
+        velocity_score = _clamp2(velocity * 18)
+        sentiment = float(social.get("sentiment") or 0)
+        author_quality = float(social.get("author_quality") or 0)
+        coordination = float(social.get("coordination_risk") or 0)
+        social_score = _clamp2(
+            velocity_score * 0.35
+            + sentiment * 0.25
+            + author_quality * 0.30
+            + (100 - coordination) * 0.10
+        )
+    else:
+        # Missing X data is neutral, not negative evidence.
+        social_score = 50.0
 
     price = market.get("price")
     profile = market.get("profile") or {}
@@ -638,10 +686,16 @@ def decision_engine(*, setup, market, social, risk, overview):
         market.get("buy_ratio_5m") is not None and market["buy_ratio_5m"] >= 0.55,
         market.get("volume_spike") is not None and market["volume_spike"] >= 1.2,
         market.get("above_vah"),
-        (social.get("unique_author_count") or 0) >= 3,
-        (social.get("coordination_risk") or 0) < 45,
     ]
+    social_available = str(social.get("state") or "UNAVAILABLE") == "READY"
+    if social_available:
+        checks.extend([
+            (social.get("unique_author_count") or 0) >= 3,
+            (social.get("coordination_risk") or 0) < 45,
+        ])
+
     confirmations = sum(1 for x in checks if x)
+    required_confirmations = len(checks)
 
     risk_level = (risk or {}).get("overall", "UNKNOWN")
     state = setup.state if setup else "NO_SETUP"
@@ -663,13 +717,31 @@ def decision_engine(*, setup, market, social, risk, overview):
         reason = "Risk/setup guardrail blocked the signal."
     elif breakout_ready and signal["score"] >= 70 and confirmations >= 4:
         action = "PAPER LONG TRIGGER"
-        confidence = "HIGH" if confirmations >= 6 else "MEDIUM"
-        reason = "Breakout confirmed with agreement across structure, trend, flow, market profile and social signals."
+        confidence = (
+            "HIGH"
+            if social_available and confirmations >= 6
+            else "MEDIUM"
+        )
+        reason = (
+            "Breakout confirmed across structure, trend, flow and market profile."
+            + (
+                " Social signals also corroborate the setup."
+                if social_available
+                else " X data is unavailable, so social confirmation is not included."
+            )
+        )
         entry_style = "BREAKOUT CLOSE / RETEST"
     elif state in {"PULLBACK", "HIGHER_LOW"} and signal["score"] >= 55:
         action = "WATCH"
         confidence = "MEDIUM"
-        reason = "Structure is developing; wait for the actual breakout trigger."
+        reason = (
+            "Structure is developing; wait for the actual breakout trigger."
+            + (
+                ""
+                if social_available
+                else " Social confirmation is unavailable."
+            )
+        )
         entry_style = "WAIT FOR 1M CLOSE ABOVE TRIGGER"
     elif extension is not None and extension > 7:
         reason = "Price is too extended above the trigger; do not chase."
@@ -711,6 +783,8 @@ def decision_engine(*, setup, market, social, risk, overview):
         "risk_per_unit": risk_per_unit,
         "extension_pct": extension,
         "confirmation_count": confirmations,
+        "confirmation_total": required_confirmations,
+        "social_available": social_available,
         "reason": reason,
         "exit_rules": exits,
         "components": {
