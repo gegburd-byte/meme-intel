@@ -341,7 +341,7 @@ async def analyze(req: AnalyzeReq):
     security_task = he.security(mint)
     asset_task = he.asset(mint)
     candles_task = gt.candles(mint, "1m")
-    x_task = xa.recent(x_query, 100)
+    x_task = xa.recent(x_query, 60) if req.include_x else skipped_x()
 
     (
         (creation, creation_err),
