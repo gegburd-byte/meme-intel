@@ -423,6 +423,7 @@ class HeliusAdapter:
 
         return {
             "state": "READY",
+            "asset": asset,
             "mint_authority": bool(mint_authority),
             "freeze_authority": bool(freeze_authority),
             "holder_count": len(ranked),
