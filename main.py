@@ -218,11 +218,14 @@ def parse_pump_candles(payload):
     elif isinstance(payload, dict):
         data = payload.get("data") or payload.get("result") or payload
         if isinstance(data, dict):
+            attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
             items = (
                 data.get("candles")
                 or data.get("results")
                 or data.get("ohlcv_list")
                 or data.get("items")
+                or attributes.get("candles")
+                or attributes.get("ohlcv_list")
                 or []
             )
         else:
