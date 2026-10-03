@@ -787,12 +787,78 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     limit = max(15, min(int(limit or 1000), 1000))
     offset = max(0, int(offset or 0))
 
-    payload, pump_err = await pf.candles(
-        mint,
-        limit=limit,
-        timeframe=timeframe,
-        offset=offset,
-    )
+    if offset == 0:
+        async def load_pump_history():
+            try:
+                return await asyncio.wait_for(
+                    pf.candles(
+                        mint,
+                        limit=limit,
+                        timeframe=timeframe,
+                        offset=offset,
+                    ),
+                    timeout=7.0,
+                )
+            except asyncio.TimeoutError:
+                return None, "PUMPFUN_CHART_TIMEOUT"
+            except Exception as exc:
+                return None, str(exc)[:240]
+
+        async def load_onchain_history():
+            try:
+                return await asyncio.wait_for(
+                    he.historical_trade_candles(
+                        mint,
+                        timeframe=timeframe,
+                        lookback_minutes=120,
+                        max_signatures=240,
+                    ),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                return [], "ONCHAIN_HISTORY_TIMEOUT"
+            except Exception as exc:
+                return [], str(exc)[:240]
+
+        async def load_gecko_history():
+            try:
+                return await asyncio.wait_for(
+                    gt.candles(mint, "1m"),
+                    timeout=6.0,
+                )
+            except asyncio.TimeoutError:
+                return None, "GECKO_HISTORY_TIMEOUT"
+            except Exception as exc:
+                return None, str(exc)[:240]
+
+        (
+            (payload, pump_err),
+            (onchain_candles, onchain_err),
+            (gecko_payload, gecko_err),
+        ) = await asyncio.gather(
+            load_pump_history(),
+            load_onchain_history(),
+            load_gecko_history(),
+        )
+    else:
+        try:
+            payload, pump_err = await asyncio.wait_for(
+                pf.candles(
+                    mint,
+                    limit=limit,
+                    timeframe=timeframe,
+                    offset=offset,
+                ),
+                timeout=7.0,
+            )
+        except asyncio.TimeoutError:
+            payload, pump_err = None, "PUMPFUN_CHART_TIMEOUT"
+        except Exception as exc:
+            payload, pump_err = None, str(exc)[:240]
+
+        onchain_candles, onchain_err = [], None
+        gecko_payload, gecko_err = None, None
+
     native = parse_pump_candles(payload)
 
     native_quality = chart_data_quality(native, minimum_bars=3)
@@ -804,49 +870,14 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     # payloads, so do not let a single source win without comparison.
     chart_diagnostics = None
     if offset == 0:
-        async def load_onchain_history():
-            try:
-                return await asyncio.wait_for(
-                    he.historical_trade_candles(
-                        mint,
-                        timeframe=timeframe,
-                        lookback_minutes=120,
-                        max_signatures=240,
-                    ),
-                    timeout=12.0,
-                )
-            except asyncio.TimeoutError:
-                return [], "ONCHAIN_HISTORY_TIMEOUT"
-            except Exception as exc:
-                return [], str(exc)[:240]
-
-        async def load_gecko_history():
-            try:
-                return await asyncio.wait_for(
-                    gt.candles(mint, "1m"),
-                    timeout=8.0,
-                )
-            except asyncio.TimeoutError:
-                return None, "GECKO_HISTORY_TIMEOUT"
-            except Exception as exc:
-                return None, str(exc)[:240]
-
-        (
-            (onchain_candles, onchain_err),
-            (gecko_payload, gecko_err),
-        ) = await asyncio.gather(
-            load_onchain_history(),
-            load_gecko_history(),
-        )
-
         # Fresh Pump.fun bonding-curve tokens often have no GeckoTerminal pool.
         # If Helius history is unavailable, retry the exact same on-chain
         # reconstruction against public Solana RPCs before declaring the chart empty.
         public_errors = []
         if chart_data_quality(onchain_candles or [], minimum_bars=3) <= 0:
-            for public_rpc in public_rpc_endpoints():
+            async def load_public_history(public_rpc):
                 try:
-                    public_candles, public_err = await asyncio.wait_for(
+                    result = await asyncio.wait_for(
                         he.historical_trade_candles(
                             mint,
                             timeframe=timeframe,
@@ -854,12 +885,20 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
                             max_signatures=180,
                             rpc_base=public_rpc,
                         ),
-                        timeout=7.0,
+                        timeout=4.5,
                     )
+                    return public_rpc, result
                 except asyncio.TimeoutError:
-                    public_candles, public_err = [], "PUBLIC_RPC_HISTORY_TIMEOUT"
+                    return public_rpc, ([], "PUBLIC_RPC_HISTORY_TIMEOUT")
                 except Exception as exc:
-                    public_candles, public_err = [], str(exc)[:240]
+                    return public_rpc, ([], str(exc)[:240])
+
+            public_results = await asyncio.gather(
+                *(load_public_history(rpc) for rpc in public_rpc_endpoints())
+            )
+
+            for public_rpc, result in public_results:
+                public_candles, public_err = result
                 if chart_data_quality(public_candles or [], minimum_bars=3) > 0:
                     onchain_candles = public_candles
                     onchain_err = None
