@@ -46,3 +46,22 @@ def test_safety_profile_does_not_treat_missing_liquidity_as_automatic_rug():
     assert profile["rug_risk_percent"] < 30
     assert profile["safety_percent"] > 70
     assert not any(x["name"] == "Liquidity" and x["status"] == "danger" for x in profile["checks"])
+
+
+def test_sell_route_is_positive_evidence():
+    profile = build_safety_profile(
+        security={
+            "state": "READY",
+            "mint_authority": False,
+            "freeze_authority": False,
+            "coverage_ratio": 1.0,
+            "top_holder_share": 0.02,
+            "top10_holder_share": 0.12,
+            "token_extensions": [],
+        },
+        rugcheck={},
+        overview={"liquidity": 50000},
+        sell_probe={"state": "ROUTE_FOUND"},
+    )
+
+    assert any(x["name"] == "Sell route" and x["status"] == "safe" for x in profile["checks"])
