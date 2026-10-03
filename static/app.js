@@ -4,6 +4,7 @@ let pumpSocket = null;
 let liveTradeSocket = null;
 let fallbackTimer = null;
 let reconnectTimer = null;
+let pricePollTimer = null;
 
 let pumpEvents = [];
 let marketCandidates = [];
@@ -57,6 +58,33 @@ function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, function(c) {
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c];
   });
+}
+
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(
+      "Backend returned a non-JSON error (" +
+      response.status +
+      ")."
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.detail ||
+      data?.error ||
+      data?.message ||
+      ("Request failed (" + response.status + ").")
+    );
+  }
+
+  return data || {};
 }
 
 function cleanSymbol(v) {
@@ -1116,7 +1144,7 @@ async function fetchPage(offset, generation) {
       return {candles:[],hasMore:false};
     }
 
-    const j = await r.json();
+    const j = await readJsonResponse(r);
 
     const candles = (j.candles || [])
       .map(normalizeCandle)
@@ -1149,14 +1177,53 @@ async function fetchInitialHistory() {
   }
 
   if (!page.candles.length) {
+    let seedPrice = Number(selectedInfo.price);
+
+    if (!(seedPrice > 0)) {
+      try {
+        const r = await fetch(
+          "/api/live/price?mint=" +
+          encodeURIComponent(selectedMint) +
+          "&t=" + Date.now(),
+          {cache:"no-store"}
+        );
+        const data = await readJsonResponse(r);
+        seedPrice = Number(data.price);
+      } catch {}
+    }
+
+    if (Number.isFinite(seedPrice) && seedPrice > 0) {
+      const span = chartTimeframe * 60;
+      const bucket = Math.floor(Date.now() / 1000 / span) * span;
+      selectedCandles = [{
+        time: bucket,
+        ts: bucket,
+        o: seedPrice,
+        h: seedPrice,
+        l: seedPrice,
+        c: seedPrice,
+        v: 0
+      }];
+      historyBarsLoaded = 1;
+      $("chartMode").textContent =
+        "LIVE PRICE · BUILDING " + timeframeLabel() + " CANDLE";
+      $("historyStatus").textContent = "1 bar";
+      renderChart(selectedCandles,true);
+      return true;
+    }
+
     $("chartMode").textContent =
-      "WAITING FOR PUMP.FUN CANDLES…";
+      "WAITING FOR LIVE PRICE…";
     $("historyStatus").textContent = "0 bars";
     return false;
   }
 
-  selectedCandles = page.candles
-    .sort((a,b)=>a.time-b.time);
+  if (selectedCandles.length) {
+    mergePage(page.candles);
+  } else {
+    selectedCandles = page.candles
+      .sort((a,b)=>a.time-b.time);
+  }
 
   historyBarsLoaded = selectedCandles.length;
   historyNextOffset = PAGE_SIZE;
@@ -1228,58 +1295,37 @@ async function loadOlderHistory(generation) {
   }
 }
 
-function applyLiveTrade(rawTrade, record = true) {
-  const t = normalizeTrade(rawTrade);
+function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
+  price = Number(price);
+  if (!Number.isFinite(price) || price <= 0 || !selectedMint) return;
 
-  if (!t || !selectedMint) return;
-
-  if (record) {
-    if (selectedTrades.some(x=>x.id === t.id)) return;
-
-    selectedTrades.push(t);
-
-    if (selectedTrades.length > 500) {
-      selectedTrades.shift();
-    }
-  }
-
+  const tSec = Math.floor(Number(timestampMs) / 1000);
   const span = chartTimeframe * 60;
-  const bucket = Math.floor(t.time / span) * span;
+  const bucket = Math.floor(tSec / span) * span;
 
-  let current =
-    selectedCandles[selectedCandles.length - 1];
+  let current = selectedCandles[selectedCandles.length - 1];
 
   if (!current || bucket > current.time) {
     current = {
-      time:bucket,
-      ts:bucket,
-      o:t.price,
-      h:t.price,
-      l:t.price,
-      c:t.price,
-      v:Math.max(0,t.volumeSol)
+      time: bucket,
+      ts: bucket,
+      o: price,
+      h: price,
+      l: price,
+      c: price,
+      v: 0
     };
-
     selectedCandles.push(current);
   } else if (bucket === current.time) {
-    current.h = Math.max(current.h,t.price);
-    current.l = Math.min(current.l,t.price);
-    current.c = t.price;
-    current.v =
-      (Number(current.v) || 0) +
-      Math.max(0,t.volumeSol);
+    current.h = Math.max(current.h, price);
+    current.l = Math.min(current.l, price);
+    current.c = price;
   } else {
-    const old = selectedCandles.find(
-      x=>x.time === bucket
-    );
-
+    const old = selectedCandles.find(x => x.time === bucket);
     if (old) {
-      old.h = Math.max(old.h,t.price);
-      old.l = Math.min(old.l,t.price);
-      old.c = t.price;
-      old.v =
-        (Number(old.v) || 0) +
-        Math.max(0,t.volumeSol);
+      old.h = Math.max(old.h, price);
+      old.l = Math.min(old.l, price);
+      old.c = price;
     }
   }
 
@@ -1289,18 +1335,60 @@ function applyLiveTrade(rawTrade, record = true) {
     selectedCandles.shift();
   }
 
-  historyBarsLoaded =
-    Math.max(historyBarsLoaded,selectedCandles.length);
-
-  updateActivePrice(
-    t.price,
-    t.time * 1000
+  historyBarsLoaded = Math.max(
+    historyBarsLoaded,
+    selectedCandles.length
   );
 
-  $("lastUpdate").textContent =
-    new Date(t.time * 1000).toLocaleTimeString();
+  updateActivePrice(price, tSec * 1000);
+
+  if (recordTrade) {
+    if (!selectedTrades.some(x => x.id === recordTrade.id)) {
+      selectedTrades.push(recordTrade);
+      if (selectedTrades.length > 500) selectedTrades.shift();
+    }
+    $("lastUpdate").textContent =
+      new Date(recordTrade.time * 1000).toLocaleTimeString();
+  }
 
   scheduleLiveRender();
+}
+
+function applyLiveTrade(rawTrade, record = true) {
+  const t = normalizeTrade(rawTrade);
+  if (!t || !selectedMint) return;
+
+  applyLivePrice(
+    t.price,
+    t.time * 1000,
+    record ? t : null
+  );
+}
+
+async function pollLivePrice() {
+  if (!selectedMint) return;
+
+  try {
+    const r = await fetch(
+      "/api/live/price?mint=" +
+      encodeURIComponent(selectedMint) +
+      "&t=" + Date.now(),
+      {cache:"no-store"}
+    );
+
+    const data = await readJsonResponse(r);
+    const price = Number(data.price);
+
+    if (Number.isFinite(price) && price > 0) {
+      applyLivePrice(price, Date.now(), null);
+    }
+  } catch {}
+}
+
+function startLivePricePoll() {
+  if (pricePollTimer) clearInterval(pricePollTimer);
+  pricePollTimer = setInterval(pollLivePrice, 1200);
+  pollLivePrice();
 }
 
 function disconnectLiveTrade() {
@@ -1527,13 +1615,7 @@ async function analyzeSelected() {
       }
     );
 
-    const data = await r.json();
-
-    if (!r.ok) {
-      throw new Error(
-        data.detail || "Analysis failed"
-      );
-    }
+    const data = await readJsonResponse(r);
 
     renderSafety(data);
     renderSecurity(data);
@@ -1660,11 +1742,16 @@ async function selectToken(mint) {
   $("activePrice").textContent = "—";
   $("activeAge").textContent = "—";
 
+  if (Number(selectedInfo.price) > 0) {
+    updateActivePrice(Number(selectedInfo.price), Date.now());
+  }
+
   renderCandidates();
 
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
+  startLivePricePoll();
 
   await fetchInitialHistory();
 
