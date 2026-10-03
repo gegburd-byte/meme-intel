@@ -535,3 +535,86 @@ def social_metrics(items):
         "reach_proxy": reach_proxy,
         "top_authors": top_authors,
     }
+
+
+def x_radar_candidates(items, limit=20):
+    buckets = {}
+
+    for item in items or []:
+        for ca in item.get("cas") or []:
+            bucket = buckets.setdefault(ca, [])
+            bucket.append(item)
+
+    rows = []
+
+    for ca, mentions in buckets.items():
+        sm = social_metrics(mentions)
+
+        velocity = float(sm.get("mention_velocity") or 0)
+        acceleration = float(sm.get("velocity_acceleration") or 0)
+        sentiment = float(sm.get("sentiment") or 50)
+        authors = int(sm.get("unique_author_count") or 0)
+        engagement = float(sm.get("engagement_velocity") or 0)
+        author_quality = float(sm.get("author_quality") or 0)
+        coordination = float(sm.get("coordination_risk") or 0)
+
+        # Discovery score favors speed + independent authors + engagement,
+        # while explicitly penalizing likely coordinated/copied promotion.
+        score = (
+            min(35, velocity * 7)
+            + min(20, max(0, acceleration - 1) * 4)
+            + min(15, authors * 2.5)
+            + min(15, __import__("math").log10(max(1, engagement + 1)) * 5)
+            + author_quality * 0.15
+            + max(0, sentiment - 50) * 0.10
+            - coordination * 0.25
+        )
+
+        top = (sm.get("top_authors") or [{}])[0]
+
+        best = max(
+            mentions,
+            key=lambda x: (
+                int(x.get("engagement") or 0),
+                int(x.get("followers") or 0),
+            ),
+        )
+
+        rows.append({
+            "mint": ca,
+            "score": round(max(0, min(100, score)), 1),
+            "posts_15m": sm.get("recent_15m", 0),
+            "posts_5m": sm.get("recent_5m", 0),
+            "mention_velocity": sm.get("mention_velocity"),
+            "acceleration": sm.get("velocity_acceleration"),
+            "unique_authors": authors,
+            "sentiment": sm.get("sentiment"),
+            "engagement_velocity": sm.get("engagement_velocity"),
+            "author_quality": sm.get("author_quality"),
+            "coordination_risk": sm.get("coordination_risk"),
+            "top_author": top.get("username"),
+            "ticker_hints": sorted({
+                ticker
+                for mention in mentions
+                for ticker in (mention.get("tickers") or [])
+            })[:5],
+            "best_post": {
+                "text": best.get("text"),
+                "username": best.get("username"),
+                "followers": best.get("followers"),
+                "engagement": best.get("engagement"),
+                "url": best.get("url"),
+            },
+        })
+
+    rows.sort(
+        key=lambda x: (
+            x["score"],
+            x["posts_5m"],
+            x["unique_authors"],
+            x["engagement_velocity"],
+        ),
+        reverse=True,
+    )
+
+    return rows[:limit]
