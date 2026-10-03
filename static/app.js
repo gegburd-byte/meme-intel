@@ -760,8 +760,15 @@ function renderSignal(signal) {
 function updateActivePrice(price, ts = Date.now()) {
   $("activePrice").textContent = safe(price,12);
   $("livePrice").textContent = safe(price,12);
-  $("activeAge").textContent =
-    Math.max(0, Math.round(Date.now() - ts)) + " ms";
+
+  const age = Math.max(
+    0,
+    Math.round(Date.now() - Number(ts || Date.now()))
+  );
+
+  $("activeAge").textContent = age < 10000
+    ? "LIVE · " + age + " ms"
+    : "LIVE";
 }
 
 function renderTape() {
@@ -1221,7 +1228,7 @@ function applyLiveTrade(rawTrade, record = true) {
 
   updateActivePrice(
     t.price,
-    Date.now()
+    t.time * 1000
   );
 
   $("lastUpdate").textContent =
