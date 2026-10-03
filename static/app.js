@@ -1970,7 +1970,7 @@ async function seedLivePriceBar(price, timestampMs = Date.now()) {
   return true;
 }
 
-function selectToken(mint) {
+async function selectToken(mint) {
   if (!mint) return;
 
   disconnectLiveTrade();
