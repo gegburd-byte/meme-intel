@@ -16,6 +16,7 @@ def build_safety_profile(
     security: Any,
     rugcheck: Any,
     overview: Any,
+    sell_probe: Any = None,
 ) -> dict[str, Any]:
     security = security if isinstance(security, dict) else {}
     rugcheck = rugcheck if isinstance(rugcheck, dict) else {}
@@ -271,6 +272,40 @@ def build_safety_profile(
                 "No high-impact Token-2022 control extensions were detected.",
                 confidence=5,
             )
+
+    if isinstance(sell_probe, dict):
+        probe_state = str(sell_probe.get("state") or "")
+        if probe_state == "ROUTE_FOUND":
+            add_check(
+                "Sell route",
+                "safe",
+                "Jupiter found a live route out of the token.",
+                confidence=8,
+            )
+        elif probe_state == "NO_ROUTE":
+            # A pre-graduation bonding-curve token may legitimately have no
+            # Jupiter route yet. Only treat it as a hard warning when other
+            # market sources say the token is already tradable.
+            has_market = bool(
+                overview.get("liquidity") or
+                overview.get("marketCap") or
+                rugcheck.get("markets")
+            )
+            if has_market:
+                add_check(
+                    "Sell route",
+                    "danger",
+                    "Jupiter could not find a live exit route for the token.",
+                    weight=18,
+                    confidence=8,
+                )
+            else:
+                checks.append({
+                    "name": "Sell route",
+                    "status": "unknown",
+                    "detail": "No Jupiter route yet; token may still be on a bonding curve.",
+                })
+                evidence += 4
 
     liquidity = _num(
         overview.get("liquidity")
