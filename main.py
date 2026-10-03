@@ -706,14 +706,26 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     candles = parse_pump_candles(payload)
     source = "PUMP.FUN"
 
-    # Current Pump.fun frontend candle routes may require authentication.
-    # GeckoTerminal is the historical fallback for tracked markets.
-    if not candles and offset == 0:
+    # If Pump.fun doesn't provide enough native bars, rebuild real OHLC
+    # from the token's on-chain Pump.fun/PumpSwap trades.
+    if len(candles) < 20 and offset == 0:
+        onchain_candles, onchain_err = await he.historical_trade_candles(
+            mint,
+            timeframe=timeframe,
+            max_signatures=300,
+        )
+        if len(onchain_candles) > len(candles):
+            candles = onchain_candles[-limit:]
+            source = "HELIUS_ONCHAIN_TRADES"
+            pump_err = onchain_err
+
+    # GeckoTerminal remains the broad market-data fallback.
+    if len(candles) < 5 and offset == 0:
         gecko_payload, gecko_err = await gt.candles(mint, "1m")
         gecko_candles = parse_candles(gecko_payload)
         if gecko_candles:
             candles = aggregate_timeframe_candles(gecko_candles, timeframe)
-            candles = candles[-limit:]
+            candles = gecko_candles[-limit:] if timeframe == 1 else candles[-limit:]
             source = "GECKOTERMINAL"
             pump_err = gecko_err
         else:
