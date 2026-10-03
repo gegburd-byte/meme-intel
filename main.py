@@ -574,8 +574,16 @@ async def analyze(req: AnalyzeReq):
     c5 = aggregate_5m_from_1m(c1)
     setup = evaluate_setup(c5, c1) if c5 and c1 else None
 
-    social_items = x_items(xp) if not xerr else []
-    sm = social_metrics(social_items)
+    try:
+        social_items = x_items(xp) if not xerr else []
+        sm = social_metrics(social_items)
+    except Exception as exc:
+        social_items = []
+        sm = {
+            "state": "UNAVAILABLE",
+            "available": False,
+            "error": f"SOCIAL_MODEL_ERROR:{str(exc)[:220]}",
+        }
     if xerr and xerr != "X_SKIPPED_FOR_MARKET_SCREEN":
         sm["state"] = xerr
         sm["available"] = False
@@ -583,9 +591,31 @@ async def analyze(req: AnalyzeReq):
     elif xerr == "X_SKIPPED_FOR_MARKET_SCREEN":
         sm["state"] = "SKIPPED"
         sm["available"] = False
-    market = market_metrics(c1, c5, data)
+    try:
+        market = market_metrics(c1, c5, data)
+    except Exception as exc:
+        market = {
+            "state": "NO_DATA",
+            "profile": {
+                "poc": None,
+                "vah": None,
+                "val": None,
+                "value_area_pct": 0.70,
+                "total_volume": 0.0,
+                "bins": [],
+            },
+            "error": f"MARKET_MODEL_ERROR:{str(exc)[:220]}",
+        }
 
-    sec_gate = security_gate(security)
+    try:
+        sec_gate = security_gate(security)
+    except Exception as exc:
+        sec_gate = {
+            "state": "UNKNOWN",
+            "label": "SECURITY UNKNOWN",
+            "score": None,
+            "reasons": [f"Security model unavailable: {str(exc)[:180]}"],
+        }
 
     try:
         safety_profile = build_safety_profile(
@@ -604,28 +634,41 @@ async def analyze(req: AnalyzeReq):
             "error": f"SAFETY_MODEL_ERROR:{str(exc)[:220]}",
         }
 
-    risk = risk_flags(
-        liquidity_usd=data.get("liquidity"),
-        market_cap=data.get("marketCap"),
-        holder_concentration=(
-            security.get("top_holder_share")
-            if isinstance(security, dict)
-            else None
-        ),
-        mint_authority=(
-            security.get("mint_authority")
-            if isinstance(security, dict)
-            else None
-        ),
-        freeze_authority=(
-            security.get("freeze_authority")
-            if isinstance(security, dict)
-            else None
-        ),
-        social_domination=sm.get("domination"),
-        coordination_risk=sm.get("coordination_risk"),
-        vertical_move_pct=abs(market.get("return_30m_pct")) if market.get("return_30m_pct") is not None else None,
-    )
+    try:
+        risk = risk_flags(
+            liquidity_usd=data.get("liquidity"),
+            market_cap=data.get("marketCap"),
+            holder_concentration=(
+                security.get("top_holder_share")
+                if isinstance(security, dict)
+                else None
+            ),
+            mint_authority=(
+                security.get("mint_authority")
+                if isinstance(security, dict)
+                else None
+            ),
+            freeze_authority=(
+                security.get("freeze_authority")
+                if isinstance(security, dict)
+                else None
+            ),
+            social_domination=sm.get("domination"),
+            coordination_risk=sm.get("coordination_risk"),
+            vertical_move_pct=abs(market.get("return_30m_pct"))
+            if market.get("return_30m_pct") is not None
+            else None,
+        )
+    except Exception as exc:
+        risk = {
+            "overall": "UNKNOWN",
+            "flags": [{
+                "level": "UNKNOWN",
+                "code": "RISK_MODEL_ERROR",
+                "reason": f"Risk model unavailable: {str(exc)[:220]}",
+            }],
+        }
+
 
     if security_err:
         risk["flags"].append({
@@ -655,23 +698,51 @@ async def analyze(req: AnalyzeReq):
     sentiment = sm.get("sentiment") if sm.get("sentiment") is not None else 0
     penalty = {"LOW": 0, "UNKNOWN": 15, "MEDIUM": 20, "HIGH": 40, "CRITICAL": 80}.get(risk["overall"], 15)
 
-    score = opportunity_score(
-        technical=technical,
-        social_velocity=social_velocity,
-        sentiment=sentiment,
-        liquidity=liquidity_score,
-        corroboration=corroboration,
-        risk_penalty=penalty,
-        data_complete=not any([overview_err, e1, xerr]),
-    )
+    try:
+        score = opportunity_score(
+            technical=technical,
+            social_velocity=social_velocity,
+            sentiment=sentiment,
+            liquidity=liquidity_score,
+            corroboration=corroboration,
+            risk_penalty=penalty,
+            data_complete=not any([overview_err, e1, xerr]),
+        )
+    except Exception as exc:
+        score = {
+            "score": 0.0,
+            "complete": False,
+            "components": {},
+            "note": f"Opportunity score unavailable: {str(exc)[:180]}",
+        }
 
-    decision = decision_engine(
+    try:
+        decision = decision_engine(
         setup=setup,
         market=market,
         social=sm,
         risk=risk,
         overview=data,
     )
+    except Exception as exc:
+        decision = {
+            "action": "NO TRADE",
+            "exit_action": "HOLD / MONITOR",
+            "confidence": "LOW",
+            "score": 0,
+            "entry_style": "WAIT",
+            "entry_trigger": None,
+            "invalidation": None,
+            "target1": None,
+            "target2": None,
+            "reason": f"Decision model unavailable: {str(exc)[:220]}",
+            "confirmation_count": 0,
+            "confirmation_total": 0,
+            "components": {},
+            "disclaimer": "Rule-based research and paper-trading signal; it cannot know the future or guarantee an entry or exit.",
+        }
+
+
 
     return {
         "mint": mint,
