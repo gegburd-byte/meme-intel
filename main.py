@@ -73,8 +73,8 @@ class XSearchReq(BaseModel):
 class PaperOpenReq(BaseModel):
     mint: str
     side: str = "LONG"
-    entry: float
-    qty: float
+    entry: float = Field(gt=0)
+    qty: float = Field(gt=0)
     note: str = ""
 
 
@@ -658,10 +658,15 @@ async def paper_open(req: PaperOpenReq):
 
 @app.post("/api/paper/close")
 async def paper_close(req: PaperCloseReq):
-    return store.close_trade(
-        req.trade_id,
-        req.exit
-    )
+    if req.exit <= 0:
+        raise HTTPException(400, "Exit price must be greater than zero.")
+    try:
+        return store.close_trade(
+            req.trade_id,
+            req.exit
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
 
 @app.get("/api/sources")
