@@ -23,6 +23,7 @@ let markersApi = null;
 let chartInitialized = false;
 
 let chartTimeframe = 1;
+let chartDataSource = "PUMP.FUN";
 let historyGeneration = 0;
 let historyBusy = false;
 let historyHasMore = true;
@@ -478,7 +479,9 @@ function initChart() {
     rightPriceScale:{
       borderColor:"#203140",
       scaleMargins:{top:0.06,bottom:0.18},
-      autoScale:true
+      autoScale:true,
+      alignLabels:true,
+      mode: LightweightCharts.PriceScaleMode?.Logarithmic ?? 0
     },
 
     timeScale:{
@@ -486,9 +489,9 @@ function initChart() {
       timeVisible:true,
       secondsVisible:false,
       rightOffset:4,
-      barSpacing:8,
-      minBarSpacing:0.5,
-      maxBarSpacing:50,
+      barSpacing:7,
+      minBarSpacing:1,
+      maxBarSpacing:40,
       lockVisibleTimeRangeOnResize:true,
       shiftVisibleRangeOnNewBar:true
     },
@@ -997,7 +1000,7 @@ function renderChart(candles, fit = false) {
 
   updateActivePrice(last.c);
   $("chartMode").textContent =
-    "PUMP.FUN " + timeframeLabel() +
+    chartDataSource + " · " + timeframeLabel() +
     " CANDLES · " + candles.length + " BARS";
 
   $("chartState").textContent = "LIVE";
@@ -1152,7 +1155,8 @@ async function fetchPage(offset, generation) {
 
     return {
       candles,
-      hasMore:Boolean(j.has_more) && candles.length >= PAGE_SIZE
+      hasMore:Boolean(j.has_more) && candles.length >= PAGE_SIZE,
+      source:String(j.source || "MARKET DATA")
     };
   } catch {
     return {candles:[],hasMore:false};
@@ -1175,6 +1179,8 @@ async function fetchInitialHistory() {
   ) {
     return false;
   }
+
+  chartDataSource = page.source || "MARKET DATA";
 
   if (!page.candles.length) {
     let seedPrice = Number(selectedInfo.price);
@@ -1205,6 +1211,7 @@ async function fetchInitialHistory() {
         v: 0
       }];
       historyBarsLoaded = 1;
+      chartDataSource = "LIVE PRICE";
       $("chartMode").textContent =
         "LIVE PRICE · BUILDING " + timeframeLabel() + " CANDLE";
       $("historyStatus").textContent = "1 bar";
@@ -1706,6 +1713,17 @@ async function selectToken(mint) {
     );
 
   $("selectedMint").textContent = mint;
+
+  // Hard-reset the chart series so the previous token can never bleed into
+  // the newly selected token while its history is loading.
+  if (chartInitialized) {
+    candleSeries.setData([]);
+    volumeSeries.setData([]);
+    ema9Series.setData([]);
+    ema21Series.setData([]);
+    markersApi.setMarkers([]);
+  }
+  chartDataSource = "LOADING";
 
   $("securityRows").innerHTML =
     '<div class="empty">Checking security in background…</div>';
