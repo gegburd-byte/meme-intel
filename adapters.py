@@ -435,14 +435,40 @@ class XAdapter:
             bool(self.token),
             "X_BEARER_TOKEN missing" if not self.token else ""
         )
+        self.last_state = "CONFIGURED" if self.token else "NOT_CONFIGURED"
+        self.last_error = ""
+        self._cache = {}
+
+    def _cache_key(self, query, max_results):
+        return (str(query or ""), int(max_results))
+
+    def _cached(self, key):
+        item = self._cache.get(key)
+        if not item:
+            return None
+        ts, payload, err, ttl = item
+        if time.time() - ts <= ttl:
+            return payload, err
+        self._cache.pop(key, None)
+        return None
 
     async def recent(self, query, max_results=50):
         if not self.token:
+            self.last_state = "NOT_CONFIGURED"
+            self.last_error = "X_BEARER_TOKEN missing"
             return None, "NOT_CONFIGURED"
+
+        max_results = min(max(10, int(max_results)), 100)
+        key = self._cache_key(query, max_results)
+
+        cached = self._cached(key)
+        if cached:
+            payload, err = cached
+            return payload, err
 
         params = {
             "query": query,
-            "max_results": min(max(10, int(max_results)), 100),
+            "max_results": max_results,
             "tweet.fields": "created_at,public_metrics,author_id,lang,entities,referenced_tweets,in_reply_to_user_id",
             "expansions": "author_id,referenced_tweets.id",
             "user.fields": "name,username,profile_image_url,public_metrics,verified,verified_type,created_at,description"
@@ -452,18 +478,52 @@ class XAdapter:
             "Authorization": f"Bearer {self.token}"
         }
 
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(
-                f"{X_API}/tweets/search/recent",
-                params=params,
-                headers=headers
-            )
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(
+                    f"{X_API}/tweets/search/recent",
+                    params=params,
+                    headers=headers
+                )
 
-            if r.status_code >= 400:
-                return None, f"HTTP_{r.status_code}:{r.text[:250]}"
+            if r.status_code == 200:
+                payload = r.json()
+                self.last_state = "READY"
+                self.last_error = ""
+                self._cache[key] = (time.time(), payload, None, 30)
+                return payload, None
 
-            return r.json(), None
+            if r.status_code == 402:
+                err = "X_CREDITS_DEPLETED"
+                self.last_state = err
+                self.last_error = r.text[:300]
+                self._cache[key] = (time.time(), None, err, 300)
+                return None, err
 
+            if r.status_code in {401, 403}:
+                err = f"X_AUTH_{r.status_code}"
+                self.last_state = err
+                self.last_error = r.text[:300]
+                self._cache[key] = (time.time(), None, err, 120)
+                return None, err
+
+            if r.status_code == 429:
+                err = "X_RATE_LIMITED"
+                self.last_state = err
+                self.last_error = r.text[:300]
+                self._cache[key] = (time.time(), None, err, 60)
+                return None, err
+
+            err = f"X_HTTP_{r.status_code}"
+            self.last_state = err
+            self.last_error = r.text[:300]
+            self._cache[key] = (time.time(), None, err, 30)
+            return None, err
+
+        except Exception as exc:
+            self.last_state = "X_UNREACHABLE"
+            self.last_error = str(exc)
+            return None, "X_UNREACHABLE"
 
 def _num(value):
     try:
@@ -474,11 +534,6 @@ def _num(value):
 
     except Exception:
         return None
-
-
-def extract_cas(text: str):
-    return CA_RE.findall(text or "")
-
 
 
 def _parse_dt(value):
@@ -557,6 +612,7 @@ def social_metrics(items):
     if not items:
         return {
             "state": "NO_POSTS",
+            "available": False,
             "post_count": 0,
             "recent_15m": 0,
             "recent_5m": 0,
@@ -651,6 +707,7 @@ def social_metrics(items):
 
     return {
         "state": "READY",
+        "available": True,
         "post_count": len(items),
         "recent_15m": len(recent_15),
         "recent_5m": len(recent_5),
