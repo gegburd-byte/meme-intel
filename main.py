@@ -62,6 +62,7 @@ class AnalyzeReq(BaseModel):
         '(solana OR "pump.fun" OR memecoin OR $SOL) '
         'lang:en -is:retweet'
     )
+    include_x: bool = True
 
 
 class XSearchReq(BaseModel):
