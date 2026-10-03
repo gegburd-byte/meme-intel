@@ -19,7 +19,7 @@
 
   <section class="sourceStrip">
     <span><i id="dotPump" class="dot"></i>PUMP FEED <b id="pumpState">—</b></span>
-    <span><i id="dotMarket" class="dot"></i>MARKET DATA <b id="marketState">—</b></span>
+    <span><i id="dotChart" class="dot"></i>PUMP CHART <b id="chartState">—</b></span>
     <span><i id="dotHelius" class="dot"></i>SECURITY <b id="securityState">—</b></span>
     <span><i id="dotX" class="dot"></i>X <b id="xState">—</b></span>
   </section>
@@ -80,7 +80,7 @@
           <span><i class="key sellKey"></i>SELL</span>
         </div>
       </div>
-      <canvas id="chart" height="420"></canvas>
+      <div id="chart" aria-label="Live Pump.fun candlestick chart"></div>
     </div>
 
     <div class="indicatorGrid">
@@ -134,6 +134,7 @@
     </div>
   </section>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
