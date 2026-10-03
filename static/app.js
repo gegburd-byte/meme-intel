@@ -54,6 +54,7 @@ async function health() {
 function renderDecision(d) {
   d = d || {};
   $("action").textContent = d.action || "NO DATA";
+  $("exitAction").textContent = d.exit_action || "—";
   $("decisionScore").textContent = d.score == null ? "—" : d.score + "/100";
   $("confidence").textContent = d.confidence || "—";
   $("confirmations").textContent = d.confirmation_count == null ? "—" : d.confirmation_count + "/7";
