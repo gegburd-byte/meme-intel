@@ -62,7 +62,7 @@ class AnalyzeReq(BaseModel):
         '(solana OR "pump.fun" OR memecoin OR $SOL) '
         'lang:en -is:retweet'
     )
-    include_x: bool = True
+    include_x: bool = False
 
 
 class XSearchReq(BaseModel):
@@ -497,6 +497,82 @@ async def analyze(req: AnalyzeReq):
         },
         "timestamp": int(time.time()),
     }
+
+
+PRICE_CACHE = {}
+
+
+@app.get("/api/live/price")
+async def live_price(mint: str):
+    mint = (mint or "").strip()
+    if len(mint) < 32 or len(mint) > 44:
+        raise HTTPException(400, "Invalid mint")
+
+    now = time.time()
+    cached = PRICE_CACHE.get(mint)
+    if cached and now - cached["time"] < 4:
+        return cached["data"]
+
+    price = None
+    market_cap = None
+    symbol = None
+    name = None
+    source = "UNAVAILABLE"
+
+    asset, asset_err = await he.asset(mint)
+    if isinstance(asset, dict):
+        token_info = asset.get("token_info") or {}
+        price_info = token_info.get("price_info") or {}
+        try:
+            price = float(price_info.get("price_per_token"))
+        except (TypeError, ValueError):
+            price = None
+
+        try:
+            supply = float(token_info.get("supply"))
+            if price is not None and supply > 0:
+                market_cap = price * supply
+        except (TypeError, ValueError):
+            pass
+
+        symbol = token_info.get("symbol")
+        name = (
+            ((asset.get("content") or {}).get("metadata") or {}).get("name")
+            or symbol
+        )
+        if price is not None:
+            source = "HELIUS"
+
+    if price is None:
+        overview, overview_err = await ds.overview(mint)
+        if isinstance(overview, dict):
+            data = overview.get("data") or {}
+            price = data.get("price")
+            market_cap = data.get("marketCap")
+            symbol = data.get("symbol")
+            name = data.get("name")
+            if price is not None:
+                source = "DEXSCREENER"
+        else:
+            overview_err = "NO_DATA"
+
+    payload = {
+        "state": "READY" if price is not None else "NO_PRICE",
+        "mint": mint,
+        "price": price,
+        "market_cap": market_cap,
+        "symbol": symbol,
+        "name": name,
+        "source": source,
+        "timestamp": int(now),
+        "error": asset_err if price is None else None,
+    }
+
+    PRICE_CACHE[mint] = {
+        "time": now,
+        "data": payload,
+    }
+    return payload
 
 
 TOP_CACHE = {"time": 0, "data": None}
