@@ -103,6 +103,38 @@ function setGate(gate) {
   el.className = "gate " + String(gate.label || "SECURITY UNKNOWN").toLowerCase().replace(/[^a-z]+/g, "-");
 }
 
+function renderTopRows(rows) {
+  rows = rows || [];
+  $("topCandidates").innerHTML = rows.slice(0, 8).map(function(x, i) {
+    const gateLabel = x.security_gate && x.security_gate.label
+      ? x.security_gate.label
+      : "UNKNOWN";
+    const action = x.decision && x.decision.action
+      ? x.decision.action
+      : "NO DATA";
+
+    return "<div class=\"topRow\">" +
+      "<div class=\"topRowRank\">#" + (i + 1) + "</div>" +
+      "<div class=\"topRowMain\">" +
+        "<b>$" + escapeHtml(x.symbol || x.name || "UNKNOWN") + "</b>" +
+        "<span>" + escapeHtml(x.mint || "") + "</span>" +
+      "</div>" +
+      "<div class=\"topRowAction\">" + escapeHtml(action) + "</div>" +
+      "<div class=\"topRowGate\">" + escapeHtml(gateLabel) + "</div>" +
+      "<div class=\"topRowScore\">" + Number(x.research_rank || 0).toFixed(0) + "</div>" +
+      "<button class=\"secondary smallButton\" data-top-ca=\"" + escapeHtml(x.mint || "") + "\">LOAD</button>" +
+    "</div>";
+  }).join("") || "<div class=\"muted\">No candidates passed the initial market/security screen.</div>";
+
+  document.querySelectorAll("[data-top-ca]").forEach(function(btn) {
+    btn.addEventListener("click", function() {
+      $("mint").value = btn.getAttribute("data-top-ca") || "";
+      analyze();
+      window.scrollTo({top: 0, behavior: "smooth"});
+    });
+  });
+}
+
 function renderTop(data) {
   const top = data && data.top;
 
@@ -112,13 +144,22 @@ function renderTop(data) {
 
   if (!top) {
     $("topSymbol").textContent = "NO FULLY CHECKED SETUP";
-    $("topMint").textContent = "The scanner did not find a candidate that passed every required gate.";
+    $("topMint").textContent = "No candidate passed every required security/risk/structure gate.";
     setGate({label: "SECURITY UNKNOWN"});
-    $("topReason").textContent = "Keep scanning; incomplete security data never counts as a clean pass.";
+    $("topReason").textContent =
+      "The scanner is still working, or the available data is incomplete. Candidate rows below show what was screened.";
+    $("topRank").textContent = "—";
+    $("topEntry").textContent = "—";
+    $("topStop").textContent = "—";
+    $("topTargets").textContent = "— / —";
+    $("topSocial").textContent = "—";
+    $("topRisk").textContent = "—";
     $("topGateReasons").innerHTML = "";
-    $("topCandidates").innerHTML = "";
+    renderTopRows(data && data.candidates);
     return;
   }
+
+
 
   $("topSymbol").textContent = "$" + (top.symbol || top.name || "UNKNOWN");
   $("topMint").textContent = top.mint || "—";
@@ -154,7 +195,7 @@ function renderTop(data) {
 
     if (!live) {
       live = true;
-      $("liveToggle").textContent = "LIVE ON · 20s";
+      $("liveToggle").textContent = "LIVE ON · 30s";
       if (timer) clearInterval(timer);
       analyze();
       timer = setInterval(analyze, 20000);
@@ -166,35 +207,8 @@ function renderTop(data) {
     return "<div class=\"muted gateReason\">• " + escapeHtml(r) + "</div>";
   }).join("");
 
-  const rows = (data.candidates || []).slice(0, 6);
-  $("topCandidates").innerHTML = rows.map(function(x, i) {
-    const gateLabel = x.security_gate && x.security_gate.label
-      ? x.security_gate.label
-      : "UNKNOWN";
-    const action = x.decision && x.decision.action
-      ? x.decision.action
-      : "NO DATA";
+  renderTopRows(data.candidates || []);
 
-    return "<div class=\"topRow\">" +
-      "<div class=\"topRowRank\">#" + (i + 1) + "</div>" +
-      "<div class=\"topRowMain\">" +
-        "<b>$" + escapeHtml(x.symbol || x.name || "UNKNOWN") + "</b>" +
-        "<span>" + escapeHtml(x.mint || "") + "</span>" +
-      "</div>" +
-      "<div class=\"topRowAction\">" + escapeHtml(action) + "</div>" +
-      "<div class=\"topRowGate\">" + escapeHtml(gateLabel) + "</div>" +
-      "<div class=\"topRowScore\">" + Number(x.research_rank || 0).toFixed(0) + "</div>" +
-      "<button class=\"secondary smallButton\" data-top-ca=\"" + escapeHtml(x.mint || "") + "\">LOAD</button>" +
-    "</div>";
-  }).join("");
-
-  document.querySelectorAll("[data-top-ca]").forEach(function(btn) {
-    btn.addEventListener("click", function() {
-      $("mint").value = btn.getAttribute("data-top-ca") || "";
-      analyze();
-      window.scrollTo({top: 0, behavior: "smooth"});
-    });
-  });
 }
 
 async function scanTop() {
@@ -284,12 +298,21 @@ async function health() {
 function renderDecision(d) {
   d = d || {};
   $("action").textContent = d.action || "NO DATA";
-  $("exitAction").textContent = d.exit_action || "—";
+  if ($("exitAction")) $("exitAction").textContent = d.exit_action || "—";
   $("decisionScore").textContent = d.score == null ? "—" : d.score + "/100";
   $("confidence").textContent = d.confidence || "—";
-  $("confirmations").textContent = d.confirmation_count == null ? "—" : d.confirmation_count + "/7";
+  $("confirmations").textContent =
+    d.confirmation_count == null
+      ? "—"
+      : d.confirmation_count + "/" + (d.confirmation_total || 7);
   $("entryTrigger").textContent = safe(d.entry_trigger);
   $("decisionReason").textContent = d.reason || "—";
+  if ($("dataMode") && lastData) {
+    $("dataMode").textContent =
+      lastData.data_quality && lastData.data_quality.mode
+        ? lastData.data_quality.mode
+        : "—";
+  }
   $("entryStyle").textContent = d.entry_style || "—";
 
   $("targetTrigger").textContent = safe(d.entry_trigger);
@@ -342,7 +365,16 @@ function renderMarket(m) {
 function renderSocial(s, items) {
   s = s || {};
 
-  $("socialState").textContent = s.state || "—";
+  const socialLabel = {
+    "X_CREDITS_DEPLETED": "X CREDITS DEPLETED",
+    "X_RATE_LIMITED": "X RATE LIMITED",
+    "X_AUTH_401": "X AUTH ERROR",
+    "X_AUTH_403": "X ACCESS ERROR",
+    "NOT_CONFIGURED": "X NOT CONFIGURED",
+    "NO_POSTS": "NO TOKEN POSTS",
+    "READY": "READY",
+  }[s.state] || s.state || "—";
+  $("socialState").textContent = socialLabel;
   $("posts").textContent = s.recent_15m == null ? "—" : s.recent_15m;
   $("vel").textContent = s.mention_velocity == null ? "—" : Number(s.mention_velocity).toFixed(2);
   $("accel").textContent = s.velocity_acceleration == null ? "—" : Number(s.velocity_acceleration).toFixed(2) + "x";
@@ -602,7 +634,7 @@ async function analyze() {
 
 function toggleLive() {
   live = !live;
-  $("liveToggle").textContent = live ? "LIVE ON · 20s" : "LIVE OFF";
+  $("liveToggle").textContent = live ? "LIVE ON · 30s" : "LIVE OFF";
 
   if (timer) {
     clearInterval(timer);
@@ -673,7 +705,6 @@ document.addEventListener("DOMContentLoaded", function() {
   health();
   loadTrades();
   startAutopilot();
-  refreshRadar();
   startPumpFeed();
   setInterval(health, 15000);
   window.addEventListener("resize", function() {
@@ -729,7 +760,10 @@ async function refreshRadar() {
     const data = await r.json();
     renderRadar(data.candidates || []);
     if (data.state && data.state !== "READY") {
-      $("radarList").innerHTML = "<div class=\"muted\">X radar: " + escapeHtml(data.state) + "</div>";
+      const radarMessage = data.state === "X_CREDITS_DEPLETED"
+        ? "X radar is paused because the X API project has depleted its credits."
+        : "X radar: " + data.state;
+      $("radarList").innerHTML = "<div class=\"muted\">" + escapeHtml(radarMessage) + "</div>";
     }
   } catch (e) {
     $("radarList").innerHTML = "<div class=\"muted\">Radar error: " + escapeHtml(e.message || e) + "</div>";
