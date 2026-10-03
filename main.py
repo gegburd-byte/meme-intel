@@ -23,6 +23,7 @@ from adapters import (
     GeckoTerminalAdapter,
     HeliusAdapter,
     PumpFunAdapter,
+    RugCheckAdapter,
     XAdapter,
     x_items,
     social_metrics,
@@ -30,6 +31,7 @@ from adapters import (
 )
 from storage import Store
 from live_stream import trade_hub
+from risk_model import build_safety_profile
 
 load_dotenv()
 
@@ -52,6 +54,7 @@ ds = DexScreenerAdapter()
 gt = GeckoTerminalAdapter()
 he = HeliusAdapter()
 pf = PumpFunAdapter()
+rc = RugCheckAdapter()
 xa = XAdapter()
 
 
@@ -304,6 +307,9 @@ async def health():
                 "configured": trade_hub.active(),
                 "state": trade_hub.state,
                 "detail": trade_hub.last_error,
+            },            "RugCheck": {
+                "configured": True,
+                "state": "READY",
             },
         },
         "server_time": int(time.time()),
@@ -395,15 +401,18 @@ async def analyze(req: AnalyzeReq):
 
     security_task = he.security(mint)
     candles_task = gt.candles(mint, "1m")
+    rugcheck_task = rc.report(mint)
     x_task = xa.recent(x_query, 60) if req.include_x else skipped_x()
 
     (
         (security, security_err),
         (d1, e1),
+        (rugcheck, rugcheck_err),
         (xp, xerr),
     ) = await asyncio.gather(
         security_task,
         candles_task,
+        rugcheck_task,
         x_task,
     )
 
@@ -441,6 +450,12 @@ async def analyze(req: AnalyzeReq):
     market = market_metrics(c1, c5, data)
 
     sec_gate = security_gate(security)
+
+    safety_profile = build_safety_profile(
+        security=security,
+        rugcheck=rugcheck,
+        overview=data,
+    )
 
     risk = risk_flags(
         liquidity_usd=data.get("liquidity"),
@@ -518,6 +533,8 @@ async def analyze(req: AnalyzeReq):
         "setup": setup.dict() if setup else {"state": "DATA NOT AVAILABLE"},
         "overview": data if data else "DATA NOT AVAILABLE",
         "security": "DATA NOT AVAILABLE" if security_err else security,
+        "rugcheck": "DATA NOT AVAILABLE" if rugcheck_err else rugcheck,
+        "safety_profile": safety_profile,
         "data_quality": {
             "market": "READY" if not any([overview_err, e1]) else "LIMITED",
             "security": sec_gate.get("state", "UNKNOWN"),
@@ -550,6 +567,7 @@ async def analyze(req: AnalyzeReq):
             "Helius": asset_err or "READY",
             "X": xerr or "READY",
             "Security": security_err or "READY",
+            "RugCheck": rugcheck_err or "READY",
         },
         "timestamp": int(time.time()),
     }
