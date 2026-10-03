@@ -1270,8 +1270,12 @@ async function fetchInitialHistory() {
 
     renderChart(selectedCandles,true);
 
-    // Older native Pump.fun pages are loaded without blocking the visible chart.
-    loadOlderHistory(generation);
+    // Defer older history until the first chart paint is complete.
+    setTimeout(() => {
+      if (generation === historyGeneration) {
+        loadOlderHistory(generation);
+      }
+    }, 900);
 
     return true;
   } finally {
@@ -1300,46 +1304,35 @@ async function loadOlderHistory(generation) {
       selectedCandles.length < MAX_HISTORY_BARS &&
       generation === historyGeneration
     ) {
-      const offsets = [
+      const result = await fetchPage(
         historyNextOffset,
-        historyNextOffset + PAGE_SIZE,
-        historyNextOffset + PAGE_SIZE * 2
-      ];
-
-      const results = await Promise.all(
-        offsets.map(x=>fetchPage(x,generation))
+        generation
       );
-
-      let received = 0;
-      let anyMore = false;
-
-      for (const result of results) {
-        if (generation !== historyGeneration) break;
-
-        if (result.candles.length) {
-          mergePage(result.candles);
-          received += result.candles.length;
-        }
-
-        if (result.hasMore) {
-          anyMore = true;
-        }
-      }
 
       if (generation !== historyGeneration) break;
 
-      historyNextOffset += PAGE_SIZE * 3;
-      historyHasMore = anyMore && received > 0;
+      let received = 0;
+
+      if (result.candles.length) {
+        mergePage(result.candles);
+        received = result.candles.length;
+      }
+
+      historyNextOffset += PAGE_SIZE;
+      historyHasMore = Boolean(result.hasMore) && received > 0;
 
       $("historyStatus").textContent =
         historyBarsLoaded.toLocaleString() +
         (historyHasMore ? "+ bars" : " bars");
 
-      renderChart(selectedCandles,false);
+      if (received) {
+        renderChart(selectedCandles,false);
+      }
 
       if (!received) break;
 
-      await new Promise(requestAnimationFrame);
+      // Yield to the browser before asking for another background page.
+      await new Promise(resolve => setTimeout(resolve, 250));
     }
   } finally {
     if (historyBusyGeneration === generation) {
@@ -1976,11 +1969,15 @@ async function selectToken(mint) {
   connectLiveTrade(mint);
   startCurrentCandleSync();
 
-  // Risk/security runs independently of chart history so a slow market-data
-  // request can never prevent the rug-risk panel from rendering.
-  analyzeSelected();
-
+  // Paint real chart data first. The heavier security/risk analysis starts
+  // immediately after the first chart request has had a chance to render.
   await fetchInitialHistory();
+
+  if (selectedMint === mint) {
+    setTimeout(() => {
+      if (selectedMint === mint) analyzeSelected();
+    }, 0);
+  }
 }
 
 function startPumpFeed() {
