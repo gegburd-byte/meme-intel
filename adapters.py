@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from engine import Candle
+
 from live_stream import parse_live_trade_from_transaction
 
 DEXSCREENER = "https://api.dexscreener.com"
