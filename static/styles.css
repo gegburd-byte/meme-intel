@@ -140,7 +140,7 @@ button.secondary { background:#13202b; border:1px solid #263747; }
 }
 .commandStats {
   display:grid;
-  grid-template-columns:repeat(4,1fr);
+  grid-template-columns:repeat(6,1fr);
   gap:8px;
 }
 .commandStats > div,
