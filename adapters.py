@@ -13,6 +13,7 @@ X_API = "https://api.x.com/2"
 HELIUS_RPC = "https://mainnet.helius-rpc.com"
 
 CA_RE = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b")
+TICKER_RE = re.compile(r"(?<![A-Za-z0-9])\$([A-Za-z][A-Za-z0-9_]{1,14})\b")
 
 
 class Source:
