@@ -44,9 +44,9 @@ app = FastAPI(
 
 RATE_LIMIT_RULES = {
     "/api/chart": (30, 10.0),
-    "/api/chart/history": (4, 10.0),
+    "/api/chart/history": (12, 10.0),
     "/api/chart/meta": (10, 10.0),
-    "/api/chart/current": (20, 10.0),
+    "/api/chart/current": (60, 10.0),
     "/api/live/price": (20, 10.0),
     "/api/analyze": (4, 30.0),
 }
