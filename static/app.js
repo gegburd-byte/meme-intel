@@ -1130,49 +1130,15 @@ function normalizeTrade(raw) {
 }
 
 function normalizeTradeForChart(trade) {
-  const t = {...trade};
-  const source = String(chartDataSource || "").toUpperCase();
-
-  // GeckoTerminal's fallback chart is USD-denominated, while the Pump.fun
-  // bonding-curve event decoder produces SOL/token. Convert the live event
-  // into the exact unit the already-visible chart is using. The latest USD
-  // token price comes from the existing /api/live/price poll, so no extra
-  // request is created per trade.
-  if (
-    source.includes("GECKOTERMINAL") &&
-    Number(t.price) > 0
-  ) {
-    let solUsd = 0;
-
-    if (
-      Number.isFinite(selectedLiveUsdPrice) &&
-      selectedLiveUsdPrice > 0 &&
-      Date.now() - selectedLiveUsdAt < 5000
-    ) {
-      solUsd = selectedLiveUsdPrice / Number(t.price);
-    }
-
-    if (
-      !(solUsd > 0) &&
-      selectedCandles.length
-    ) {
-      const lastClose = Number(
-        selectedCandles[selectedCandles.length - 1].c
-      );
-
-      if (Number.isFinite(lastClose) && lastClose > 0) {
-        solUsd = lastClose / Number(t.price);
-      }
-    }
-
-    if (solUsd > 0) {
-      t.price = Number(t.price) * solUsd;
-      t.volume_sol =
-        Number(t.volume_sol || 0) * solUsd;
-    }
-  }
-
-  return t;
+  // Chart history and live Pump.fun trades intentionally use the same
+  // SOL/token unit. Never infer a USD conversion from an unrelated venue's
+  // last candle; that was a source of wrong live prices when a fallback chart
+  // was previously GeckoTerminal-backed.
+  return {
+    ...trade,
+    price:Number(trade.price),
+    volume_sol:Number(trade.volume_sol || 0),
+  };
 }
 
 function aggregateCandles(source, tfMinutes) {
