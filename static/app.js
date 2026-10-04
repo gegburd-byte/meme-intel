@@ -1964,6 +1964,18 @@ function updateCandleFromLiveTrade(trade) {
     }
   }
 
+  // Keep internal chronological timestamps on the active bar so a
+  // slightly out-of-order websocket event cannot corrupt OPEN/CLOSE.
+  bar._firstTs =
+    Number.isFinite(bar._firstTs)
+      ? bar._firstTs
+      : ts;
+
+  bar._lastTs =
+    Number.isFinite(bar._lastTs)
+      ? bar._lastTs
+      : ts;
+
   const cleanBar = {
     time:bar.time,
     ts:bar.ts,
@@ -1973,11 +1985,6 @@ function updateCandleFromLiveTrade(trade) {
     c:bar.c,
     v:bar.v
   };
-
-  Object.assign(
-    bar,
-    cleanBar
-  );
 
   chartDataSource =
     "PUMP.FUN LIVE TRADES";
@@ -2195,7 +2202,7 @@ function startCurrentCandleSync() {
 
     currentCandleSyncTimer = setTimeout(
       tick,
-      1000
+      850
     );
   };
 
@@ -2683,6 +2690,14 @@ async function selectToken(mint) {
   connectLiveTrade(mint);
   startCurrentCandleSync();
   loadChartMeta(mint);
+  setTimeout(() => {
+    if (
+      selectedMint === mint &&
+      !(chartMcFactor > 0)
+    ) {
+      loadChartMeta(mint);
+    }
+  }, 1800);
 
   // Paint real chart data first. The heavier security/risk analysis starts
   // immediately after the first chart request has had a chance to render.
