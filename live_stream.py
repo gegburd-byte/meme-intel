@@ -374,6 +374,8 @@ class LiveTradeHub:
             lambda: deque(maxlen=500)
         )
         self._recovery_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._pumpfun_task: asyncio.Task | None = None
+        self.pumpfun_live = False
         self._seen_signatures: dict[str, deque[str]] = defaultdict(
             lambda: deque(maxlen=250)
         )
@@ -416,6 +418,11 @@ class LiveTradeHub:
         if not self.task or self.task.done():
             self.task = asyncio.create_task(self._run())
 
+        if not self._pumpfun_task or self._pumpfun_task.done():
+            self._pumpfun_task = asyncio.create_task(
+                self._run_pumpfun_socket()
+            )
+
         await self._subscribe_when_ready(mint)
 
     async def remove_client(self, mint: str, websocket: Any) -> None:
@@ -431,6 +438,13 @@ class LiveTradeHub:
                 recovery = self._recovery_tasks.pop(mint, None)
                 if recovery and not recovery.done():
                     recovery.cancel()
+
+                if not self.clients:
+                    pump_task = self._pumpfun_task
+                    self._pumpfun_task = None
+                    if pump_task and not pump_task.done():
+                        pump_task.cancel()
+                    self.pumpfun_live = False
 
                 await self._unsubscribe(mint)
 
