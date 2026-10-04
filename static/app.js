@@ -431,7 +431,8 @@ function cleanSymbol(v) {
   return String(v || "TOKEN").replace(/^\$+/, "").slice(0, 24);
 }
 
-function timeframeLabel(tf = chartTimeframe) {
+function timeframeLabel(tf = null) {
+  if (tf == null) return chartInterval;
   if (typeof tf === "string") return tf;
   return tf === 1 ? "1m" : tf === 5 ? "5m" : tf === 15 ? "15m" : "1h";
 }
@@ -2149,10 +2150,12 @@ function applyLiveTrade(rawTrade, record = true) {
     return;
   }
 
-  // Only the Pump.fun bonding-curve event carries the token mint inside
-  // its decoded payload. Standard PumpSwap logs do not, so treating them as
-  // chart-authoritative can attach another token's trade to this chart.
-  if (t.source !== "PUMP.FUN") {
+  // Accept both sides of Pump.fun's lifecycle: bonding-curve trades and
+  // PumpSwap AMM trades after migration.
+  if (
+    t.source !== "PUMP.FUN" &&
+    t.source !== "PUMPSWAP"
+  ) {
     syncCurrentPumpCandle();
     return;
   }
