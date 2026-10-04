@@ -352,14 +352,27 @@ def parse_pump_candles(payload):
 
 def parse_pump_trades(payload):
     """Normalize Pump.fun trade-history rows into real price/time/volume trades."""
-    if isinstance(payload, dict):
-        for key in ("data", "trades", "results", "items"):
-            value = payload.get(key)
-            if isinstance(value, list) and value:
-                payload = value
-                break
+    def unwrap_trade_payload(value):
+        if isinstance(value, list):
+            return value
 
-    if not isinstance(payload, list):
+        if isinstance(value, dict):
+            for key in ("data", "trades", "results", "items", "rows"):
+                nested = value.get(key)
+
+                if isinstance(nested, list) and nested:
+                    return nested
+
+                if isinstance(nested, dict):
+                    rows = unwrap_trade_payload(nested)
+                    if rows:
+                        return rows
+
+        return []
+
+    payload = unwrap_trade_payload(payload)
+
+    if not payload:
         return []
 
     def first_value(item, *keys):
