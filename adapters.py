@@ -547,25 +547,58 @@ class HeliusAdapter:
     async def historical_trade_candles(
         self,
         mint: str,
-        timeframe: int = 1,
+        timeframe: int | str = 1,
         lookback_minutes: int = 120,
         max_signatures: int = 1500,
         rpc_base: str | None = None,
+        extra_addresses: list[str] | None = None,
     ):
-        """Rebuild real OHLC from on-chain trades for a bounded recent window."""
+        """Rebuild real Pump.fun/PumpSwap OHLC from on-chain trades."""
         if not self.key and not rpc_base:
             return [], "NOT_CONFIGURED"
 
         mint = (mint or "").strip()
-        timeframe = int(timeframe or 1)
-        default_lookback = int(os.getenv("CHART_HISTORY_MINUTES", "10080"))
-        lookback_minutes = max(
-            30,
-            min(int(lookback_minutes or default_lookback), 10080),
-        )
+        raw_timeframe = str(timeframe or "1").strip().lower()
+
+        if raw_timeframe in {"1s", "1sec", "1second"}:
+            span = 1
+            timeframe_key = "1s"
+            lookback_minutes = max(
+                5,
+                min(int(lookback_minutes or 10), 10080),
+            )
+        else:
+            try:
+                minutes = int(float(raw_timeframe))
+            except (TypeError, ValueError):
+                return [], "UNSUPPORTED_TIMEFRAME"
+
+            if minutes not in {1, 5, 15, 60}:
+                return [], "UNSUPPORTED_TIMEFRAME"
+
+            span = minutes * 60
+            timeframe_key = str(minutes)
+            lookback_minutes = max(
+                30,
+                min(int(lookback_minutes or 120), 10080),
+            )
+
         max_signatures = max(100, min(int(max_signatures or 1500), 1500))
 
-        cache_key = (mint, timeframe, lookback_minutes, max_signatures, rpc_base or "helius")
+        addresses = [mint]
+        for address in extra_addresses or []:
+            address = str(address or "").strip()
+            if address and address not in addresses:
+                addresses.append(address)
+
+        cache_key = (
+            mint,
+            tuple(addresses[1:]),
+            timeframe_key,
+            lookback_minutes,
+            max_signatures,
+            rpc_base or "helius",
+        )
         cached = self._chart_cache.get(cache_key)
         if cached and time.time() - cached["time"] < 20:
             return cached["candles"], cached["error"]
@@ -573,56 +606,66 @@ class HeliusAdapter:
         cutoff = int(time.time()) - lookback_minutes * 60
         rows = []
         seen = set()
-        before = None
 
-        while len(rows) < max_signatures:
-            page_limit = min(100 if rpc_base else 1000, max_signatures - len(rows))
-            params = {
-                "limit": page_limit,
-                "commitment": "confirmed",
-            }
-            if before:
-                params["before"] = before
+        # Query the token mint plus the PumpSwap pool when one is known. A
+        # migrated token can have very sparse/no mint-address signatures even
+        # though its live AMM transactions are recorded against the pool.
+        for address in addresses:
+            before = None
 
-            signatures, sig_err = await self._rpc(
-                "getSignaturesForAddress",
-                [mint, params],
-                rpc_base=rpc_base,
-            )
+            while len(rows) < max_signatures:
+                page_limit = min(
+                    100 if rpc_base else 1000,
+                    max_signatures - len(rows),
+                )
+                params = {
+                    "limit": page_limit,
+                    "commitment": "confirmed",
+                }
+                if before:
+                    params["before"] = before
 
-            if sig_err or not signatures:
-                if not rows:
-                    return [], sig_err or "NO_SIGNATURES"
-                break
+                signatures, sig_err = await self._rpc(
+                    "getSignaturesForAddress",
+                    [address, params],
+                    rpc_base=rpc_base,
+                )
 
-            page = [
-                item for item in signatures
-                if isinstance(item, dict) and item.get("signature")
-            ]
+                if sig_err or not signatures:
+                    if not rows:
+                        return [], sig_err or "NO_SIGNATURES"
+                    break
 
-            for item in page:
-                signature = str(item["signature"])
-                if signature in seen:
-                    continue
-                seen.add(signature)
-                rows.append(item)
+                page = [
+                    item
+                    for item in signatures
+                    if isinstance(item, dict) and item.get("signature")
+                ]
 
-            block_times = [
-                int(item.get("blockTime"))
-                for item in page
-                if item.get("blockTime") is not None
-            ]
+                for item in page:
+                    signature = str(item["signature"])
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    rows.append(item)
 
-            if block_times and min(block_times) <= cutoff:
-                break
+                block_times = [
+                    int(item.get("blockTime"))
+                    for item in page
+                    if item.get("blockTime") is not None
+                ]
 
-            if len(page) < page_limit:
-                break
+                if block_times and min(block_times) <= cutoff:
+                    break
 
-            before = str(page[-1]["signature"])
+                if len(page) < page_limit:
+                    break
+
+                before = str(page[-1]["signature"])
 
         rows = [
-            item for item in rows
+            item
+            for item in rows
             if item.get("blockTime") is None
             or int(item.get("blockTime")) >= cutoff
         ]
@@ -662,18 +705,28 @@ class HeliusAdapter:
         )
 
         trades = [
-            trade for trade in results
+            trade
+            for trade in results
             if isinstance(trade, dict)
         ]
-        trades.sort(key=lambda x: int(x.get("timestamp") or 0))
+        trades.sort(
+            key=lambda x: (
+                int(x.get("timestamp") or 0),
+                str(x.get("id") or ""),
+            )
+        )
 
-        span = max(60, timeframe * 60)
         buckets = {}
 
         for trade in trades:
             ts = int(trade.get("timestamp") or 0)
             price = float(trade.get("price") or 0)
-            if ts <= 0 or price <= 0 or ts < cutoff:
+
+            if (
+                ts <= 0
+                or price <= 0
+                or ts < cutoff
+            ):
                 continue
 
             bucket = (ts // span) * span
@@ -687,12 +740,21 @@ class HeliusAdapter:
                     "l": price,
                     "c": price,
                     "v": float(trade.get("volume_sol") or 0),
+                    "_first_ts": ts,
+                    "_last_ts": ts,
                 }
             else:
                 row["h"] = max(row["h"], price)
                 row["l"] = min(row["l"], price)
-                row["c"] = price
                 row["v"] += float(trade.get("volume_sol") or 0)
+
+                if ts < row["_first_ts"]:
+                    row["_first_ts"] = ts
+                    row["o"] = price
+
+                if ts >= row["_last_ts"]:
+                    row["_last_ts"] = ts
+                    row["c"] = price
 
         candles = [
             Candle(
@@ -707,14 +769,15 @@ class HeliusAdapter:
         ]
 
         candles.sort(key=lambda x: x.ts)
+
+        error = None if candles else "NO_TRADES_DECODED"
         self._chart_cache[cache_key] = {
             "time": time.time(),
             "candles": candles,
-            "error": None if candles else "NO_TRADES_DECODED",
+            "error": error,
         }
 
-        return candles, None if candles else "NO_TRADES_DECODED"
-
+        return candles, error
 
     async def asset(self, mint):
         if not self.key:
