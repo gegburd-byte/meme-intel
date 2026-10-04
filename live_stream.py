@@ -284,6 +284,10 @@ class LiveTradeHub:
         self.ws = None
         self.task: asyncio.Task | None = None
         self.clients: dict[str, set[Any]] = defaultdict(set)
+        # A migrated Pump.fun token can trade against a PumpSwap pool without
+        # the token mint being the address mentioned by the live transaction.
+        # Keep every live watch address mapped back to the selected mint.
+        self.watch_addresses: dict[str, set[str]] = defaultdict(set)
         self.subscription_to_mint: dict[int, str] = {}
         self.pending: dict[int, str] = {}
         self.request_id = 1
@@ -302,6 +306,8 @@ class LiveTradeHub:
         self._resolve_semaphore = asyncio.Semaphore(8)
         self._pending_resolutions: set[tuple[str, str]] = set()
         self._pending_tasks: set[asyncio.Task[Any]] = set()
+        self._subscribed_addresses: dict[str, set[str]] = defaultdict(set)
+        self._pending_addresses: dict[str, set[str]] = defaultdict(set)
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(2.5, connect=1.0),
             limits=httpx.Limits(max_connections=16, max_keepalive_connections=8),
@@ -314,8 +320,19 @@ class LiveTradeHub:
     def active(self) -> bool:
         return bool(self.api_key)
 
-    async def add_client(self, mint: str, websocket: Any) -> None:
+    async def add_client(
+        self,
+        mint: str,
+        websocket: Any,
+        extra_addresses: list[str] | None = None,
+    ) -> None:
         self.clients[mint].add(websocket)
+        self.watch_addresses[mint].add(mint)
+
+        for address in extra_addresses or []:
+            address = str(address or "").strip()
+            if address:
+                self.watch_addresses[mint].add(address)
 
         if mint not in self._recovery_tasks or self._recovery_tasks[mint].done():
             self._recovery_tasks[mint] = asyncio.create_task(
@@ -333,6 +350,7 @@ class LiveTradeHub:
             rows.discard(websocket)
             if not rows:
                 self.clients.pop(mint, None)
+                self.watch_addresses.pop(mint, None)
                 self.recent_trades.pop(mint, None)
                 self._seen_signatures.pop(mint, None)
 
@@ -342,13 +360,37 @@ class LiveTradeHub:
 
                 await self._unsubscribe(mint)
 
+    async def add_watch_address(self, mint: str, address: str) -> None:
+        """Add a live market address without disturbing the existing stream."""
+        address = str(address or "").strip()
+        if not mint or not address:
+            return
+
+        self.watch_addresses[mint].add(address)
+
+        if self.ws is not None and mint in self.clients:
+            subscribed_addresses = getattr(self, "_subscribed_addresses", {})
+            current = subscribed_addresses.setdefault(mint, set())
+            pending_addresses = getattr(self, "_pending_addresses", {})
+            pending = pending_addresses.setdefault(mint, set())
+
+            if address not in current and address not in pending:
+                pending.add(address)
+                await self._subscribe(mint, address)
+
     async def _subscribe_when_ready(self, mint: str) -> None:
         if self.ws is None:
             return
-        subscribed = mint in self.subscription_to_mint.values()
-        pending = mint in self.pending.values()
-        if not subscribed and not pending:
-            await self._subscribe(mint)
+
+        addresses = self.watch_addresses.get(mint) or {mint}
+        subscribed = getattr(self, "_subscribed_addresses", {}).setdefault(mint, set())
+        pending = getattr(self, "_pending_addresses", {}).setdefault(mint, set())
+
+        for address in addresses:
+            if address in subscribed or address in pending:
+                continue
+            pending.add(address)
+            await self._subscribe(mint, address)
 
     def remember_trade(self, mint: str, trade: dict[str, Any]) -> None:
         """Keep a bounded in-memory window of decoded Pump.fun trades for the active candle."""
@@ -452,42 +494,50 @@ class LiveTradeHub:
 
         while mint in self.clients:
             try:
-                signatures, err = await self._rpc(
-                    "getSignaturesForAddress",
-                    [
-                        mint,
-                        {
-                            "limit": 8,
-                            "commitment": "processed",
-                        },
-                    ],
-                )
-
-                if err or not signatures:
-                    await asyncio.sleep(0.7)
-                    continue
-
+                addresses = list(self.watch_addresses.get(mint) or {mint})
                 cutoff = int(time.time()) - 12
                 pending = []
 
-                for item in signatures:
-                    if not isinstance(item, dict):
+                # Query the mint and its PumpSwap pool. The pool is essential
+                # after migration because many AMM transactions mention the
+                # pool/program accounts rather than the token mint directly.
+                for address in addresses:
+                    signatures, err = await self._rpc(
+                        "getSignaturesForAddress",
+                        [
+                            address,
+                            {
+                                "limit": 12,
+                                "commitment": "processed",
+                            },
+                        ],
+                    )
+
+                    if err or not signatures:
                         continue
 
-                    signature = str(item.get("signature") or "")
-                    if not signature:
-                        continue
+                    for item in signatures:
+                        if not isinstance(item, dict):
+                            continue
 
-                    if signature in self._seen_signatures[mint]:
-                        continue
+                        signature = str(item.get("signature") or "")
+                        if not signature:
+                            continue
 
-                    self._seen_signatures[mint].append(signature)
+                        if signature in self._seen_signatures[mint]:
+                            continue
 
-                    block_time = item.get("blockTime")
-                    if block_time is not None and int(block_time) < cutoff:
-                        continue
+                        self._seen_signatures[mint].append(signature)
 
-                    pending.append(item)
+                        block_time = item.get("blockTime")
+                        if block_time is not None and int(block_time) < cutoff:
+                            continue
+
+                        pending.append(item)
+
+                if not pending:
+                    await asyncio.sleep(0.25)
+                    continue
 
                 # On first pass, only resolve the very recent tail.
                 if not initialized:
@@ -557,7 +607,7 @@ class LiveTradeHub:
                         "trade": trade,
                     })
 
-                await asyncio.sleep(0.40)
+                await asyncio.sleep(0.25)
 
             except asyncio.CancelledError:
                 raise
@@ -685,19 +735,23 @@ class LiveTradeHub:
         async with self._send_lock:
             await self.ws.send(json.dumps(payload))
 
-    async def _subscribe(self, mint: str) -> None:
+    async def _subscribe(self, mint: str, address: str | None = None) -> None:
+        address = str(address or mint).strip()
         request_id = self.request_id
         self.request_id += 1
         self.pending[request_id] = mint
+        self._pending_addresses.setdefault(mint, set()).add(address)
 
         if self.stream_mode == "ENHANCED":
+            # Enhanced Helius subscriptions can include the token mint or the
+            # PumpSwap pool. Both are routed back to the selected mint below.
             payload = {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": "transactionSubscribe",
                 "params": [
                     {
-                        "accountInclude": [mint],
+                        "accountInclude": [address],
                         "vote": False,
                         "failed": False,
                     },
@@ -715,7 +769,7 @@ class LiveTradeHub:
                 "id": request_id,
                 "method": "logsSubscribe",
                 "params": [
-                    {"mentions": [mint]},
+                    {"mentions": [address]},
                     {"commitment": "processed"},
                 ],
             }
@@ -724,6 +778,8 @@ class LiveTradeHub:
 
     async def _unsubscribe(self, mint: str) -> None:
         ids = [sub_id for sub_id, sub_mint in self.subscription_to_mint.items() if sub_mint == mint]
+        self._subscribed_addresses.pop(mint, None)
+        self._pending_addresses.pop(mint, None)
         for sub_id in ids:
             try:
                 await self._send({
@@ -805,9 +861,11 @@ class LiveTradeHub:
 
                     await self._status_all("LIVE")
 
+                    self._subscribed_addresses.clear()
+                    self._pending_addresses.clear()
+
                     for mint in list(self.clients):
-                        if mint not in self.subscription_to_mint.values() and mint not in self.pending.values():
-                            await self._subscribe(mint)
+                        await self._subscribe_when_ready(mint)
 
                     async for raw in ws:
                         try:
@@ -838,7 +896,19 @@ class LiveTradeHub:
                             mint = self.pending.pop(int(message["id"]), None)
                             if mint:
                                 try:
-                                    self.subscription_to_mint[int(message["result"])] = mint
+                                    subscription_id = int(message["result"])
+                                    self.subscription_to_mint[subscription_id] = mint
+                                    pending_addresses = self._pending_addresses.setdefault(mint, set())
+                                    subscribed_addresses = self._subscribed_addresses.setdefault(mint, set())
+                                    if pending_addresses:
+                                        # The connector uses the same mint for
+                                        # every subscription. Consume one pending
+                                        # address deterministically by subscribing
+                                        # order; correctness of price decoding does
+                                        # not depend on the label, only the routing.
+                                        address = next(iter(pending_addresses))
+                                        pending_addresses.discard(address)
+                                        subscribed_addresses.add(address)
                                     if self.stream_mode == "ENHANCED":
                                         self.enhanced_state = True
                                 except (TypeError, ValueError):
