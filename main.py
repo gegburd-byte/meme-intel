@@ -1100,6 +1100,76 @@ PRICE_CACHE = {}
 
 
 
+_live_pool_tasks: dict[str, asyncio.Task[Any]] = {}
+
+
+async def attach_live_market_addresses(mint: str) -> None:
+    """Attach the PumpSwap pool to the existing live stream without delaying mint subscription."""
+    try:
+        pool_address = None
+
+        try:
+            coin, _ = await asyncio.wait_for(
+                pf.coin(mint),
+                timeout=0.8,
+            )
+            if isinstance(coin, dict):
+                pool_address = (
+                    coin.get("pump_swap_pool")
+                    or coin.get("pumpSwapPool")
+                    or coin.get("pumpSwapPoolAddress")
+                    or coin.get("pool")
+                    or coin.get("poolAddress")
+                    or coin.get("amm")
+                    or coin.get("ammPool")
+                )
+        except Exception:
+            pool_address = None
+
+        if not pool_address:
+            try:
+                pairs_payload, _ = await asyncio.wait_for(
+                    ds.pairs(mint),
+                    timeout=0.8,
+                )
+                pairs = pairs_payload if isinstance(pairs_payload, list) else []
+                pump_pairs = [
+                    pair for pair in pairs
+                    if isinstance(pair, dict)
+                    and str(pair.get("dexId") or "").lower()
+                        in {"pumpswap", "pump-swap", "pump_swap"}
+                    and pair.get("pairAddress")
+                ]
+
+                if pump_pairs:
+                    def liq(pair):
+                        try:
+                            return float(
+                                (pair.get("liquidity") or {}).get("usd") or 0
+                            )
+                        except (TypeError, ValueError):
+                            return 0.0
+
+                    pool_address = max(
+                        pump_pairs,
+                        key=liq,
+                    ).get("pairAddress")
+            except Exception:
+                pool_address = None
+
+        if pool_address:
+            await trade_hub.add_watch_address(
+                mint,
+                str(pool_address),
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
+    finally:
+        _live_pool_tasks.pop(mint, None)
+
+
 @app.websocket("/ws/trades")
 async def ws_trades(websocket: WebSocket):
     mint = (websocket.query_params.get("mint") or "").strip()
@@ -1115,6 +1185,14 @@ async def ws_trades(websocket: WebSocket):
 
     await websocket.accept()
     await trade_hub.add_client(mint, websocket)
+
+    # Start the pool lookup after the mint stream is already live. This keeps
+    # first-trade latency low while adding PumpSwap coverage a moment later.
+    if mint not in _live_pool_tasks or _live_pool_tasks[mint].done():
+        _live_pool_tasks[mint] = asyncio.create_task(
+            attach_live_market_addresses(mint)
+        )
+
     try:
         await websocket.send_json({
             "type": "status",
@@ -1129,6 +1207,10 @@ async def ws_trades(websocket: WebSocket):
         pass
     finally:
         await trade_hub.remove_client(mint, websocket)
+        if mint not in trade_hub.clients:
+            task = _live_pool_tasks.pop(mint, None)
+            if task and not task.done():
+                task.cancel()
 
 
 def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
