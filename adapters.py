@@ -456,62 +456,116 @@ class PumpFunAdapter:
         )
 
         last_error = None
+
+        def has_rows(payload):
+            if isinstance(payload, list):
+                return bool(payload)
+            if not isinstance(payload, dict):
+                return False
+            for field in (
+                "data",
+                "trades",
+                "results",
+                "items",
+                "rows",
+            ):
+                nested = payload.get(field)
+                if isinstance(nested, list) and nested:
+                    return True
+                if isinstance(nested, dict) and has_rows(nested):
+                    return True
+            return False
+
+        async def request_variant(host, extra):
+            params = {
+                "limit": limit,
+                "cursor": cursor,
+                "minSolAmount": 0,
+                **extra,
+            }
+            try:
+                response = await self._client.get(
+                    f"{host}/v2/coins/{mint}/trades",
+                    params=params,
+                )
+                if response.status_code >= 400:
+                    return None, f"HTTP_{response.status_code}"
+                payload = response.json()
+                if not has_rows(payload):
+                    return None, "EMPTY_TRADE_PAGE"
+                return payload, None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return None, str(exc)
+
+        # Ask for the two real Pump venues in parallel. This avoids waiting
+        # through several empty selector attempts when a coin has graduated
+        # from the bonding curve to PumpSwap.
+        primary_variants = query_variants[:2]
         for host in hosts:
-            for extra in query_variants:
-                try:
-                    params = {
-                        "limit": limit,
-                        "cursor": cursor,
-                        "minSolAmount": 0,
-                        **extra,
-                    }
-                    r = await self._client.get(
-                        f"{host}/v2/coins/{mint}/trades",
-                        params=params,
+            tasks = [
+                asyncio.create_task(
+                    request_variant(host, extra)
+                )
+                for extra in primary_variants
+            ]
+
+            try:
+                pending = set(tasks)
+                deadline = asyncio.get_running_loop().time() + 0.55
+
+                while pending:
+                    remaining = max(
+                        0.01,
+                        deadline - asyncio.get_running_loop().time(),
+                    )
+                    done, pending = await asyncio.wait(
+                        pending,
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
 
-                    if r.status_code >= 400:
-                        last_error = f"HTTP_{r.status_code}"
-                        continue
+                    for task in done:
+                        payload, err = task.result()
+                        if payload is not None:
+                            for other in pending:
+                                other.cancel()
+                            await asyncio.gather(
+                                *pending,
+                                return_exceptions=True,
+                            )
+                            self._cache[key] = {
+                                "time": time.time(),
+                                "payload": payload,
+                            }
+                            return payload, None
+                        if err:
+                            last_error = err
 
-                    payload = r.json()
+                    if pending and not done:
+                        break
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(
+                    *tasks,
+                    return_exceptions=True,
+                )
 
-                    # A valid 200 can still be an empty page for the wrong
-                    # program selector. Try the next selector/host instead of
-                    # freezing on an empty first response. The current API has
-                    # used both flat arrays and nested data/trades/items/rows
-                    # shapes, so recurse instead of trusting one exact schema.
-                    def contains_rows(value):
-                        if isinstance(value, list):
-                            return bool(value)
-                        if not isinstance(value, dict):
-                            return False
-                        for field in (
-                            "data",
-                            "trades",
-                            "results",
-                            "items",
-                            "rows",
-                            "results",
-                        ):
-                            nested = value.get(field)
-                            if isinstance(nested, list) and nested:
-                                return True
-                            if isinstance(nested, dict) and contains_rows(nested):
-                                return True
-                        return False
-
-                    if not contains_rows(payload):
-                        last_error = "EMPTY_TRADE_PAGE"
-                        continue
-
+            # Rare/current-server compatibility selectors. These are slower
+            # fallbacks only after both primary venue requests failed.
+            for extra in query_variants[2:]:
+                payload, err = await request_variant(host, extra)
+                if payload is not None:
                     self._cache[key] = {
                         "time": time.time(),
                         "payload": payload,
                     }
                     return payload, None
-                except Exception as exc:
-                    last_error = str(exc)
+                if err:
+                    last_error = err
 
         return None, last_error or "PUMP_SWAP_TRADES_UNAVAILABLE"
 
