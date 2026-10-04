@@ -1190,22 +1190,25 @@ async def live_rest_trade_loop(mint: str) -> None:
                 else None
             )
 
+            tasks = [swap_task]
+            if legacy_task:
+                tasks.append(legacy_task)
+
             try:
                 results = await asyncio.wait_for(
                     asyncio.gather(
-                        swap_task,
-                        legacy_task,
+                        *tasks,
                         return_exceptions=True,
                     ),
                     timeout=0.65,
                 )
             except asyncio.TimeoutError:
-                results = [None, None]
-                swap_task.cancel()
-                if legacy_task:
-                    legacy_task.cancel()
+                results = [None] * len(tasks)
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
 
-            swap_result = results[0] if len(results) > 0 else None
+            swap_result = results[0] if results else None
             if (
                 isinstance(swap_result, tuple)
                 and len(swap_result) == 2
@@ -1214,13 +1217,12 @@ async def live_rest_trade_loop(mint: str) -> None:
 
             if legacy_task:
                 last_legacy_poll = now
-
-            legacy_result = results[1] if len(results) > 1 else None
-            if (
-                isinstance(legacy_result, tuple)
-                and len(legacy_result) == 2
-            ):
-                rows.extend(parse_pump_trades(legacy_result[0]))
+                legacy_result = results[1] if len(results) > 1 else None
+                if (
+                    isinstance(legacy_result, tuple)
+                    and len(legacy_result) == 2
+                ):
+                    rows.extend(parse_pump_trades(legacy_result[0]))
 
             # Deduplicate the two exact-venue HTTP sources. Stable transaction
             # IDs are preferred; the timestamp/price/side/volume tuple is only
