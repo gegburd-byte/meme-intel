@@ -1750,10 +1750,13 @@ async def chart_history(
                     mint,
                     timeframe=chart_interval,
                     lookback_minutes=lookback_minutes,
-                    max_signatures=1500,
+                    # 1s history only needs a recent trade window. Keep the
+                    # archival fallback bounded so it cannot spend seconds
+                    # resolving a huge signature batch before the chart paints.
+                    max_signatures=(400 if chart_interval == "1s" else 1500),
                     extra_addresses=[pool_address] if pool_address else None,
                 ),
-                timeout=7.0,
+                timeout=(5.0 if chart_interval == "1s" else 7.0),
             )
 
             return "HELIUS_ONCHAIN_TRADES", rows or [], err
