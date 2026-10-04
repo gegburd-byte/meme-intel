@@ -338,7 +338,7 @@ class LiveTradeHub:
         """Keep a bounded in-memory window of decoded Pump.fun trades for the active candle."""
         if not mint or not isinstance(trade, dict):
             return
-        if trade.get("source") != "PUMP.FUN":
+        if trade.get("source") not in {"PUMP.FUN", "PUMPSWAP"}:
             return
 
         rows = self.recent_trades[mint]
@@ -365,7 +365,7 @@ class LiveTradeHub:
         rows = list(self.recent_trades.get(mint, ()))
         rows = [
             row for row in rows
-            if row.get("source") == "PUMP.FUN"
+            if row.get("source") in {"PUMP.FUN", "PUMPSWAP"}
             and isinstance(row.get("timestamp"), (int, float))
             and isinstance(row.get("price"), (int, float))
             and float(row.get("price") or 0) > 0
@@ -569,9 +569,14 @@ class LiveTradeHub:
                 # Standard Solana WSS works on free Helius plans and is all
                 # the chart needs because we subscribe to logs mentioning
                 # exactly one mint. Enhanced transactionSubscribe is optional.
+                enhanced_mode = os.getenv(
+                    "HELIUS_USE_ENHANCED_WS",
+                    "auto",
+                ).strip().lower()
+
                 use_enhanced = (
-                    os.getenv("HELIUS_USE_ENHANCED_WS", "").strip().lower()
-                    in {"1", "true", "yes"}
+                    enhanced_mode in {"1", "true", "yes", "auto"}
+                    and enhanced_mode not in {"0", "false", "no"}
                     and self.enhanced_state is not False
                 )
                 if use_enhanced:
