@@ -77,6 +77,45 @@ def test_parse_pump_trade_history_uses_virtual_reserve_price():
     assert candles[0].h == candles[0].c
 
 
+
+
+def test_one_second_trade_history_produces_distinct_second_bars():
+    from main import aggregate_pump_trade_candles
+
+    candles = aggregate_pump_trade_candles(
+        [[
+            {
+                "timestamp": 1_700_000_000,
+                "sol_amount": 1_000_000_000,
+                "token_amount": 1_000_000,
+                "virtual_sol_reserves": 30_000_000_000,
+                "virtual_token_reserves": 1_000_000_000_000_000,
+                "is_buy": True,
+            },
+            {
+                "timestamp": 1_700_000_001,
+                "sol_amount": 1_000_000_000,
+                "token_amount": 1_000_000,
+                "virtual_sol_reserves": 31_000_000_000,
+                "virtual_token_reserves": 1_000_000_000_000_000,
+                "is_buy": False,
+            },
+        ]],
+        timeframe="1s",
+        limit=10,
+    )
+
+    assert [c.ts for c in candles] == [1_700_000_000, 1_700_000_001]
+    assert candles[0].c != candles[1].c
+
+
+def test_chart_interval_accepts_one_second():
+    from main import normalize_chart_interval
+
+    assert normalize_chart_interval("1s") == ("1s", 1)
+    assert normalize_chart_interval("1m") == ("1m", 1)
+
+
 def test_frontend_timeframes_and_live_cache_are_wired():
     from pathlib import Path
 
@@ -88,7 +127,10 @@ def test_frontend_timeframes_and_live_cache_are_wired():
 
     assert "async function syncLiveTradeCache()" in js
     assert "/api/chart/live-trades?mint=" in js
+    assert 'chartInterval === "1s"' in js
+    assert '&interval=' in js
     assert "startLiveTradeCachePoll();" in js
+    assert 'chartInterval === "1s"' not in js.split("async function fetchFastHistoricalBackfill", 1)[1].split("async function applyLivePrice", 1)[0]
 
 
 def test_chart_history_has_no_gecko_source():
