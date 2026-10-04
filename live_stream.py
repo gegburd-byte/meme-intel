@@ -629,6 +629,74 @@ class LiveTradeHub:
             for row in rows[-max(1, min(int(limit or 30), 250)):]
         ]
 
+    async def _run_pumpfun_socket(self) -> None:
+        """Primary zero-poll live feed from Pump.fun's own trade socket."""
+        backoff = 0.25
+
+        while self.clients:
+            try:
+                async with websockets.connect(
+                    PUMP_FUN_SOCKET_IO,
+                    origin="https://pump.fun",
+                    ping_interval=None,
+                    close_timeout=1.5,
+                    max_queue=8192,
+                ) as ws:
+                    self.pumpfun_live = True
+                    self.state = "LIVE"
+                    self.last_error = ""
+
+                    # Engine.IO opens the underlying transport first; Socket.IO
+                    # CONNECT (40) then enters the default namespace.
+                    await ws.send("40")
+
+                    async for raw in ws:
+                        if not isinstance(raw, str):
+                            continue
+
+                        # Engine.IO heartbeat from Pump.fun.
+                        if raw == "2":
+                            await ws.send("3")
+                            continue
+
+                        if raw.startswith("40"):
+                            self.pumpfun_live = True
+                            continue
+
+                        if not raw.startswith("42"):
+                            continue
+
+                        trade = parse_pumpfun_socket_trade(raw)
+                        if not trade:
+                            continue
+
+                        mint = trade.get("mint")
+                        if mint not in self.clients:
+                            continue
+
+                        await self.publish_external_trade(
+                            mint,
+                            trade,
+                        )
+
+                self.pumpfun_live = False
+                if self.clients:
+                    await asyncio.sleep(backoff)
+                    backoff = min(5.0, backoff * 2)
+            except asyncio.CancelledError:
+                self.pumpfun_live = False
+                raise
+            except Exception as exc:
+                self.pumpfun_live = False
+                self.last_error = (
+                    "PUMP_FUN_WS:" + str(exc)[:260]
+                )
+                if self.clients:
+                    await asyncio.sleep(backoff)
+                    backoff = min(5.0, backoff * 2)
+
+        self.pumpfun_live = False
+
     async def _recovery_loop(self, mint: str) -> None:
         """Low-rate Helius safety net for a silent/malformed websocket path."""
         initialized = False
