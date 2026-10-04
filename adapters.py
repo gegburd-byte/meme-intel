@@ -13,6 +13,7 @@ from live_stream import parse_live_trade_from_transaction
 
 DEXSCREENER = "https://api.dexscreener.com"
 GECKO = "https://api.geckoterminal.com/api/v2"
+PUMP_SWAP_API = "https://swap-api.pump.fun"
 X_API = "https://api.x.com/2"
 HELIUS_RPC = "https://mainnet.helius-rpc.com"
 PUBLIC_SOLANA_RPCS = (
@@ -390,6 +391,63 @@ class PumpFunAdapter:
             return None, "PUMPFUN_COIN_AUTH_REQUIRED"
 
         return None, last_error or "PUMPFUN_COIN_UNAVAILABLE"
+
+    async def swap_trades(
+        self,
+        mint,
+        limit=25,
+        cursor=0,
+        fresh=False,
+    ):
+        """Fast Pump.fun/PumpSwap trade feed used only for live chart recovery."""
+        mint = (mint or "").strip()
+        limit = max(1, min(int(limit or 25), 100))
+        cursor = max(0, int(cursor or 0))
+
+        key = ("swap_trades", mint, limit, cursor)
+        now = time.time()
+        cached = self._cache.get(key)
+        if not fresh and cached and now - cached["time"] < 0.20:
+            return cached["payload"], None
+
+        # Pump.fun's current swap API exposes token trades. Prefer the
+        # unfiltered feed so this continues across bonding-curve -> PumpSwap
+        # migration; fall back to explicit program selectors when required.
+        query_variants = (
+            {},
+            {"program": "pump"},
+            {"program": "pump-amm"},
+            {"program": "pump_amm"},
+        )
+
+        last_error = None
+        for extra in query_variants:
+            try:
+                params = {
+                    "limit": limit,
+                    "cursor": cursor,
+                    "minSolAmount": 0,
+                    **extra,
+                }
+                r = await self._client.get(
+                    f"{PUMP_SWAP_API}/v2/coins/{mint}/trades",
+                    params=params,
+                )
+
+                if r.status_code >= 400:
+                    last_error = f"HTTP_{r.status_code}"
+                    continue
+
+                payload = r.json()
+                self._cache[key] = {
+                    "time": time.time(),
+                    "payload": payload,
+                }
+                return payload, None
+            except Exception as exc:
+                last_error = str(exc)
+
+        return None, last_error or "PUMP_SWAP_TRADES_UNAVAILABLE"
 
     async def trades(
         self,
