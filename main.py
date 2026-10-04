@@ -251,7 +251,7 @@ def parse_pump_candles(payload):
         if isinstance(value, dict):
             for key in ("candles", "candlesticks", "ohlcv_list", "ohlcv", "bars", "rows", "items", "results"):
                 rows = value.get(key)
-                if isinstance(rows, list):
+                if isinstance(rows, list) and rows:
                     return rows
 
             for key in ("data", "result"):
@@ -355,7 +355,7 @@ def parse_pump_trades(payload):
     if isinstance(payload, dict):
         for key in ("data", "trades", "results", "items"):
             value = payload.get(key)
-            if isinstance(value, list):
+            if isinstance(value, list) and value:
                 payload = value
                 break
 
