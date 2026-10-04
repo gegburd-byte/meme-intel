@@ -63,7 +63,6 @@ let chartHistoryRetryGeneration = 0;
 let liveTradeBackoff = 500;
 let liveTradeWatchdogTimer = null;
 let lastLiveTradeAtMs = 0;
-let lastPolledTradeAtSec = 0;
 
 const PAGE_SIZE = 30;
 const MAX_HISTORY_BARS = 120;
@@ -2485,19 +2484,6 @@ async function syncLiveTradeCache() {
     const j = await readJsonResponse(r);
     const rows = Array.isArray(j.trades) ? j.trades : [];
 
-    // Track the newest trade seen through the polling lane. This lane runs
-    // even when the websocket reports OPEN, so a connected-but-stalled socket
-    // can never silently freeze the chart.
-    for (const row of rows) {
-      const ts = Number(row?.timestamp);
-      if (Number.isFinite(ts)) {
-        lastPolledTradeAtSec = Math.max(
-          lastPolledTradeAtSec,
-          ts > 2e10 ? Math.floor(ts / 1000) : ts
-        );
-      }
-    }
-
     if (
       generation !== historyGeneration ||
       !selectedMint
@@ -2548,9 +2534,7 @@ function startLiveTradeCachePoll() {
   }
 
   liveTradeCacheGeneration = historyGeneration;
-  lastPolledTradeAtSec = 0;
-
-  // This is deliberately a very small local recovery request. The endpoint
+   // This is deliberately a very small local recovery request. The endpoint
   // reads the already-open server-side on-chain feed, so it does not add a
   // second blockchain subscription. Polling it at 100 ms makes the browser
   // react almost immediately when a trade was decoded, even if the browser's
@@ -2578,16 +2562,10 @@ function startLiveTradeCachePoll() {
     }
 
     const now = Date.now();
-    const recentActivity = Math.max(
-      lastLiveTradeAtMs,
-      lastPolledTradeAtSec > 0
-        ? lastPolledTradeAtSec * 1000
-        : 0
-    );
 
     if (
-      recentActivity > 0 &&
-      now - recentActivity > 4500
+      lastLiveTradeAtMs > 0 &&
+      now - lastLiveTradeAtMs > 4500
     ) {
       connectLiveTrade(selectedMint);
     }
