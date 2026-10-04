@@ -1896,7 +1896,55 @@ async function fetchFastHistoricalBackfill(generation) {
     if (!r.ok) return false;
 
     const j = await readJsonResponse(r);
-    const candles = sanitizeChartCandles(j.candles || []);
+    let candles = sanitizeChartCandles(j.candles || []);
+
+    // A true 1-second historical endpoint is not always available upstream.
+    // Before giving up, pull the freshest exact-venue trade snapshot and build
+    // real 1-second buckets from those trades. This keeps the 1s chart visible
+    // instead of leaving an empty TradingView canvas while the live feed warms.
+    if (!candles.length && chartInterval === "1s") {
+      try {
+        const liveResponse = await fetch(
+          "/api/chart/live-trades?mint=" +
+          encodeURIComponent(selectedMint) +
+          "&limit=200&t=" + Date.now(),
+          {cache:"no-store"}
+        );
+
+        if (liveResponse.ok) {
+          const liveJson = await readJsonResponse(liveResponse);
+          const liveRows = (liveJson.trades || [])
+            .map(normalizeTrade)
+            .filter(Boolean)
+            .map(normalizeTradeForChart);
+
+          candles = aggregateLiveTrades(
+            liveRows,
+            "1s"
+          );
+
+          if (candles.length) {
+            chartDataSource = "PUMP.FUN LIVE TRADES";
+            livePreviewActive = true;
+          }
+        }
+      } catch {}
+    }
+
+    // A fast live websocket/cache snapshot can arrive while the historical
+    // request is in flight. Use it as the final client-side fallback rather
+    // than allowing a transient empty history response to blank the chart.
+    if (!candles.length && chartInterval === "1s" && selectedTrades.length) {
+      candles = aggregateLiveTrades(
+        selectedTrades.map(normalizeTradeForChart),
+        "1s"
+      );
+
+      if (candles.length) {
+        chartDataSource = "PUMP.FUN LIVE TRADES";
+        livePreviewActive = true;
+      }
+    }
 
     if (
       generation !== historyGeneration ||
@@ -2388,10 +2436,14 @@ function startLiveTradeCachePoll() {
       selectedMint &&
       liveTradeCacheGeneration === historyGeneration &&
       (
+        chartInterval === "1s" ||
         !liveTradeSocket ||
         liveTradeSocket.readyState !== WebSocket.OPEN
       )
     ) {
+      // The 1s chart deliberately polls the tiny recovery lane even while the
+      // websocket is open. This catches decoded trades that a websocket path
+      // can miss without waiting seconds for a reconnect.
       syncLiveTradeCache();
     }
   }, 300);
@@ -2775,6 +2827,15 @@ async function setTimeframe(tf) {
     requested === "15m" ? 15 :
     60;
 
+  if (chart) {
+    chart.applyOptions({
+      timeScale:{
+        timeVisible:true,
+        secondsVisible:requested === "1s"
+      }
+    });
+  }
+
   historyGeneration++;
   historyBusy = false;
   historyHasMore = true;
@@ -3018,6 +3079,15 @@ async function selectToken(mint) {
   historyBarsLoaded = 0;
   chartTimeframe = 1;
   chartInterval = "1m";
+
+  if (chart) {
+    chart.applyOptions({
+      timeScale:{
+        timeVisible:true,
+        secondsVisible:false
+      }
+    });
+  }
 
   document.querySelectorAll(".tf").forEach(btn=>{
     btn.classList.toggle(
