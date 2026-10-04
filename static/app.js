@@ -2266,6 +2266,7 @@ function updateCandleFromLiveTrade(trade) {
   let bar = selectedCandles.find(
     x => x.time === bucket
   );
+  let lateTradeForCurrentBar = false;
 
   // A live price fallback is never an OHLC authority. The first real trade
   // replaces it completely.
@@ -2303,6 +2304,7 @@ function updateCandleFromLiveTrade(trade) {
       // instead of silently throwing away the real trade.
       if (last.time - bucket <= span) {
         bar = last;
+        lateTradeForCurrentBar = true;
       } else {
         return false;
       }
@@ -2354,6 +2356,38 @@ function updateCandleFromLiveTrade(trade) {
       bar.o = price;
     }
 
+    if (ts >= lastTs) {
+      bar._lastTs = ts;
+      bar.c = price;
+    }
+  }
+
+  if (lateTradeForCurrentBar) {
+    bar.h = Math.max(
+      bar.h,
+      price
+    );
+    bar.l = Math.min(
+      bar.l,
+      price
+    );
+    bar.v =
+      Number(bar.v || 0) +
+      volume;
+
+    const firstTs =
+      Number.isFinite(bar._firstTs)
+        ? bar._firstTs
+        : bar.time;
+    const lastTs =
+      Number.isFinite(bar._lastTs)
+        ? bar._lastTs
+        : bar.time;
+
+    if (ts < firstTs) {
+      bar._firstTs = ts;
+      bar.o = price;
+    }
     if (ts >= lastTs) {
       bar._lastTs = ts;
       bar.c = price;
