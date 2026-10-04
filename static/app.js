@@ -28,6 +28,7 @@ let selectedCandles = [];
 let selectedMinuteCandles = [];
 let selectedMinuteSource = "UNKNOWN";
 let selectedTrades = [];
+let selectedTradeKeys = new Set();
 let selectedLiveUsdPrice = 0;
 let selectedLiveUsdAt = 0;
 let livePreviewActive = false;
@@ -1797,12 +1798,11 @@ function updateIndicatorPanel(signal) {
     safe(signal.ema21,12);
 
   $("metricMean").textContent =
-    signal.mean == null || !selectedCandles.length
+    signal.vwap == null
       ? "—"
-      : pct(
-          (selectedCandles[selectedCandles.length - 1].c /
-          signal.mean - 1) * 100
-        );
+      : formatChartValue(signal.vwap) +
+        " / " +
+        safe(signal.atr,12);
 
   $("metricPressure").textContent =
     signal.pressure == null
@@ -2550,33 +2550,124 @@ async function fetchFastHistoricalBackfill(generation) {
   }
 }
 
-function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
-  price = Number(price);
-  if (!Number.isFinite(price) || price <= 0 || !selectedMint) return;
+function liveTradeKey(trade) {
+  if (!trade) return "";
 
-  // Live websocket trades are used for immediate UI/tape updates. They are
-  // NOT used to fabricate/modify OHLC because Pump.fun's native candle feed
-  // defines the chart price exactly.
+  const signature =
+    String(trade.signature || "").trim();
+
+  const time =
+    Math.floor(
+      Number(
+        trade.time ??
+        trade.timestamp ??
+        0
+      )
+    );
+
+  const price =
+    Number(
+      trade.chartPrice ??
+      trade.price ??
+      0
+    );
+
+  const side =
+    String(
+      trade.side || "BUY"
+    ).toUpperCase();
+
+  const volume =
+    Number(
+      trade.chartVolume ??
+      trade.volumeSol ??
+      trade.volume_sol ??
+      0
+    );
+
+  const base =
+    [
+      time,
+      Number.isFinite(price)
+        ? price.toPrecision(17)
+        : "0",
+      side,
+      Number.isFinite(volume)
+        ? volume.toPrecision(17)
+        : "0"
+    ].join("|");
+
+  return signature
+    ? signature + "|" + base
+    : String(trade.id || "") + "|" + base;
+}
+
+function applyLivePrice(
+  price,
+  timestampMs = Date.now(),
+  recordTrade = null
+) {
+  price = Number(price);
+
+  if (
+    !Number.isFinite(price) ||
+    price <= 0 ||
+    !selectedMint
+  ) {
+    return;
+  }
+
   updateActivePrice(
     price,
     Number(timestampMs || Date.now())
   );
 
   if (recordTrade) {
-    if (!selectedTrades.some(x => x.id === recordTrade.id)) {
-      selectedTrades.push(recordTrade);
-      if (selectedTrades.length > 2000) {
+    const key =
+      liveTradeKey(
+        recordTrade
+      );
+
+    if (
+      !key ||
+      selectedTradeKeys.has(key)
+    ) {
+      return;
+    }
+
+    selectedTradeKeys.add(key);
+
+    selectedTrades.push({
+      ...recordTrade,
+      _clientKey:key
+    });
+
+    while (
+      selectedTrades.length > 2000
+    ) {
+      const removed =
         selectedTrades.shift();
+
+      if (
+        removed &&
+        removed._clientKey
+      ) {
+        selectedTradeKeys.delete(
+          removed._clientKey
+        );
       }
     }
 
     $("lastUpdate").textContent =
-      new Date(recordTrade.time * 1000)
-        .toLocaleTimeString();
+      new Date(
+        recordTrade.time * 1000
+      ).toLocaleTimeString();
   }
 
   scheduleLiveRender();
 }
+
+
 
 function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
   const span =
@@ -4095,6 +4186,7 @@ async function selectToken(mint) {
   lastIndicatorCandleTime = 0;
   lastIndicatorState = "WAIT";
   selectedTrades = [];
+  selectedTradeKeys = new Set();
   selectedLiveUsdPrice = 0;
   selectedLiveUsdAt = 0;
   livePreviewActive = false;
