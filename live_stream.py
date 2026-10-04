@@ -289,6 +289,7 @@ class LiveTradeHub:
         # Keep every live watch address mapped back to the selected mint.
         self.watch_addresses: dict[str, set[str]] = defaultdict(set)
         self.subscription_to_mint: dict[int, str] = {}
+        self._subscription_address: dict[int, str] = {}
         self.pending: dict[int, tuple[str, str]] = {}
         self.request_id = 1
         self.state = "NOT_CONFIGURED" if not self.api_key else "IDLE"
@@ -679,6 +680,78 @@ class LiveTradeHub:
         except Exception as exc:
             return None, str(exc)[:240]
 
+    async def _resolve_latest_address_trade(
+        self,
+        mint: str,
+        address: str,
+    ) -> None:
+        """Resolve the newest transaction after an exact market-account change."""
+        try:
+            signatures, err = await self._rpc(
+                "getSignaturesForAddress",
+                [
+                    address,
+                    {
+                        "limit": 4,
+                        "commitment": "processed",
+                    },
+                ],
+            )
+
+            if err or not signatures:
+                return
+
+            for item in signatures:
+                if not isinstance(item, dict):
+                    continue
+
+                signature = str(item.get("signature") or "")
+                if not signature:
+                    continue
+
+                if signature in self._seen_signatures[mint]:
+                    continue
+
+                result, tx_err = await self._rpc(
+                    "getTransaction",
+                    [
+                        signature,
+                        {
+                            "encoding": "jsonParsed",
+                            "commitment": "processed",
+                            "maxSupportedTransactionVersion": 1,
+                        },
+                    ],
+                )
+
+                if not isinstance(result, dict):
+                    continue
+
+                trade = parse_live_trade_from_transaction(
+                    result,
+                    mint,
+                    signature=signature,
+                    slot=result.get("slot") or item.get("slot"),
+                    block_time=result.get("blockTime") or item.get("blockTime"),
+                )
+
+                if not trade:
+                    # The transaction may be migration/admin noise on the
+                    # watched account. Keep looking at the next newest tx.
+                    continue
+
+                self._seen_signatures[mint].append(signature)
+                self.remember_trade(mint, trade)
+                await self._broadcast(mint, {
+                    "type": "trade",
+                    "trade": trade,
+                })
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error = str(exc)[:300]
+
     async def _resolve_standard_transaction(
         self,
         mint: str,
@@ -793,13 +866,21 @@ class LiveTradeHub:
                 ],
             }
         else:
+            # Standard Solana WebSockets do not reliably expose Pump.fun token
+            # mints/pools in log text, so a mentions-filtered logs subscription
+            # can sit OPEN while returning zero trades. Subscribing directly to
+            # the bonding-curve / PumpSwap pool account gives us an event every
+            # time the exact market state changes, without a global firehose.
             payload = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "method": "logsSubscribe",
+                "method": "accountSubscribe",
                 "params": [
-                    {"mentions": [address]},
-                    {"commitment": "processed"},
+                    address,
+                    {
+                        "commitment": "processed",
+                        "encoding": "base64",
+                    },
                 ],
             }
 
@@ -817,7 +898,7 @@ class LiveTradeHub:
                     "method": (
                         "transactionUnsubscribe"
                         if self.stream_mode == "ENHANCED"
-                        else "logsUnsubscribe"
+                        else "accountUnsubscribe"
                     ),
                     "params": [sub_id],
                 })
@@ -825,6 +906,7 @@ class LiveTradeHub:
             except Exception:
                 pass
             self.subscription_to_mint.pop(sub_id, None)
+            self._subscription_address.pop(sub_id, None)
 
     async def _broadcast(self, mint: str, payload: dict[str, Any]) -> None:
         dead = []
@@ -886,6 +968,7 @@ class LiveTradeHub:
                     self.state = "LIVE"
                     self.last_error = ""
                     self.subscription_to_mint.clear()
+                    self._subscription_address.clear()
                     self.pending.clear()
 
                     await self._status_all("LIVE")
@@ -938,6 +1021,7 @@ class LiveTradeHub:
                                     mint, address = pending_subscription
                                     subscription_id = int(message["result"])
                                     self.subscription_to_mint[subscription_id] = mint
+                                    self._subscription_address[subscription_id] = address
                                     pending_addresses = self._pending_addresses.setdefault(
                                         mint,
                                         set(),
@@ -958,6 +1042,21 @@ class LiveTradeHub:
                         subscription = params.get("subscription")
                         mint = self.subscription_to_mint.get(subscription)
                         if not mint:
+                            continue
+
+                        if message.get("method") == "accountNotification":
+                            result = params.get("result") or {}
+                            # Account notifications contain the changed account
+                            # but no transaction signature. Resolve the newest
+                            # transaction for the exact watched market address.
+                            task = asyncio.create_task(
+                                self._resolve_latest_address_trade(
+                                    mint,
+                                    self._subscription_address.get(subscription, mint),
+                                )
+                            )
+                            self._pending_tasks.add(task)
+                            task.add_done_callback(self._pending_tasks.discard)
                             continue
 
                         if message.get("method") == "transactionNotification":
@@ -1025,6 +1124,7 @@ class LiveTradeHub:
 
                 self.ws = None
                 self.subscription_to_mint.clear()
+                self._subscription_address.clear()
                 self.pending.clear()
 
                 if self.clients:
