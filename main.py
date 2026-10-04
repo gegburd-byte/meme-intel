@@ -1461,12 +1461,12 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
             "timestamp":int(time.time()),
         }
 
-        for task in fallback_tasks:
+        for task in primary_fallback_tasks:
             if not task.done():
                 task.cancel()
 
         await asyncio.gather(
-            *fallback_tasks,
+            *primary_fallback_tasks,
             return_exceptions=True,
         )
 
