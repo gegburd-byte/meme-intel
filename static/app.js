@@ -17,6 +17,7 @@ let pumpEvents = [];
 let marketCandidates = [];
 let selectedMint = "";
 let selectedInfo = {};
+let chartHistoryLoadedAtSec = 0;
 let selectedCandles = [];
 let selectedMinuteCandles = [];
 let selectedMinuteSource = "UNKNOWN";
@@ -1913,6 +1914,10 @@ async function fetchFastHistoricalBackfill(generation) {
       .slice(-MAX_HISTORY_BARS);
 
     historyBarsLoaded = selectedCandles.length;
+    chartHistoryLoadedAtSec =
+      Number(j.timestamp) > 0
+        ? Number(j.timestamp)
+        : Math.floor(Date.now() / 1000);
 
     if (chartInterval === "1m") {
       selectedMinuteCandles = candles
@@ -2340,7 +2345,29 @@ async function syncLiveTradeCache() {
     }
 
     for (const row of rows) {
-      applyLiveTrade(row, true);
+      const normalized = normalizeTrade(row);
+
+      if (!normalized) {
+        continue;
+      }
+
+      // A history snapshot may contain these exact recent trades already.
+      // Record them for recovery, but only mutate the chart with trades that
+      // happened after the history response was generated.
+      if (
+        chartHistoryLoadedAtSec > 0 &&
+        normalized.time <= chartHistoryLoadedAtSec
+      ) {
+        if (!selectedTrades.some(x => x.id === normalized.id)) {
+          selectedTrades.push(normalized);
+          if (selectedTrades.length > 500) {
+            selectedTrades.shift();
+          }
+        }
+        continue;
+      }
+
+      applyLiveTrade(normalized, true);
     }
   } catch {
     // WSS remains primary; this is the low-latency recovery lane.
@@ -2962,6 +2989,7 @@ async function selectToken(mint) {
   disconnectLiveTrade();
 
   selectedMint = mint;
+  chartHistoryLoadedAtSec = 0;
   selectedCandles = [];
   selectedMinuteCandles = [];
   selectedMinuteSource = "UNKNOWN";
