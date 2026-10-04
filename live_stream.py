@@ -289,7 +289,7 @@ class LiveTradeHub:
         # Keep every live watch address mapped back to the selected mint.
         self.watch_addresses: dict[str, set[str]] = defaultdict(set)
         self.subscription_to_mint: dict[int, str] = {}
-        self.pending: dict[int, str] = {}
+        self.pending: dict[int, tuple[str, str]] = {}
         self.request_id = 1
         self.state = "NOT_CONFIGURED" if not self.api_key else "IDLE"
         self.last_error = ""
@@ -363,7 +363,7 @@ class LiveTradeHub:
     async def add_watch_address(self, mint: str, address: str) -> None:
         """Add a live market address without disturbing the existing stream."""
         address = str(address or "").strip()
-        if not mint or not address:
+        if not mint or not address or mint not in self.clients:
             return
 
         self.watch_addresses[mint].add(address)
@@ -739,7 +739,7 @@ class LiveTradeHub:
         address = str(address or mint).strip()
         request_id = self.request_id
         self.request_id += 1
-        self.pending[request_id] = mint
+        self.pending[request_id] = (mint, address)
         self._pending_addresses.setdefault(mint, set()).add(address)
 
         if self.stream_mode == "ENHANCED":
@@ -878,6 +878,13 @@ class LiveTradeHub:
                                 int(message["id"]),
                                 None
                             )
+                            if failed_request:
+                                failed_mint, failed_address = failed_request
+                                pending_addresses = self._pending_addresses.setdefault(
+                                    failed_mint,
+                                    set(),
+                                )
+                                pending_addresses.discard(failed_address)
                             if (
                                 failed_request and
                                 self.stream_mode == "ENHANCED" and
@@ -893,22 +900,25 @@ class LiveTradeHub:
                             continue
 
                         if "id" in message and "result" in message:
-                            mint = self.pending.pop(int(message["id"]), None)
-                            if mint:
+                            pending_subscription = self.pending.pop(
+                                int(message["id"]),
+                                None,
+                            )
+                            if pending_subscription:
                                 try:
+                                    mint, address = pending_subscription
                                     subscription_id = int(message["result"])
                                     self.subscription_to_mint[subscription_id] = mint
-                                    pending_addresses = self._pending_addresses.setdefault(mint, set())
-                                    subscribed_addresses = self._subscribed_addresses.setdefault(mint, set())
-                                    if pending_addresses:
-                                        # The connector uses the same mint for
-                                        # every subscription. Consume one pending
-                                        # address deterministically by subscribing
-                                        # order; correctness of price decoding does
-                                        # not depend on the label, only the routing.
-                                        address = next(iter(pending_addresses))
-                                        pending_addresses.discard(address)
-                                        subscribed_addresses.add(address)
+                                    pending_addresses = self._pending_addresses.setdefault(
+                                        mint,
+                                        set(),
+                                    )
+                                    subscribed_addresses = self._subscribed_addresses.setdefault(
+                                        mint,
+                                        set(),
+                                    )
+                                    pending_addresses.discard(address)
+                                    subscribed_addresses.add(address)
                                     if self.stream_mode == "ENHANCED":
                                         self.enhanced_state = True
                                 except (TypeError, ValueError):
