@@ -11,13 +11,12 @@ from typing import Any
 
 import httpx
 import websockets
-import socketio
 
 
 HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_HTTP_RPC = "https://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_ENHANCED_WS = "wss://atlas-mainnet.helius-rpc.com/?api-key={key}"
-PUMP_FUN_SOCKET_IO = "wss://frontend-api-v3.pump.fun/socket.io/?EIO=4&transport=websocket"
+PUMP_FUN_SOCKET_IO = "wss://frontend-api.pump.fun/socket.io/?EIO=4&transport=websocket"
 
 ANCHOR_SELF_CPI_TAG = bytes([0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d])
 
@@ -359,7 +358,7 @@ class LiveTradeHub:
         self.enhanced_state: bool | None = None
         self.stream_mode = "STANDARD"
         self.recent_trades: dict[str, deque[dict[str, Any]]] = defaultdict(
-            lambda: deque(maxlen=500)
+            lambda: deque(maxlen=2000)
         )
         self._recovery_tasks: dict[str, asyncio.Task[Any]] = {}
         self._pumpfun_task: asyncio.Task | None = None
@@ -367,6 +366,7 @@ class LiveTradeHub:
         self._seen_signatures: dict[str, deque[str]] = defaultdict(
             lambda: deque(maxlen=250)
         )
+        self._trade_sequence = 0
         self._resolve_semaphore = asyncio.Semaphore(8)
         self._pending_resolutions: set[tuple[str, str]] = set()
         self._pending_tasks: set[asyncio.Task[Any]] = set()
@@ -499,7 +499,10 @@ class LiveTradeHub:
             if fingerprint(item) == key:
                 return False
 
-        rows.append(dict(trade))
+        self._trade_sequence += 1
+        stored_trade = dict(trade)
+        stored_trade["_live_seq"] = self._trade_sequence
+        rows.append(stored_trade)
 
         # Only Helius-recovered signatures enter the signature safety ring.
         # Native Pump.fun events are left eligible for on-chain recovery if
@@ -546,7 +549,12 @@ class LiveTradeHub:
         if not rows:
             return None
 
-        rows.sort(key=lambda row: (int(row["timestamp"]), str(row.get("id") or "")))
+        rows.sort(
+            key=lambda row: (
+                int(row["timestamp"]),
+                int(row.get("_live_seq") or 0),
+            )
+        )
         latest_ts = int(rows[-1]["timestamp"])
 
         if (
@@ -622,7 +630,7 @@ class LiveTradeHub:
         rows.sort(
             key=lambda row: (
                 int(row.get("timestamp") or 0),
-                str(row.get("id") or ""),
+                int(row.get("_live_seq") or 0),
             )
         )
 
@@ -640,96 +648,92 @@ class LiveTradeHub:
         ]
 
     async def _run_pumpfun_socket(self) -> None:
-        """Primary Pump.fun feed using the same Socket.IO subscription as the site."""
+        """Primary Pump.fun trade feed using raw Engine.IO/Socket.IO frames."""
         backoff = 0.25
 
         while self.clients:
-            sio = socketio.AsyncClient(
-                reconnection=False,
-                logger=False,
-                engineio_logger=False,
-                websocket_extra_options={
-                    "origin": "https://pump.fun",
-                },
-            )
-
             try:
-                @sio.event
-                async def connect():
+                async with websockets.connect(
+                    PUMP_FUN_SOCKET_IO,
+                    origin="https://pump.fun",
+                    ping_interval=20,
+                    ping_timeout=10,
+                    close_timeout=2,
+                    max_queue=8192,
+                ) as ws:
                     self.pumpfun_live = True
                     self.state = "LIVE"
                     self.last_error = ""
+
                     await self._status_all(
                         "LIVE",
                         "PUMP.FUN native tradeCreated stream",
                     )
 
-                    # This is the native Pump.fun subscription used by current
-                    # Socket.IO clients: subscribe to tradeCreated after the
-                    # Socket.IO connection is established.
-                    await sio.emit(
-                        "subscribe",
-                        "tradeCreated",
-                    )
+                    backoff = 0.25
 
-                @sio.event
-                async def disconnect():
-                    self.pumpfun_live = False
+                    async for raw in ws:
+                        if not isinstance(raw, str):
+                            continue
 
-                @sio.on("tradeCreated")
-                async def on_trade(data):
-                    if not isinstance(data, dict):
-                        return
+                        if raw.startswith("0"):
+                            await ws.send("40")
+                            continue
 
-                    trade = parse_pumpfun_socket_trade(
-                        "42" + json.dumps(["tradeCreated", data])
-                    )
-                    if not trade:
-                        return
+                        if raw.startswith("40"):
+                            await ws.send(
+                                '42["subscribe","tradeCreated"]'
+                            )
+                            continue
 
-                    mint = str(trade.get("mint") or "")
-                    if mint not in self.clients:
-                        return
+                        if raw == "2" or raw.startswith("2"):
+                            await ws.send("3")
+                            continue
 
-                    await self.publish_external_trade(
-                        mint,
-                        trade,
-                    )
+                        if not raw.startswith("42"):
+                            continue
 
-                await sio.connect(
-                    "https://frontend-api-v3.pump.fun",
-                    headers={
-                        "User-Agent": "Meme-Intel/1.0",
-                    },
-                    transports=["websocket"],
-                    socketio_path="socket.io",
-                    wait_timeout=8,
-                )
+                        trade = parse_pumpfun_socket_trade(raw)
 
-                backoff = 0.25
-                await sio.wait()
+                        if not trade:
+                            continue
+
+                        mint = str(
+                            trade.get("mint") or ""
+                        )
+
+                        if mint not in self.clients:
+                            continue
+
+                        await self.publish_external_trade(
+                            mint,
+                            trade,
+                        )
 
             except asyncio.CancelledError:
                 self.pumpfun_live = False
-                try:
-                    await sio.disconnect()
-                except Exception:
-                    pass
                 raise
             except Exception as exc:
                 self.pumpfun_live = False
                 self.last_error = (
-                    "PUMP_FUN_SOCKETIO:" + str(exc)[:260]
+                    "PUMP_FUN_SOCKETIO:" +
+                    str(exc)[:260]
                 )
+
                 if self.clients:
-                    await asyncio.sleep(backoff)
-                    backoff = min(5.0, backoff * 2)
+                    await self._status_all(
+                        "RECONNECTING",
+                        self.last_error,
+                    )
+                    await asyncio.sleep(
+                        backoff
+                    )
+                    backoff = min(
+                        5.0,
+                        backoff * 1.7
+                    )
             finally:
                 self.pumpfun_live = False
-                try:
-                    await sio.disconnect()
-                except Exception:
-                    pass
 
         self.pumpfun_live = False
 
@@ -1072,11 +1076,11 @@ class LiveTradeHub:
             )
 
             if trade:
-                self.remember_trade(mint, trade)
-                await self._broadcast(mint, {
-                    "type": "trade",
-                    "trade": trade,
-                })
+                if self.remember_trade(mint, trade):
+                    await self._broadcast(mint, {
+                        "type": "trade",
+                        "trade": trade,
+                    })
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1347,11 +1351,11 @@ class LiveTradeHub:
                             )
 
                             if trade:
-                                self.remember_trade(mint, trade)
-                                await self._broadcast(mint, {
-                                    "type": "trade",
-                                    "trade": trade,
-                                })
+                                if self.remember_trade(mint, trade):
+                                    await self._broadcast(mint, {
+                                        "type": "trade",
+                                        "trade": trade,
+                                    })
                             elif signature:
                                 # Standard logs notifications do not contain
                                 # inner instruction bytes. Resolve the full

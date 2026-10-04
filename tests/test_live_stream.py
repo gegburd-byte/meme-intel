@@ -400,3 +400,33 @@ def test_parse_native_pumpfun_socket_trade_packet():
 
 def test_native_pumpfun_socket_heartbeat_packet_is_not_a_trade():
     assert parse_pumpfun_socket_trade("2") is None
+
+
+def test_current_candle_preserves_arrival_order_for_same_second_trades():
+    hub = LiveTradeHub("test-key")
+    mint = "So11111111111111111111111111111111111111112"
+    ts = 1_700_000_001
+
+    hub.remember_trade(mint, {
+        "id": "z-first",
+        "source": "PUMP.FUN",
+        "timestamp": ts,
+        "price": 0.010,
+        "volume_sol": 1.0,
+    })
+    hub.remember_trade(mint, {
+        "id": "a-second",
+        "source": "PUMP.FUN",
+        "timestamp": ts,
+        "price": 0.020,
+        "volume_sol": 1.0,
+    })
+
+    candle = hub.current_candle(
+        mint,
+        timeframe=1,
+    )
+
+    assert candle is not None
+    assert candle["o"] == 0.010
+    assert candle["c"] == 0.020

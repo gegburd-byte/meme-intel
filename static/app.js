@@ -2,6 +2,8 @@ const $ = (id) => document.getElementById(id);
 
 let pumpSocket = null;
 let pumpFunNativeTradeSocket = null;
+let pumpFunNativeReconnectTimer = null;
+let pumpFunNativeBackoff = 500;
 let liveTradeSocket = null;
 let fallbackTimer = null;
 let reconnectTimer = null;
@@ -2552,13 +2554,13 @@ function applyLiveTrade(rawTrade, record = true) {
     return;
   }
 
-  lastLiveTradeAtMs = Date.now();
-
   const chartTrade = normalizeTradeForChart(t);
 
   if (!liveTradePriceIsPlausible(chartTrade.price)) {
     return;
   }
+
+  lastLiveTradeAtMs = Date.now();
 
   const recordedTrade = (
     record &&
@@ -2622,6 +2624,14 @@ async function pollLivePrice() {
 async function syncLiveTradeCache() {
   if (!selectedMint || liveTradeCacheBusy) return;
 
+  // Websocket trade events are authoritative. HTTP only repairs a silent feed.
+  if (
+    lastLiveTradeAtMs > 0 &&
+    Date.now() - lastLiveTradeAtMs < 750
+  ) {
+    return;
+  }
+
   liveTradeCacheBusy = true;
 
   try {
@@ -2650,20 +2660,11 @@ async function syncLiveTradeCache() {
 
     for (const row of rows) {
       const normalized = normalizeTrade(row);
-
-      if (!normalized) {
-        continue;
-      }
-
-      // Do not compare the trade timestamp with the history-response
-      // timestamp. A processed/block trade can arrive a little late, so that
-      // comparison was capable of discarding every real trade for a live chart
-      // while the feed itself was healthy. applyLiveTrade already deduplicates
-      // exact trade IDs, so replaying the tiny live buffer is safe.
-      applyLiveTrade(normalized, true);
+      if (!normalized) continue;
+      applyLiveTrade(normalized,true);
     }
   } catch {
-    // WSS remains primary; this is the low-latency recovery lane.
+    // Native/backend websockets remain primary.
   } finally {
     liveTradeCacheBusy = false;
   }
@@ -2680,11 +2681,7 @@ function startLiveTradeCachePoll() {
   }
 
   liveTradeCacheGeneration = historyGeneration;
-   // This is deliberately a very small local recovery request. The endpoint
-  // reads the already-open server-side on-chain feed, so it does not add a
-  // second blockchain subscription. Polling it at 100 ms makes the browser
-  // react almost immediately when a trade was decoded, even if the browser's
-  // websocket path is stalled.
+
   liveTradeCacheTimer = setInterval(() => {
     if (
       selectedMint &&
@@ -2692,11 +2689,8 @@ function startLiveTradeCachePoll() {
     ) {
       syncLiveTradeCache();
     }
-  }, 100);
+  },250);
 
-  // If the websocket says OPEN but no live trade has reached the browser for
-  // several seconds after there was recent activity, force one clean reconnect.
-  // This is a watchdog only; it does not touch candles or chart rendering.
   liveTradeWatchdogTimer = setInterval(() => {
     if (
       !selectedMint ||
@@ -2713,9 +2707,11 @@ function startLiveTradeCachePoll() {
       lastLiveTradeAtMs > 0 &&
       now - lastLiveTradeAtMs > 4500
     ) {
+      // Reset only the backend websocket; never tear down the direct native
+      // Pump.fun websocket from this recovery path.
       connectLiveTrade(selectedMint);
     }
-  }, 1000);
+  },1500);
 
   syncLiveTradeCache();
 }
@@ -2723,10 +2719,16 @@ function startLiveTradeCachePoll() {
 async function syncCurrentPumpCandle() {
   if (!selectedMint) return;
 
+  // Do not repaint the live candle from HTTP immediately after a real trade.
+  if (
+    lastLiveTradeAtMs > 0 &&
+    Date.now() - lastLiveTradeAtMs < 750
+  ) {
+    return;
+  }
+
   if (currentCandleSyncInFlight) {
     currentCandleSyncQueued = true;
-    // Callers only wait on the in-flight request. The periodic loop owns
-    // scheduling so a queued call can never cancel its timer.
     if (currentCandleSyncPromise) {
       await currentCandleSyncPromise;
     }
@@ -2735,18 +2737,19 @@ async function syncCurrentPumpCandle() {
 
   currentCandleSyncInFlight = true;
 
-  const work = (async()=>{
+  const work = (async() => {
     try {
       const generation = historyGeneration;
 
       const r = await fetch(
         "/api/chart/current?mint=" +
         encodeURIComponent(selectedMint) +
-        "&timeframe=" + chartTimeframe +
+        "&timeframe=" +
+        backendTimeframe() +
+        "&interval=" +
+        encodeURIComponent(chartInterval) +
         "&t=" + Date.now(),
-        {
-          cache:"no-store"
-        }
+        {cache:"no-store"}
       );
 
       if (!r.ok) return;
@@ -2770,7 +2773,8 @@ async function syncCurrentPumpCandle() {
         j.source || chartDataSource
       );
 
-      const liveTradeSnapshot = incomingSource === "PUMP.FUN LIVE TRADES";
+      const liveTradeSnapshot =
+        incomingSource === "PUMP.FUN LIVE TRADES";
 
       if (
         incomingSource === "LIVE_PRICE" &&
@@ -2785,10 +2789,6 @@ async function syncCurrentPumpCandle() {
           selectedCandles.length - 1
         ];
 
-      // Once real Pump.fun trade events are moving the active candle,
-      // never repaint that same bucket from the slower HTTP snapshot. The
-      // native trade stream is the live candle authority; HTTP is allowed to
-      // advance us to a genuinely newer completed/current bucket only.
       if (
         livePreviewActive &&
         current &&
@@ -2798,9 +2798,6 @@ async function syncCurrentPumpCandle() {
         return;
       }
 
-      // Pump.fun native OHLC is authoritative when it is caught up to the
-      // live event stream.
-      // The live websocket only provides an immediate low-latency preview.
       if (
         current &&
         incoming &&
@@ -2812,10 +2809,11 @@ async function syncCurrentPumpCandle() {
 
       mergePage(candles);
 
-      const last = selectedCandles[
-        selectedCandles.length - 1
-      ];
-      
+      const last =
+        selectedCandles[
+          selectedCandles.length - 1
+        ];
+
       if (liveTradeSnapshot) {
         livePreviewActive = true;
       } else {
@@ -2824,10 +2822,8 @@ async function syncCurrentPumpCandle() {
       }
 
       updateRealtimeChart(last);
-
     } catch {
-      // The websocket/tape remains live if the lightweight HTTP snapshot
-      // temporarily fails; the next scheduled tick will retry.
+      // Real websocket lanes remain live if HTTP recovery fails.
     }
   })();
 
@@ -2838,9 +2834,6 @@ async function syncCurrentPumpCandle() {
   } finally {
     currentCandleSyncPromise = null;
     currentCandleSyncInFlight = false;
-
-    // The periodic loop schedules the next pass. Never replace its timer
-    // from the in-flight completion path.
     currentCandleSyncQueued = false;
   }
 }
@@ -2873,75 +2866,213 @@ function startCurrentCandleSync() {
     // only repairs missed/stalled live updates.
     currentCandleSyncTimer = setTimeout(
       tick,
-      100
+      250
     );
   };
 
   tick();
 }
-function connectNativePumpFunTrades(mint) {
-  if (!mint || typeof window.io !== "function") {
+function scheduleNativePumpFunReconnect(mint) {
+  if (
+    pumpFunNativeReconnectTimer ||
+    !selectedMint ||
+    selectedMint !== mint
+  ) {
     return;
   }
 
-  if (pumpFunNativeTradeSocket) {
-    try {
-      pumpFunNativeTradeSocket.disconnect();
-    } catch {}
-    pumpFunNativeTradeSocket = null;
+  const wait = pumpFunNativeBackoff;
+
+  pumpFunNativeBackoff = Math.min(
+    5000,
+    Math.round(
+      pumpFunNativeBackoff * 1.6
+    )
+  );
+
+  pumpFunNativeReconnectTimer = setTimeout(() => {
+    pumpFunNativeReconnectTimer = null;
+
+    if (
+      selectedMint &&
+      selectedMint === mint
+    ) {
+      connectNativePumpFunTrades(mint);
+    }
+  },wait);
+}
+
+function connectNativePumpFunTrades(mint) {
+  if (!mint) return;
+
+  if (pumpFunNativeReconnectTimer) {
+    clearTimeout(
+      pumpFunNativeReconnectTimer
+    );
+    pumpFunNativeReconnectTimer = null;
   }
 
-  try {
-    const socket = window.io(
-      "https://frontend-api-v3.pump.fun",
-      {
-        transports:["websocket"],
-        reconnection:true,
-        reconnectionAttempts:Infinity,
-        reconnectionDelay:100,
-        reconnectionDelayMax:1500,
-        timeout:5000,
-        path:"/socket.io",
-      }
-    );
+  if (pumpFunNativeTradeSocket) {
+    const oldSocket = pumpFunNativeTradeSocket;
+    pumpFunNativeTradeSocket = null;
 
+    try {
+      oldSocket.close();
+    } catch {}
+  }
+
+  const url =
+    "wss://frontend-api.pump.fun/socket.io/" +
+    "?EIO=4&transport=websocket";
+
+  try {
+    const socket = new WebSocket(url);
     pumpFunNativeTradeSocket = socket;
 
-    socket.on("connect",()=>{
-      if (socket !== pumpFunNativeTradeSocket) return;
+    socket.addEventListener("open",() => {
+      if (socket !== pumpFunNativeTradeSocket) {
+        return;
+      }
 
-      // Pump.fun's native frontend subscription for the live trade event.
-      socket.emit("subscribe","tradeCreated");
+      pumpFunNativeBackoff = 500;
 
       $("chartMode").textContent =
         "PUMP.FUN NATIVE LIVE · " +
         timeframeLabel() +
-        " · LIVE";
+        " · CONNECTING";
     });
 
-    socket.on("tradeCreated",(raw)=>{
-      if (socket !== pumpFunNativeTradeSocket) return;
-      if (!selectedMint || !raw || raw.mint !== selectedMint) return;
+    socket.addEventListener("message",(ev) => {
+      if (socket !== pumpFunNativeTradeSocket) {
+        return;
+      }
 
-      const trade = parseNativePumpFunTrade(raw);
-      if (!trade) return;
+      const data = String(ev.data || "");
 
-      // The native Pump.fun trade is the primary low-latency chart movement.
-      // Existing chart rendering, indicators, controls and appearance are
-      // untouched: only the current OHLC bucket receives the real trade.
-      lastLiveTradeAtMs = Date.now();
-      applyLiveTrade(trade,true);
+      // Engine.IO open -> Socket.IO namespace open.
+      if (data.startsWith("0")) {
+        try {
+          socket.send("40");
+        } catch {}
+        return;
+      }
+
+      if (data.startsWith("40")) {
+        try {
+          socket.send(
+            '42["subscribe","tradeCreated"]'
+          );
+        } catch {}
+
+        $("chartMode").textContent =
+          "PUMP.FUN NATIVE LIVE · " +
+          timeframeLabel() +
+          " · LIVE";
+
+        return;
+      }
+
+      // Engine.IO ping -> pong.
+      if (
+        data === "2" ||
+        data.startsWith("2")
+      ) {
+        try {
+          socket.send("3");
+        } catch {}
+        return;
+      }
+
+      if (!data.startsWith("42")) {
+        return;
+      }
+
+      try {
+        const packet =
+          JSON.parse(
+            data.slice(2)
+          );
+
+        if (
+          !Array.isArray(packet) ||
+          packet.length < 2 ||
+          packet[0] !== "tradeCreated" ||
+          !packet[1] ||
+          typeof packet[1] !== "object"
+        ) {
+          return;
+        }
+
+        const raw = packet[1];
+
+        if (
+          !selectedMint ||
+          raw.mint !== selectedMint
+        ) {
+          return;
+        }
+
+        const trade =
+          parseNativePumpFunTrade(raw);
+
+        if (!trade) {
+          return;
+        }
+
+        applyLiveTrade(
+          trade,
+          true
+        );
+      } catch {}
     });
 
-    socket.on("disconnect",()=>{
-      if (socket !== pumpFunNativeTradeSocket) return;
-      // The socket.io client handles the reconnect itself.
+    socket.addEventListener("close",() => {
+      if (socket !== pumpFunNativeTradeSocket) {
+        return;
+      }
+
+      pumpFunNativeTradeSocket = null;
+
+      $("chartMode").textContent =
+        "RECONNECTING PUMP.FUN LIVE FEED…";
+
+      scheduleNativePumpFunReconnect(
+        mint
+      );
     });
 
-    socket.on("connect_error",()=>{
-      // Existing backend/Helius live recovery remains untouched.
+    socket.addEventListener("error",() => {
+      if (socket !== pumpFunNativeTradeSocket) {
+        return;
+      }
+
+      try {
+        socket.close();
+      } catch {}
     });
-  } catch {}
+  } catch {
+    scheduleNativePumpFunReconnect(mint);
+  }
+}
+
+function disconnectBackendLiveTrade() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  if (fallbackTimer) {
+    clearInterval(fallbackTimer);
+    fallbackTimer = null;
+  }
+
+  if (liveTradeSocket) {
+    try {
+      liveTradeSocket.close();
+    } catch {}
+
+    liveTradeSocket = null;
+  }
 }
 
 function disconnectLiveTrade() {
@@ -2977,11 +3108,18 @@ function disconnectLiveTrade() {
 
   liveTradeCacheBusy = false;
 
+  if (pumpFunNativeReconnectTimer) {
+    clearTimeout(pumpFunNativeReconnectTimer);
+    pumpFunNativeReconnectTimer = null;
+  }
+
   if (pumpFunNativeTradeSocket) {
-    try {
-      pumpFunNativeTradeSocket.disconnect();
-    } catch {}
+    const oldSocket = pumpFunNativeTradeSocket;
     pumpFunNativeTradeSocket = null;
+
+    try {
+      oldSocket.close();
+    } catch {}
   }
 
   if (currentCandleSyncTimer) {
@@ -2989,12 +3127,7 @@ function disconnectLiveTrade() {
     currentCandleSyncTimer = null;
   }
 
-  if (liveTradeSocket) {
-    try {
-      liveTradeSocket.close();
-    } catch {}
-    liveTradeSocket = null;
-  }
+  disconnectBackendLiveTrade();
 }
 
 function scheduleReconnect() {
@@ -3028,7 +3161,7 @@ function scheduleReconnect() {
 }
 
 function connectLiveTrade(mint) {
-  disconnectLiveTrade();
+  disconnectBackendLiveTrade();
 
   if (!mint) return;
 
