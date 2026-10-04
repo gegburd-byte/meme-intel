@@ -1401,10 +1401,10 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
                     mint,
                     timeframe=timeframe,
                     lookback_minutes=min(
-                        120,
-                        max(60, limit * timeframe),
+                        10080,
+                        max(120, limit * timeframe),
                     ),
-                    max_signatures=700,
+                    max_signatures=1500,
                 ),
                 timeout=7.0,
             )
