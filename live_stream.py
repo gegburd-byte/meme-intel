@@ -17,6 +17,14 @@ HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_HTTP_RPC = "https://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_ENHANCED_WS = "wss://atlas-mainnet.helius-rpc.com/?api-key={key}"
 PUMP_FUN_SOCKET_IO = "wss://frontend-api-v3.pump.fun/socket.io/?EIO=4&transport=websocket"
+PUMP_FUN_SUBSCRIBE_FRAMES = (
+    "42[\"subscribe\",\"tradeCreated\"]",
+    "42[\"subscribe\",{\"event\":\"tradeCreated\"}]",
+    "42[\"subscribe\",{\"type\":\"tradeCreated\"}]",
+    "42[\"join\",\"tradeCreated\"]",
+    "42[\"join\",\"trades\"]",
+    "42[\"subscribe\",\"all\"]"
+)
 
 ANCHOR_SELF_CPI_TAG = bytes([0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d])
 
@@ -734,9 +742,8 @@ class LiveTradeHub:
                             continue
 
                         if raw.startswith("40"):
-                            await ws.send(
-                                '42["subscribe","tradeCreated"]'
-                            )
+                            for frame in PUMP_FUN_SUBSCRIBE_FRAMES:
+                                await ws.send(frame)
                             continue
 
                         if raw == "2" or raw.startswith("2"):
