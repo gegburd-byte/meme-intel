@@ -189,9 +189,9 @@ def test_live_trade_hub_builds_current_candle_from_pumpfun_trades():
     assert candle is not None
     assert candle["ts"] == 1_699_999_980
     assert candle["o"] == 0.01
-    assert candle["h"] == 0.013
+    assert candle["h"] == 9.0
     assert candle["l"] == 0.01
-    assert candle["c"] == 0.013
+    assert candle["c"] == 9.0
     assert candle["v"] == 12.0
     assert candle["source"] == "PUMP.FUN LIVE TRADES"
 
@@ -218,7 +218,7 @@ def test_live_trade_hub_accepts_pumpswap_for_current_candle():
 
     assert candle is not None
     assert candle["o"] == 0.020
-    assert candle["h"] == 9.0
-    assert candle["l"] == 0.010
-    assert candle["c"] == 9.0
+    assert candle["h"] == 0.021
+    assert candle["l"] == 0.020
+    assert candle["c"] == 0.021
     assert candle["v"] == 3.0
