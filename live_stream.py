@@ -9,6 +9,7 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
+import httpx
 import websockets
 
 
@@ -293,6 +294,17 @@ class LiveTradeHub:
         self.recent_trades: dict[str, deque[dict[str, Any]]] = defaultdict(
             lambda: deque(maxlen=500)
         )
+        self._resolve_semaphore = asyncio.Semaphore(8)
+        self._pending_resolutions: set[tuple[str, str]] = set()
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
+        self._http = httpx.AsyncClient(
+            timeout=httpx.Timeout(2.5, connect=1.0),
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=8),
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Meme-Intel/live-stream",
+            },
+        )
 
     def active(self) -> bool:
         return bool(self.api_key)
@@ -382,6 +394,72 @@ class LiveTradeHub:
             "v": volume,
             "source": "PUMP.FUN LIVE TRADES",
         }
+
+    async def _resolve_standard_transaction(
+        self,
+        mint: str,
+        signature: str,
+        slot: int | None = None,
+    ) -> None:
+        """Resolve a standard logsSubscribe notification into full transaction data.
+
+        Standard logs notifications do not include inner/top-level instruction
+        bytes. Pump.fun TradeEvents can be emitted there, so fetch the single
+        transaction and run the broader decoder when direct log decoding misses.
+        """
+        key = (mint, signature)
+        if key in self._pending_resolutions:
+            return
+
+        self._pending_resolutions.add(key)
+
+        try:
+            async with self._resolve_semaphore:
+                response = await self._http.post(
+                    HELIUS_HTTP_RPC.format(key=self.api_key),
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": f"meme-intel-live-{signature[:12]}",
+                        "method": "getTransaction",
+                        "params": [
+                            signature,
+                            {
+                                "encoding": "jsonParsed",
+                                "commitment": "processed",
+                                "maxSupportedTransactionVersion": 1,
+                            },
+                        ],
+                    },
+                )
+
+            if response.status_code >= 400:
+                return
+
+            payload = response.json()
+            transaction = payload.get("result")
+            if not isinstance(transaction, dict):
+                return
+
+            trade = parse_live_trade_from_transaction(
+                transaction,
+                mint,
+                signature=signature,
+                slot=slot,
+                block_time=transaction.get("blockTime"),
+            )
+
+            if trade:
+                self.remember_trade(mint, trade)
+                await self._broadcast(mint, {
+                    "type": "trade",
+                    "trade": trade,
+                })
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error = str(exc)[:300]
+        finally:
+            self._pending_resolutions.discard(key)
 
     async def _send(self, payload: dict[str, Any]) -> None:
         if self.ws is None:
@@ -571,12 +649,38 @@ class LiveTradeHub:
                             if result.get("err") is not None:
                                 continue
 
+                            signature = str(result.get("signature") or "")
+                            slot = (params.get("result") or {}).get("context", {}).get("slot")
+                            logs = result.get("logs") or []
+
                             trade = parse_live_trade(
-                                result.get("logs") or [],
+                                logs,
                                 mint,
-                                signature=str(result.get("signature") or ""),
-                                slot=(params.get("result") or {}).get("context", {}).get("slot"),
+                                signature=signature,
+                                slot=slot,
                             )
+
+                            if trade:
+                                self.remember_trade(mint, trade)
+                                await self._broadcast(mint, {
+                                    "type": "trade",
+                                    "trade": trade,
+                                })
+                            elif signature:
+                                # Standard logs notifications do not contain
+                                # inner instruction bytes. Resolve the full
+                                # transaction asynchronously so the websocket
+                                # reader never stalls on HTTP.
+                                task = asyncio.create_task(
+                                    self._resolve_standard_transaction(
+                                        mint,
+                                        signature,
+                                        slot=slot,
+                                    )
+                                )
+                                self._pending_tasks.add(task)
+                                task.add_done_callback(self._pending_tasks.discard)
+                            continue
                         else:
                             continue
 
