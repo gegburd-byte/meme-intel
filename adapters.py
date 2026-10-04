@@ -435,6 +435,14 @@ class PumpFunAdapter:
                 "createdTs": created_ts_ms,
             },
             {
+                "program": "pumpswap",
+                "createdTs": created_ts_ms,
+            },
+            {
+                "program": "pump_swap",
+                "createdTs": created_ts_ms,
+            },
+            {
                 "program": "pump",
                 "createdTs": created_ts_ms,
                 "chainId": "solana",
@@ -466,6 +474,40 @@ class PumpFunAdapter:
                         continue
 
                     payload = r.json()
+
+                    # A valid 200 can still be an empty page for the wrong
+                    # program selector. Try the next selector/host instead of
+                    # freezing on an empty first response.
+                    has_rows = False
+                    if isinstance(payload, list):
+                        has_rows = bool(payload)
+                    elif isinstance(payload, dict):
+                        for field in (
+                            "data",
+                            "trades",
+                            "results",
+                            "items",
+                            "rows",
+                        ):
+                            value = payload.get(field)
+                            if isinstance(value, list) and value:
+                                has_rows = True
+                                break
+                            if isinstance(value, dict):
+                                nested = (
+                                    value.get("data")
+                                    or value.get("trades")
+                                    or value.get("results")
+                                    or value.get("items")
+                                )
+                                if isinstance(nested, list) and nested:
+                                    has_rows = True
+                                    break
+
+                    if not has_rows:
+                        last_error = "EMPTY_TRADE_PAGE"
+                        continue
+
                     self._cache[key] = {
                         "time": time.time(),
                         "payload": payload,
