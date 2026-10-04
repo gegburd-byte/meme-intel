@@ -1279,16 +1279,19 @@ async def chart_live_trades(mint: str, limit: int = 200):
     )
 
     cached = cache.get(mint)
-    if cached and now - cached["time"] < 0.35:
+    if cached and now - cached["time"] < 0.05:
         return cached["payload"]
 
-    # The server-side Helius/Pump.fun event stream is the primary live source.
+    # The server-side Helius stream is the lowest-latency source here. Keep
+    # this endpoint cheap: the browser polls it frequently, so never make a
+    # network request to another provider when decoded live trades already
+    # exist in memory.
     rows = trade_hub.recent_trade_snapshot(mint, limit=limit)
 
-    # When the current Pump.fun JWT is configured, also sample Pump.fun's own
-    # trade endpoint. This is an exact-venue confirmation lane, not a price
-    # conversion/fallback to another venue.
-    if os.getenv("PUMP_FUN_JWT"):
+    # Only use Pump.fun's own HTTP trade endpoint when the live on-chain lane
+    # has not produced anything yet. This preserves the fallback without
+    # putting a 300-350 ms network request in the hot path.
+    if not rows and os.getenv("PUMP_FUN_JWT"):
         try:
             native_payload, native_err = await asyncio.wait_for(
                 pf.trades(
