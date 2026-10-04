@@ -932,11 +932,17 @@ class HeliusAdapter:
         )
 
         error = None if candles else "NO_TRADES_DECODED"
-        self._chart_cache[cache_key] = {
-            "time": time.time(),
-            "candles": candles,
-            "error": error,
-        }
+
+        # Never cache an empty historical decode. A token can be between
+        # Pump.fun bonding-curve and PumpSwap migration, or an RPC request can
+        # transiently return no decodable transactions. Caching that empty
+        # result was enough to keep a healthy chart blank for 20 seconds.
+        if candles:
+            self._chart_cache[cache_key] = {
+                "time": time.time(),
+                "candles": candles,
+                "error": error,
+            }
 
         return candles, error
 
