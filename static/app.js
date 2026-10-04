@@ -1695,21 +1695,15 @@ async function fetchFastHistoricalBackfill(generation) {
       return false;
     }
 
-    const activeTime = selectedCandles.length
-      ? selectedCandles[selectedCandles.length - 1].time
-      : null;
-
-    const historicalOnly = candles.filter(
-      c => activeTime == null || c.time < activeTime
-    );
-
-    if (!historicalOnly.length) return false;
-
+    // The history endpoint is Pump.fun-authoritative. Merge every returned
+    // candle instead of discarding the current bucket first. The previous
+    // filter could leave the chart stuck at only the one/few bars returned by
+    // /api/chart/current.
     const byTime = new Map(
       selectedCandles.map(x=>[x.time,x])
     );
 
-    for (const candle of historicalOnly) {
+    for (const candle of candles) {
       byTime.set(candle.time,{...candle});
     }
 
@@ -1718,7 +1712,9 @@ async function fetchFastHistoricalBackfill(generation) {
       .slice(-MAX_HISTORY_BARS);
 
     historyBarsLoaded = selectedCandles.length;
-    chartDataSource = j.source || "ON-CHAIN HISTORY";
+    chartDataSource =
+      j.source ||
+      "PUMP.FUN";
 
     if (chartInitialized) {
       renderChart(selectedCandles,true);
