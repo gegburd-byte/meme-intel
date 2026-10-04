@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import websockets
+import socketio
 
 
 HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
@@ -639,82 +640,94 @@ class LiveTradeHub:
         ]
 
     async def _run_pumpfun_socket(self) -> None:
-        """Primary zero-poll live feed from Pump.fun's own trade socket."""
+        """Primary Pump.fun feed using the same Socket.IO subscription as the site."""
         backoff = 0.25
 
         while self.clients:
+            sio = socketio.AsyncClient(
+                reconnection=False,
+                logger=False,
+                engineio_logger=False,
+            )
+
             try:
-                async with websockets.connect(
-                    PUMP_FUN_SOCKET_IO,
-                    origin="https://pump.fun",
-                    ping_interval=None,
-                    close_timeout=1.5,
-                    max_queue=8192,
-                ) as ws:
+                @sio.event
+                async def connect():
                     self.pumpfun_live = True
                     self.state = "LIVE"
                     self.last_error = ""
                     await self._status_all(
                         "LIVE",
-                        "PUMP.FUN native trade stream",
+                        "PUMP.FUN native tradeCreated stream",
                     )
 
-                    # Engine.IO opens the underlying transport first. Socket.IO
-                    # CONNECT (40) then enters the default namespace.
-                    await ws.send("40")
-                    socketio_connected = False
+                    # This is the native Pump.fun subscription used by current
+                    # Socket.IO clients: subscribe to tradeCreated after the
+                    # Socket.IO connection is established.
+                    await sio.emit(
+                        "subscribe",
+                        "tradeCreated",
+                    )
 
-                    async for raw in ws:
-                        if not isinstance(raw, str):
-                            continue
+                @sio.event
+                async def disconnect():
+                    self.pumpfun_live = False
 
-                        # Engine.IO heartbeat from Pump.fun.
-                        if raw == "2":
-                            await ws.send("3")
-                            continue
+                @sio.on("tradeCreated")
+                async def on_trade(data):
+                    if not isinstance(data, dict):
+                        return
 
-                        if raw.startswith("40"):
-                            if not socketio_connected:
-                                socketio_connected = True
-                                self.pumpfun_live = True
-                                # Pump.fun's native client subscribes to the
-                                # tradeCreated event after Socket.IO connects.
-                                await ws.send(
-                                    '42["subscribe","tradeCreated"]'
-                                )
-                            continue
+                    trade = parse_pumpfun_socket_trade(
+                        "42" + json.dumps(["tradeCreated", data])
+                    )
+                    if not trade:
+                        return
 
-                        if not raw.startswith("42"):
-                            continue
+                    mint = str(trade.get("mint") or "")
+                    if mint not in self.clients:
+                        return
 
-                        trade = parse_pumpfun_socket_trade(raw)
-                        if not trade:
-                            continue
+                    await self.publish_external_trade(
+                        mint,
+                        trade,
+                    )
 
-                        mint = trade.get("mint")
-                        if mint not in self.clients:
-                            continue
+                await sio.connect(
+                    "https://frontend-api.pump.fun",
+                    headers={
+                        "Origin": "https://pump.fun",
+                        "User-Agent": "Meme-Intel/1.0",
+                    },
+                    transports=["websocket"],
+                    socketio_path="/socket.io",
+                    wait_timeout=8,
+                )
 
-                        await self.publish_external_trade(
-                            mint,
-                            trade,
-                        )
+                backoff = 0.25
+                await sio.wait()
 
-                self.pumpfun_live = False
-                if self.clients:
-                    await asyncio.sleep(backoff)
-                    backoff = min(5.0, backoff * 2)
             except asyncio.CancelledError:
                 self.pumpfun_live = False
+                try:
+                    await sio.disconnect()
+                except Exception:
+                    pass
                 raise
             except Exception as exc:
                 self.pumpfun_live = False
                 self.last_error = (
-                    "PUMP_FUN_WS:" + str(exc)[:260]
+                    "PUMP_FUN_SOCKETIO:" + str(exc)[:260]
                 )
                 if self.clients:
                     await asyncio.sleep(backoff)
                     backoff = min(5.0, backoff * 2)
+            finally:
+                self.pumpfun_live = False
+                try:
+                    await sio.disconnect()
+                except Exception:
+                    pass
 
         self.pumpfun_live = False
 
