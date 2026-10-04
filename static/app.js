@@ -2046,9 +2046,9 @@ function applyLiveTrade(rawTrade, record = true) {
     record ? t : null
   );
 
-  updateCandleFromLiveTrade(t);
-
-  // Native Pump.fun OHLC remains the reconciliation authority.
+  // Do not build/modify OHLC from websocket trades. Pump.fun's native candle
+  // endpoint is the only chart authority; this keeps execution/spot-price
+  // differences from becoming fake wicks.
   requestCurrentCandleSync(90);
 }
 
