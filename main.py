@@ -1428,9 +1428,10 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
             return "GECKOTERMINAL", [], str(exc)[:240]
 
     native_task = asyncio.create_task(native_history())
+    gecko_task = asyncio.create_task(gecko_history())
 
-    # Keep the fallbacks working in parallel, but native Pump.fun remains the
-    # preferred source whenever it returns usable history.
+    # Keep all sources running in parallel. Native Pump.fun remains preferred,
+    # while Gecko provides a fast visible fallback if native HTTP is unavailable.
     # Fidelity-first fallbacks: Pump.fun trade history and Helius on-chain
     # reconstruction both use Pump.fun trade semantics. GeckoTerminal is kept
     # as a last-resort compatibility source because its quote/venue history can
@@ -1464,9 +1465,12 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
         for task in primary_fallback_tasks:
             if not task.done():
                 task.cancel()
+        if not gecko_task.done():
+            gecko_task.cancel()
 
         await asyncio.gather(
             *primary_fallback_tasks,
+            gecko_task,
             return_exceptions=True,
         )
 
@@ -1487,8 +1491,52 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
 
         return payload
 
-    # No native history: use the first valid Pump.fun-semantic source.
+    # No native history: use fast Gecko data immediately when it is already
+    # available; otherwise use Pump.fun trade history or Helius reconstruction.
     fallback_errors = []
+
+    if gecko_task.done():
+        try:
+            gecko_source, gecko_rows, gecko_err = await gecko_task
+        except Exception as exc:
+            gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], str(exc)[:180]
+    else:
+        gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], "PENDING"
+
+    if gecko_rows:
+        payload = {
+            "state":"READY",
+            "source":gecko_source,
+            "candles":[
+                {
+                    "ts":c.ts,
+                    "o":c.o,
+                    "h":c.h,
+                    "l":c.l,
+                    "c":c.c,
+                    "v":c.v,
+                }
+                for c in sorted(gecko_rows,key=lambda x:x.ts)[-limit:]
+            ],
+            "error":"FAST_FALLBACK_NON_NATIVE",
+            "timestamp":int(time.time()),
+        }
+
+        for other in primary_fallback_tasks:
+            if not other.done():
+                other.cancel()
+
+        await asyncio.gather(
+            *primary_fallback_tasks,
+            return_exceptions=True,
+        )
+
+        chart_history._cache = getattr(chart_history, "_cache", {})
+        chart_history._cache[cache_key] = {
+            "time":time.time(),
+            "payload":payload,
+        }
+        return payload
 
     for task in asyncio.as_completed(primary_fallback_tasks):
         try:
@@ -1550,10 +1598,22 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
         return_exceptions=True,
     )
 
+    # Last resort: wait briefly for the already-running Gecko request rather
+    # than starting a duplicate HTTP request.
+    if not gecko_rows:
+        try:
+            gecko_source, gecko_rows, gecko_err = await asyncio.wait_for(
+                gecko_task,
+                timeout=0.75,
+            )
+        except asyncio.TimeoutError:
+            gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], "GECKO_TIMEOUT"
+        except Exception as exc:
+            gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], str(exc)[:180]
+
     # Last resort only: GeckoTerminal is useful for showing something when no
     # Pump.fun-semantic history can be reconstructed, but it is explicitly not
     # treated as exact Pump.fun chart data.
-    gecko_source, gecko_rows, gecko_err = await gecko_history()
     if gecko_rows:
         payload = {
             "state":"READY",
