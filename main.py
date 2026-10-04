@@ -1125,9 +1125,9 @@ _live_pool_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
 async def attach_live_market_addresses(mint: str) -> None:
-    """Attach the PumpSwap pool to the existing live stream without delaying mint subscription."""
+    """Attach every exact Pump.fun/PumpSwap market account to the live stream."""
     try:
-        pool_address = None
+        addresses: set[str] = set()
 
         try:
             coin, _ = await asyncio.wait_for(
@@ -1135,19 +1135,26 @@ async def attach_live_market_addresses(mint: str) -> None:
                 timeout=0.8,
             )
             if isinstance(coin, dict):
-                pool_address = (
-                    coin.get("pump_swap_pool")
-                    or coin.get("pumpSwapPool")
-                    or coin.get("pumpSwapPoolAddress")
-                    or coin.get("pool")
-                    or coin.get("poolAddress")
-                    or coin.get("amm")
-                    or coin.get("ammPool")
-                )
+                for key in (
+                    "bonding_curve",
+                    "bondingCurve",
+                    "associated_bonding_curve",
+                    "associatedBondingCurve",
+                    "pump_swap_pool",
+                    "pumpSwapPool",
+                    "pumpSwapPoolAddress",
+                    "pool",
+                    "poolAddress",
+                    "amm",
+                    "ammPool",
+                ):
+                    value = str(coin.get(key) or "").strip()
+                    if value:
+                        addresses.add(value)
         except Exception:
-            pool_address = None
+            pass
 
-        if not pool_address:
+        if not any(addresses):
             try:
                 pairs_payload, _ = await asyncio.wait_for(
                     ds.pairs(mint),
@@ -1175,13 +1182,16 @@ async def attach_live_market_addresses(mint: str) -> None:
                         pump_pairs,
                         key=liq,
                     ).get("pairAddress")
-            except Exception:
-                pool_address = None
 
-        if pool_address:
+                    if pool_address:
+                        addresses.add(str(pool_address))
+            except Exception:
+                pass
+
+        for address in addresses:
             await trade_hub.add_watch_address(
                 mint,
-                str(pool_address),
+                address,
             )
     except asyncio.CancelledError:
         raise
