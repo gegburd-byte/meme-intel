@@ -178,7 +178,23 @@
     </div>
   </section>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=20261004-chartfix16"></script>
+<script
+  src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"
+  onerror="this.onerror=null;this.src='https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js'"
+></script>
+<script>
+  // CDN recovery: app.js already retries chart initialization, while this
+  // timeout loads a second CDN only when the primary library is missing/slow.
+  window.setTimeout(function(){
+    if (window.LightweightCharts) return;
+    if (document.querySelector('script[data-lwc-fallback]')) return;
+
+    var s = document.createElement('script');
+    s.src = 'https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js';
+    s.dataset.lwcFallback = '1';
+    document.head.appendChild(s);
+  }, 1500);
+</script>
+<script src="/static/app.js?v=20261004-chartfix17"></script>
 </body>
 </html>
