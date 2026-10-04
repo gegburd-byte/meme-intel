@@ -299,7 +299,7 @@ class PumpFunAdapter:
             },
         )
 
-    async def candles(self, mint, limit=1000, timeframe=1, offset=0):
+    async def candles(self, mint, limit=1000, timeframe=1, offset=0, fresh=False):
         mint = (mint or "").strip()
         limit = max(25, min(int(limit or 1000), 1000))
         timeframe = int(timeframe or 1)
@@ -307,7 +307,11 @@ class PumpFunAdapter:
         key = (mint, limit, timeframe, offset)
         now = time.time()
         cached = self._cache.get(key)
-        if cached and now - cached["time"] < self._cache_ttl:
+        if (
+            not fresh and
+            cached and
+            now - cached["time"] < self._cache_ttl
+        ):
             return cached["payload"], None
 
         params = {
