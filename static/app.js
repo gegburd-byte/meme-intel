@@ -1549,73 +1549,75 @@ function sanitizeChartCandles(candles) {
     .slice(-MAX_HISTORY_BARS);
 }
 
+function findNativePumpFunTradePayload(value, depth = 0) {
+  if (depth > 7 || value == null) return null;
+
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || !/^[\[{]/.test(text)) return null;
+    try {
+      return findNativePumpFunTradePayload(JSON.parse(text), depth + 1);
+    } catch {
+      return null;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const found = findNativePumpFunTradePayload(child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (typeof value !== "object") return null;
+
+  const mint = String(value.mint || "").trim();
+  const hasSol = value.sol_amount != null || value.solAmount != null;
+  const hasToken = value.token_amount != null || value.tokenAmount != null;
+  if (mint && hasSol && hasToken) return value;
+
+  for (const key of ["payload", "trade", "result", "subscribe", "data", "event"]) {
+    if (!(key in value)) continue;
+    const found = findNativePumpFunTradePayload(value[key], depth + 1);
+    if (found) return found;
+  }
+
+  for (const child of Object.values(value)) {
+    if (typeof child === "object" || typeof child === "string") {
+      const found = findNativePumpFunTradePayload(child, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function parseNativePumpFunTrade(raw) {
-  if (!raw || typeof raw !== "object") return null;
+  const payload = findNativePumpFunTradePayload(raw);
+  if (!payload) return null;
 
-  const mint = String(raw.mint || "").trim();
-  const solAmount = Number(
-    raw.sol_amount ??
-    raw.solAmount
-  );
-  const tokenAmount = Number(
-    raw.token_amount ??
-    raw.tokenAmount
-  );
-  const timestampRaw = Number(raw.timestamp);
+  const mint = String(payload.mint || "").trim();
+  const solAmount = Number(payload.sol_amount ?? payload.solAmount);
+  const tokenAmount = Number(payload.token_amount ?? payload.tokenAmount);
+  const timestampRaw = Number(payload.timestamp);
 
-  if (
-    !mint ||
-    !Number.isFinite(solAmount) ||
-    solAmount <= 0 ||
-    !Number.isFinite(tokenAmount) ||
-    tokenAmount <= 0 ||
-    !Number.isFinite(timestampRaw)
-  ) {
+  if (!mint || !Number.isFinite(solAmount) || solAmount <= 0 || !Number.isFinite(tokenAmount) || tokenAmount <= 0 || !Number.isFinite(timestampRaw)) {
     return null;
   }
 
-  const timestamp = Math.floor(
-    timestampRaw > 2e10
-      ? timestampRaw / 1000
-      : timestampRaw
-  );
+  const timestamp = Math.floor(timestampRaw > 2e10 ? timestampRaw / 1000 : timestampRaw);
+  if (timestamp < 1500000000) return null;
 
-  if (timestamp < 1500000000) {
-    return null;
-  }
-
-  const price =
-    (solAmount / 1_000_000_000) /
-    (tokenAmount / 1_000_000);
-
-  if (!Number.isFinite(price) || price <= 0) {
-    return null;
-  }
+  const price = (solAmount / 1_000_000_000) / (tokenAmount / 1_000_000);
+  if (!Number.isFinite(price) || price <= 0) return null;
 
   return {
-    id:String(
-      raw.signature ||
-      ("pumpfun-native:" +
-        mint + ":" +
-        timestamp + ":" +
-        String(raw.slot || "") + ":" +
-        String(raw.tx_index ?? raw.txIndex ?? ""))
-    ),
-    signature:String(raw.signature || ""),
+    id:String(payload.signature || ("pumpfun-native:" + mint + ":" + timestamp + ":" + String(payload.slot || "") + ":" + String(payload.tx_index ?? payload.txIndex ?? ""))),
+    signature:String(payload.signature || ""),
     timestamp,
     time:timestamp,
     price,
-    side:(
-      raw.is_buy ??
-      raw.isBuy
-    ) === true ||
-    String(
-      raw.side ??
-      raw.txType ??
-      ""
-    ).toUpperCase() === "BUY"
-      ? "BUY"
-      : "SELL",
+    side:((payload.is_buy ?? payload.isBuy) === true || String(payload.side ?? payload.txType ?? "").toUpperCase() === "BUY") ? "BUY" : "SELL",
     volumeSol:solAmount / 1_000_000_000,
     volume_sol:solAmount / 1_000_000_000,
     source:"PUMP.FUN",
