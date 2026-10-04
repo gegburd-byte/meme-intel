@@ -1145,6 +1145,141 @@ PRICE_CACHE = {}
 
 
 _live_pool_tasks: dict[str, asyncio.Task[Any]] = {}
+_live_rest_tasks: dict[str, asyncio.Task[Any]] = {}
+
+
+async def live_rest_trade_loop(mint: str) -> None:
+    """Independent exact-venue trade recovery that feeds the same live chart."""
+    seen: deque[str] = deque(maxlen=1200)
+    seen_set: set[str] = set()
+    initialized = False
+    last_legacy_poll = 0.0
+
+    try:
+        while mint in trade_hub.clients:
+            now = time.time()
+            rows = []
+
+            # Fast current Pump.fun/PumpSwap lane.
+            try:
+                swap_payload, _ = await asyncio.wait_for(
+                    pf.swap_trades(
+                        mint,
+                        limit=40,
+                        cursor=0,
+                        fresh=True,
+                    ),
+                    timeout=0.55,
+                )
+                rows.extend(parse_pump_trades(swap_payload))
+            except Exception:
+                pass
+
+            # The authenticated legacy frontend trade endpoint is a second
+            # independent source. Poll it less often so it cannot become the
+            # hot-path bottleneck or rate-limit the deployment.
+            if (
+                os.getenv("PUMP_FUN_JWT")
+                and now - last_legacy_poll >= 1.0
+            ):
+                last_legacy_poll = now
+                try:
+                    native_payload, _ = await asyncio.wait_for(
+                        pf.trades(
+                            mint,
+                            limit=40,
+                            offset=0,
+                            minimum_size=0,
+                            fresh=True,
+                        ),
+                        timeout=0.60,
+                    )
+                    rows.extend(parse_pump_trades(native_payload))
+                except Exception:
+                    pass
+
+            # Deduplicate the two exact-venue HTTP sources. Stable transaction
+            # IDs are preferred; the timestamp/price/side/volume tuple is only
+            # a last-resort ID for providers that omit signatures.
+            dedup = {}
+            for index, row in enumerate(rows):
+                try:
+                    ts = int(row.get("ts") or 0)
+                    price = float(row.get("price") or 0)
+                    volume = float(row.get("volume") or 0)
+                except (TypeError, ValueError):
+                    continue
+
+                if ts <= 0 or price <= 0:
+                    continue
+
+                stable_id = str(
+                    row.get("id")
+                    or (
+                        row.get("signature")
+                        + ":" if row.get("signature") else ""
+                    )
+                ).strip()
+
+                if not stable_id:
+                    stable_id = (
+                        f"{ts}:{price:.18g}:{volume:.18g}:"
+                        f"{str(row.get('side') or '')}:{index}"
+                    )
+
+                if stable_id in dedup:
+                    continue
+
+                dedup[stable_id] = {
+                    "id": stable_id,
+                    "signature": str(row.get("signature") or ""),
+                    "source": (
+                        "PUMPSWAP"
+                        if str(row.get("source") or "").upper() == "PUMPSWAP"
+                        else "PUMP.FUN"
+                    ),
+                    "side": str(row.get("side") or "BUY"),
+                    "price": price,
+                    "volume_sol": max(0.0, volume),
+                    "timestamp": ts,
+                }
+
+            ordered = sorted(
+                dedup.values(),
+                key=lambda item: (item["timestamp"], item["id"]),
+            )
+
+            if not initialized:
+                initialized = True
+                for item in ordered:
+                    if item["id"] not in seen_set:
+                        seen.append(item["id"])
+                        seen_set.add(item["id"])
+                await asyncio.sleep(0.30)
+                continue
+
+            for item in ordered:
+                trade_id = item["id"]
+                if trade_id in seen_set:
+                    continue
+
+                seen.append(trade_id)
+                seen_set.add(trade_id)
+                if len(seen_set) > 1100:
+                    while len(seen_set) > 900 and seen:
+                        old_id = seen.popleft()
+                        seen_set.discard(old_id)
+
+                await trade_hub.publish_external_trade(mint, item)
+
+            await asyncio.sleep(0.30)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        trade_hub.last_error = str(exc)[:300]
+    finally:
+        _live_rest_tasks.pop(mint, None)
 
 
 async def attach_live_market_addresses(mint: str) -> None:
@@ -1252,6 +1387,11 @@ async def ws_trades(websocket: WebSocket):
     await websocket.accept()
     await trade_hub.add_client(mint, websocket)
 
+    if mint not in _live_rest_tasks or _live_rest_tasks[mint].done():
+        _live_rest_tasks[mint] = asyncio.create_task(
+            live_rest_trade_loop(mint)
+        )
+
     # Start the pool lookup after the mint stream is already live. This keeps
     # first-trade latency low while adding PumpSwap coverage a moment later.
     if mint not in _live_pool_tasks or _live_pool_tasks[mint].done():
@@ -1277,6 +1417,10 @@ async def ws_trades(websocket: WebSocket):
             task = _live_pool_tasks.pop(mint, None)
             if task and not task.done():
                 task.cancel()
+
+            rest_task = _live_rest_tasks.pop(mint, None)
+            if rest_task and not rest_task.done():
+                rest_task.cancel()
 
 
 def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
