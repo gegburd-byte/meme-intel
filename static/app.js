@@ -26,6 +26,7 @@ let selectedLiveUsdPrice = 0;
 let selectedLiveUsdAt = 0;
 let livePreviewActive = false;
 let analysisBusy = false;
+let autoOpenedCandidate = false;
 
 let chart = null;
 let candleSeries = null;
@@ -927,6 +928,19 @@ function renderCandidates() {
       selectToken(btn.getAttribute("data-mint"));
     });
   });
+
+  // Bootstrap the chart from the best currently discovered token. This avoids
+  // presenting an empty chart on first load and also gives us an immediate
+  // real-data path to verify the chart backend. Manual CA entry still works
+  // normally and takes over as soon as the user opens another token.
+  if (!selectedMint && !autoOpenedCandidate && rows[0]?.mint) {
+    autoOpenedCandidate = true;
+    queueMicrotask(() => {
+      if (!selectedMint && rows[0]?.mint) {
+        selectToken(rows[0].mint).catch(() => {});
+      }
+    });
+  }
 }
 
 function initChart() {
