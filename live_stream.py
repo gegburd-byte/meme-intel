@@ -181,10 +181,22 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                 if not price or price <= 0:
                     continue
 
-                # Keep the execution price from this exact Pump.fun trade.
-                # The virtual-reserve ratio is the post-trade spot price for
-                # the next fill, not this fill's execution price. Mixing those
-                # definitions can create false chart wicks.
+                # Pump.fun's bonding-curve spot price is the virtual-reserve
+                # ratio. Keep that canonical price for the live display while
+                # native Pump.fun OHLC remains the candle authority.
+                virtual_sol = 0
+                virtual_token = 0
+                if len(payload) >= start + 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8:
+                    virtual_sol = _u64(payload, start + 89)
+                    virtual_token = _u64(payload, start + 97)
+
+                if virtual_sol > 0 and virtual_token > 0:
+                    price = (
+                        virtual_sol / 1_000_000_000
+                    ) / (
+                        virtual_token / 1_000_000
+                    )
+
                 event_ts = None
                 if len(payload) >= start + 89:
                     try:
