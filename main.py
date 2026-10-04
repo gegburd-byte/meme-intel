@@ -1307,22 +1307,35 @@ async def chart_live_trades(mint: str, limit: int = 200):
     )
 
     if live_lane_stale and os.getenv("PUMP_FUN_JWT"):
-        try:
-            native_payload, native_err = await asyncio.wait_for(
-                pf.trades(
-                    mint,
-                    limit=25,
-                    offset=0,
-                    minimum_size=0,
-                    fresh=True,
-                ),
-                timeout=0.35,
-            )
+        native_cache = getattr(
+            chart_live_trades,
+            "_native_cache",
+            {},
+        )
+        native_cached = native_cache.get(mint)
 
-            native_rows = parse_pump_trades(native_payload)
+        if (
+            native_cached
+            and now - native_cached["time"] < 0.5
+        ):
+            rows = native_cached["rows"][-limit:]
+        else:
+            try:
+                native_payload, native_err = await asyncio.wait_for(
+                    pf.trades(
+                        mint,
+                        limit=25,
+                        offset=0,
+                        minimum_size=0,
+                        fresh=True,
+                    ),
+                    timeout=0.35,
+                )
 
-            if native_rows:
-                rows = [
+                native_rows = parse_pump_trades(native_payload)
+
+                if native_rows:
+                    rows = [
                     {
                         "id": f"pump-http:{mint}:{int(row['ts'])}:{i}",
                         "signature": "",
@@ -1333,9 +1346,15 @@ async def chart_live_trades(mint: str, limit: int = 200):
                         "timestamp": int(row["ts"]),
                     }
                     for i, row in enumerate(native_rows[-limit:])
-                ]
-        except Exception:
-            pass
+                    ]
+
+                    native_cache[mint] = {
+                        "time": now,
+                        "rows": rows,
+                    }
+                    chart_live_trades._native_cache = native_cache
+            except Exception:
+                pass
 
     payload = {
         "state": "READY" if rows else (
