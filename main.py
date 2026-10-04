@@ -1178,8 +1178,11 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
 
 @app.get("/api/chart/current")
 async def chart_current(mint: str, timeframe: int = 1):
-    """Fast active-bar endpoint. Pump.fun is authoritative; live price is
-    used only as a clearly-labeled fallback when no native bar is available.
+    """Fast Pump.fun native active-candle endpoint.
+
+    When the native Pump.fun candle endpoint is unavailable, the browser uses
+    the live Pump.fun/on-chain trade stream to build the active bar itself.
+    No Helius/DexScreener price is substituted into OHLC.
     """
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
@@ -1204,6 +1207,7 @@ async def chart_current(mint: str, timeframe: int = 1):
         payload, err = None, str(exc)[:240]
 
     native = parse_pump_candles(payload)
+
     if native:
         current = max(native, key=lambda x: x.ts)
         return {
@@ -1219,49 +1223,6 @@ async def chart_current(mint: str, timeframe: int = 1):
                 "v": current.v,
             }],
             "error": None,
-            "timestamp": int(time.time()),
-        }
-
-    # Fast fallback: the live-price route populates PRICE_CACHE, so most
-    # refreshes never make another provider call. On first load, use Helius
-    # directly with a tight timeout rather than waiting on slow history APIs.
-    now = time.time()
-    cached = PRICE_CACHE.get(mint)
-    price = None
-
-    if cached and now - cached.get("time", 0) < 3.0:
-        price = (cached.get("data") or {}).get("price")
-
-    if price is None and he.source.configured:
-        try:
-            asset, _ = await asyncio.wait_for(
-                he.asset(mint),
-                timeout=1.2,
-            )
-            token_info = (asset or {}).get("token_info") or {}
-            price_info = token_info.get("price_info") or {}
-            price = float(price_info.get("price_per_token"))
-        except Exception:
-            price = None
-
-    if price is not None and float(price) > 0:
-        span = timeframe * 60
-        bucket = int(time.time() // span) * span
-        p = float(price)
-        return {
-            "state": "READY",
-            "source": "LIVE_PRICE",
-            "timeframe": timeframe,
-            "candles": [{
-                "ts": bucket,
-                "o": p,
-                "h": p,
-                "l": p,
-                "c": p,
-                "v": 0,
-            }],
-            "error": None,
-            "fallback": True,
             "timestamp": int(time.time()),
         }
 
