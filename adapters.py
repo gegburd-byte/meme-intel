@@ -558,8 +558,11 @@ class HeliusAdapter:
 
         mint = (mint or "").strip()
         timeframe = int(timeframe or 1)
-        default_lookback = int(os.getenv("CHART_HISTORY_MINUTES", "120"))
-        lookback_minutes = max(30, min(int(lookback_minutes or default_lookback), 120))
+        default_lookback = int(os.getenv("CHART_HISTORY_MINUTES", "10080"))
+        lookback_minutes = max(
+            30,
+            min(int(lookback_minutes or default_lookback), 10080),
+        )
         max_signatures = max(100, min(int(max_signatures or 1500), 1500))
 
         cache_key = (mint, timeframe, lookback_minutes, max_signatures, rpc_base or "helius")
