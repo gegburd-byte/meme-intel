@@ -443,7 +443,7 @@ class LiveTradeHub:
                 "volume_sol": float(row.get("volume_sol") or 0),
                 "timestamp": int(row.get("timestamp") or 0),
             }
-            for row in rows[-max(1, min(int(limit or 30), 50)):]
+            for row in rows[-max(1, min(int(limit or 30), 250)):]
         ]
 
     async def _recovery_loop(self, mint: str) -> None:
