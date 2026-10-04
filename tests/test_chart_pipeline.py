@@ -232,5 +232,6 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     assert "chartfix32" in html
     assert "frontend-api-v3.pump.fun/socket.io/" in app
     assert "tradeCreated" in app
+    assert "findNativePumpFunTradePayload" in app
     assert "refreshIndicatorHistory" in app
     assert "VWAP / ATR" in html
