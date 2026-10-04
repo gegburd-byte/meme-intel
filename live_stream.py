@@ -16,6 +16,7 @@ import websockets
 HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_HTTP_RPC = "https://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_ENHANCED_WS = "wss://atlas-mainnet.helius-rpc.com/?api-key={key}"
+PUMP_FUN_SOCKET_IO = "wss://frontend-api-v3.pump.fun/socket.io/?EIO=4&transport=websocket"
 
 ANCHOR_SELF_CPI_TAG = bytes([0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d])
 
@@ -274,6 +275,78 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                 continue
 
     return None
+
+
+def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
+    """Parse Pump.fun's native Engine.IO/Socket.IO tradeCreated packet."""
+    if not isinstance(raw, str) or not raw.startswith("42"):
+        return None
+
+    try:
+        packet = json.loads(raw[2:])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    if (
+        not isinstance(packet, list)
+        or len(packet) < 2
+        or packet[0] != "tradeCreated"
+        or not isinstance(packet[1], dict)
+    ):
+        return None
+
+    payload = packet[1]
+    mint = str(payload.get("mint") or "").strip()
+    signature = str(payload.get("signature") or "").strip()
+
+    try:
+        sol_amount = float(payload.get("sol_amount") or 0)
+        token_amount = float(payload.get("token_amount") or 0)
+    except (TypeError, ValueError):
+        return None
+
+    if not mint or sol_amount <= 0 or token_amount <= 0:
+        return None
+
+    price = (
+        (sol_amount / 1_000_000_000)
+        / (token_amount / 1_000_000)
+    )
+    if price <= 0:
+        return None
+
+    try:
+        timestamp = int(float(payload.get("timestamp") or 0))
+    except (TypeError, ValueError):
+        timestamp = 0
+
+    if timestamp > 10_000_000_000:
+        timestamp //= 1000
+    if timestamp < 1_500_000_000:
+        timestamp = int(time.time())
+
+    try:
+        slot = int(payload.get("slot") or 0)
+    except (TypeError, ValueError):
+        slot = 0
+
+    return {
+        "id": signature or (
+            f"pumpfun:{mint}:{timestamp}:"
+            f"{payload.get('tx_index') or payload.get('txIndex') or ''}"
+        ),
+        "signature": signature,
+        "slot": slot or None,
+        "mint": mint,
+        "source": "PUMP.FUN",
+        "venue": PUMP_PROGRAM,
+        "side": "BUY" if bool(payload.get("is_buy")) else "SELL",
+        "price": price,
+        "volume_sol": sol_amount / 1_000_000_000,
+        "token_amount": token_amount / 1_000_000,
+        "timestamp": timestamp,
+        "native_pumpfun_ws": True,
+    }
 
 
 class LiveTradeHub:
