@@ -246,75 +246,107 @@ async def skipped_x():
 
 
 def parse_pump_candles(payload):
-    """Normalize several Pump.fun/market OHLC response shapes into Candle."""
-    if isinstance(payload, list):
-        items = payload
-    elif isinstance(payload, dict):
-        data = payload.get("data") or payload.get("result") or payload
-        if isinstance(data, dict):
-            attributes = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
-            items = (
-                data.get("candles")
-                or data.get("results")
-                or data.get("ohlcv_list")
-                or data.get("items")
-                or attributes.get("candles")
-                or attributes.get("ohlcv_list")
-                or []
-            )
-        else:
-            items = data
-    else:
-        items = []
+    """Normalize Pump.fun OHLC payloads across current/legacy response shapes."""
+    def unwrap(value):
+        if isinstance(value, dict):
+            for key in ("candles", "candlesticks", "ohlcv_list", "ohlcv", "bars", "rows", "items", "results"):
+                rows = value.get(key)
+                if isinstance(rows, list):
+                    return rows
 
+            for key in ("data", "result"):
+                nested = value.get(key)
+                if isinstance(nested, (dict, list)):
+                    rows = unwrap(nested)
+                    if rows:
+                        return rows
+
+            attrs = value.get("attributes")
+            if isinstance(attrs, dict):
+                rows = unwrap(attrs)
+                if rows:
+                    return rows
+
+        return value if isinstance(value, list) else []
+
+    items = unwrap(payload)
     candles = []
 
     for item in items or []:
         try:
             if isinstance(item, dict):
-                ts = item.get("timestamp", item.get("time", item.get("ts")))
-                o = item.get("open", item.get("o"))
-                h = item.get("high", item.get("h"))
-                l = item.get("low", item.get("l"))
-                close = item.get("close", item.get("c"))
-                volume = item.get("volume", item.get("v", 0))
+                ts = (
+                    item.get("timestamp")
+                    if item.get("timestamp") is not None
+                    else item.get("time")
+                )
+                if ts is None:
+                    ts = item.get("ts") or item.get("t") or item.get("startTime")
+
+                o = item.get("open")
+                if o is None:
+                    o = item.get("o")
+                h = item.get("high")
+                if h is None:
+                    h = item.get("h")
+                low = item.get("low")
+                if low is None:
+                    low = item.get("l")
+                close = item.get("close")
+                if close is None:
+                    close = item.get("c")
+                volume = item.get("volume")
+                if volume is None:
+                    volume = item.get("v", 0)
+
             elif isinstance(item, (list, tuple)) and len(item) >= 5:
-                # Common array order: time, open, high, low, close, volume.
-                ts = item[0]
-                o, h, l, close = item[1], item[2], item[3], item[4]
+                # Common order: time, open, high, low, close, volume.
+                ts, o, h, low, close = item[:5]
                 volume = item[5] if len(item) > 5 else 0
             else:
                 continue
 
-            if ts is None or any(x is None for x in (o, h, l, close)):
-                continue
-
-            o = float(o)
-            h = float(h)
-            l = float(l)
-            close = float(close)
-
-            if not all(map(lambda x: x == x and abs(x) != float("inf"), (o, h, l, close))):
-                continue
-            if l <= 0 or min(o, close) < l or max(o, close) > h or h < l:
+            if ts is None or any(x is None for x in (o, h, low, close)):
                 continue
 
             ts = int(float(ts))
             if ts > 10_000_000_000:
                 ts //= 1000
 
-            candles.append(Candle(
-                ts=ts,
-                o=o,
-                h=h,
-                l=l,
-                c=close,
-                v=float(volume or 0),
-            ))
+            o = float(o)
+            h = float(h)
+            low = float(low)
+            close = float(close)
+            volume = float(volume or 0)
+
+            if not all(
+                x == x and abs(x) != float("inf")
+                for x in (o, h, low, close)
+            ):
+                continue
+
+            if o <= 0 or h <= 0 or low <= 0 or close <= 0:
+                continue
+
+            if low > min(o, close) or h < max(o, close) or h < low:
+                continue
+
+            if ts < 1_500_000_000:
+                continue
+
+            candles.append(
+                Candle(
+                    ts=ts,
+                    o=o,
+                    h=h,
+                    l=low,
+                    c=close,
+                    v=max(0.0, volume),
+                )
+            )
         except (TypeError, ValueError, IndexError):
             continue
 
-    candles.sort(key=lambda x: x.ts)
     deduped = {c.ts: c for c in candles}
     return list(sorted(deduped.values(), key=lambda x: x.ts))
 
@@ -449,7 +481,16 @@ def parse_pump_trades(payload):
 
 
 def aggregate_pump_trade_candles(payloads, timeframe=1, limit=120):
-    span = max(60, int(timeframe or 1) * 60)
+    raw = str(timeframe or "1").strip().lower()
+
+    if raw in {"1s", "1sec", "1second"}:
+        span = 1
+    else:
+        try:
+            span = max(60, int(float(raw)) * 60)
+        except (TypeError, ValueError):
+            span = 60
+
     buckets = {}
 
     for payload in payloads or []:
@@ -468,13 +509,22 @@ def aggregate_pump_trade_candles(payloads, timeframe=1, limit=120):
                     "l": price,
                     "c": price,
                     "v": float(trade["volume"]),
+                    "_first_ts": ts,
+                    "_last_ts": ts,
                 }
                 continue
 
             row["h"] = max(row["h"], price)
             row["l"] = min(row["l"], price)
-            row["c"] = price
             row["v"] += float(trade["volume"])
+
+            if ts < row["_first_ts"]:
+                row["_first_ts"] = ts
+                row["o"] = price
+
+            if ts >= row["_last_ts"]:
+                row["_last_ts"] = ts
+                row["c"] = price
 
     rows = sorted(
         buckets.values(),
@@ -492,7 +542,6 @@ def aggregate_pump_trade_candles(payloads, timeframe=1, limit=120):
         )
         for row in rows
     ]
-
 
 def closed_candles(candles, seconds_per_candle):
     now = int(time.time())
@@ -1069,14 +1118,14 @@ def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
 
 
 @app.get("/api/chart/live-trades")
-async def chart_live_trades(mint: str, limit: int = 30):
+async def chart_live_trades(mint: str, limit: int = 200):
     """Return the newest trade stream data without changing chart price units."""
     mint = (mint or "").strip()
 
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
-    limit = max(1, min(int(limit or 30), 50))
+    limit = max(1, min(int(limit or 30), 200))
     now = time.time()
 
     cache = getattr(
@@ -1409,60 +1458,107 @@ async def chart_meta(mint: str):
     }
 
 
+def normalize_chart_interval(timeframe="1m", interval=None):
+    raw = str(interval if interval is not None else timeframe).strip().lower()
+
+    aliases = {
+        "1s": ("1s", 1),
+        "1sec": ("1s", 1),
+        "1second": ("1s", 1),
+        "1m": ("1m", 1),
+        "1min": ("1m", 1),
+        "5m": ("5m", 5),
+        "5min": ("5m", 5),
+        "15m": ("15m", 15),
+        "15min": ("15m", 15),
+        "1h": ("1h", 60),
+        "60m": ("1h", 60),
+    }
+
+    if raw in aliases:
+        return aliases[raw]
+
+    try:
+        minutes = int(float(raw))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Unsupported timeframe")
+
+    mapping = {
+        1: ("1m", 1),
+        5: ("5m", 5),
+        15: ("15m", 15),
+        60: ("1h", 60),
+    }
+
+    if minutes not in mapping:
+        raise HTTPException(400, "Unsupported timeframe")
+
+    return mapping[minutes]
+
+
 @app.get("/api/chart/history")
-async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
-    """Fast historical backfill with Pump.fun as the preferred source."""
+async def chart_history(
+    mint: str,
+    timeframe: str = "1m",
+    limit: int = 120,
+    interval: str | None = None,
+):
+    """Return real Pump.fun/PumpSwap OHLC history without cross-venue substitution."""
     mint = (mint or "").strip()
 
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
-    if timeframe not in {1, 5, 15, 60}:
-        raise HTTPException(400, "Unsupported timeframe")
+    chart_interval, timeframe_minutes = normalize_chart_interval(
+        timeframe,
+        interval,
+    )
 
     limit = max(30, min(int(limit or 120), 120))
 
-    cache_key = (mint, timeframe, limit)
+    cache_key = (mint, chart_interval, limit)
     cached = getattr(chart_history, "_cache", {}).get(cache_key)
     now = time.time()
 
-    if cached and now - cached["time"] < 8.0:
+    if cached and now - cached["time"] < 8.0 and cached["payload"].get("candles"):
         return cached["payload"]
 
     async def native_history():
+        if chart_interval == "1s":
+            return "PUMP.FUN", [], "PUMPFUN_1S_NATIVE_UNSUPPORTED"
+
         try:
             payload, err = await asyncio.wait_for(
                 pf.candles(
                     mint,
                     limit=limit,
-                    timeframe=timeframe,
+                    timeframe=timeframe_minutes,
                     offset=0,
                     fresh=True,
                 ),
-                timeout=1.0,
+                timeout=1.5,
             )
             rows = parse_pump_candles(payload)
-            return "PUMP.FUN", rows, err
+            if rows and chart_data_quality(rows, minimum_bars=1) > 0:
+                return "PUMP.FUN", rows, err
+            return "PUMP.FUN", [], err or "NO_NATIVE_CANDLES"
         except Exception as exc:
             return "PUMP.FUN", [], str(exc)[:240]
 
     async def pump_trade_history():
         try:
+            page_count = 6 if chart_interval == "1s" else 3
             results = await asyncio.gather(
-                pf.trades(
-                    mint,
-                    limit=200,
-                    offset=0,
-                    minimum_size=0,
-                    fresh=True,
-                ),
-                pf.trades(
-                    mint,
-                    limit=200,
-                    offset=200,
-                    minimum_size=0,
-                    fresh=True,
-                ),
+                *[
+                    pf.trades(
+                        mint,
+                        limit=200,
+                        offset=page * 200,
+                        minimum_size=0,
+                        fresh=True,
+                    )
+                    for page in range(page_count)
+                ],
                 return_exceptions=True,
             )
 
@@ -1478,184 +1574,214 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
 
             rows = aggregate_pump_trade_candles(
                 payloads,
-                timeframe=timeframe,
+                timeframe=chart_interval,
                 limit=limit,
             )
 
-            return "PUMP.FUN TRADE HISTORY", rows, (
-                None if rows else "NO_TRADES_DECODED"
+            return (
+                "PUMP.FUN TRADE HISTORY",
+                rows,
+                None if rows else "NO_TRADES_DECODED",
             )
         except Exception as exc:
             return "PUMP.FUN TRADE HISTORY", [], str(exc)[:240]
 
     async def helius_history():
         try:
+            pool_address = None
+
+            try:
+                coin, _ = await asyncio.wait_for(
+                    pf.coin(mint),
+                    timeout=1.25,
+                )
+                if isinstance(coin, dict):
+                    pool_address = (
+                        coin.get("pump_swap_pool")
+                        or coin.get("pumpSwapPool")
+                        or coin.get("pool")
+                    )
+            except Exception:
+                pool_address = None
+
+            lookback_minutes = (
+                max(10, int((limit + 59) // 60) + 2)
+                if chart_interval == "1s"
+                else max(120, limit * timeframe_minutes)
+            )
+
             rows, err = await asyncio.wait_for(
                 he.historical_trade_candles(
                     mint,
-                    timeframe=timeframe,
-                    lookback_minutes=min(
-                        10080,
-                        max(120, limit * timeframe),
-                    ),
+                    timeframe=chart_interval,
+                    lookback_minutes=lookback_minutes,
                     max_signatures=1500,
+                    extra_addresses=[pool_address] if pool_address else None,
                 ),
                 timeout=7.0,
             )
+
             return "HELIUS_ONCHAIN_TRADES", rows or [], err
         except Exception as exc:
             return "HELIUS_ONCHAIN_TRADES", [], str(exc)[:240]
 
-    native_task = asyncio.create_task(native_history())
-
-    # Accuracy-first fallback chain:
-    # 1. Pump.fun native OHLC when authenticated/available.
-    # 2. Pump.fun's own trade history when authenticated/available.
-    # 3. Helius on-chain Pump.fun TradeEvent reconstruction.
-    #
-    # GeckoTerminal is deliberately NOT a chart fallback because its venue/
-    # quote units can differ from Pump.fun. A chart that is empty is preferable
-    # to a visually convincing but wrong price series.
-    primary_fallback_tasks = [
+    tasks = [
         asyncio.create_task(pump_trade_history()),
         asyncio.create_task(helius_history()),
     ]
 
-    native_source, native_rows, native_err = await native_task
+    if chart_interval != "1s":
+        native_task = asyncio.create_task(native_history())
+        tasks.insert(0, native_task)
+    else:
+        native_task = None
 
-    if native_rows:
-        payload = {
-            "state":"READY",
-            "source":"PUMP.FUN",
-            "candles":[
-                {
-                    "ts":c.ts,
-                    "o":c.o,
-                    "h":c.h,
-                    "l":c.l,
-                    "c":c.c,
-                    "v":c.v,
-                }
-                for c in sorted(native_rows,key=lambda x:x.ts)[-limit:]
-            ],
-            "error":None,
-            "timestamp":int(time.time()),
-        }
+    if native_task is not None:
+        native_source, native_rows, native_err = await native_task
 
-        for task in primary_fallback_tasks:
-            if not task.done():
-                task.cancel()
+        if native_rows:
+            payload = {
+                "state": "READY",
+                "source": "PUMP.FUN",
+                "candles": [
+                    {
+                        "ts": c.ts,
+                        "o": c.o,
+                        "h": c.h,
+                        "l": c.l,
+                        "c": c.c,
+                        "v": c.v,
+                    }
+                    for c in sorted(native_rows, key=lambda x: x.ts)[-limit:]
+                ],
+                "error": None,
+                "timestamp": int(time.time()),
+            }
 
-        await asyncio.gather(
-            *primary_fallback_tasks,
-            return_exceptions=True,
-        )
+            for task in tasks:
+                if task is not native_task and not task.done():
+                    task.cancel()
 
-        chart_history._cache = getattr(chart_history, "_cache", {})
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        if len(chart_history._cache) > 64:
-            chart_history._cache.clear()
-
-        chart_history._cache[cache_key] = {
-            "time":time.time(),
-            "payload":payload,
-        }
-
-        return payload
+            chart_history._cache = getattr(chart_history, "_cache", {})
+            chart_history._cache[cache_key] = {
+                "time": time.time(),
+                "payload": payload,
+            }
+            return payload
 
     fallback_errors = []
 
-    for task in asyncio.as_completed(primary_fallback_tasks):
+    for task in asyncio.as_completed(
+        [t for t in tasks if t is not native_task]
+    ):
         try:
             source, rows, err = await task
         except Exception as exc:
             fallback_errors.append(str(exc)[:180])
             continue
 
-        if rows:
+        if rows and chart_data_quality(rows, minimum_bars=1) > 0:
             payload = {
-                "state":"READY",
-                "source":source,
-                "candles":[
+                "state": "READY",
+                "source": source,
+                "candles": [
                     {
-                        "ts":c.ts,
-                        "o":c.o,
-                        "h":c.h,
-                        "l":c.l,
-                        "c":c.c,
-                        "v":c.v,
+                        "ts": c.ts,
+                        "o": c.o,
+                        "h": c.h,
+                        "l": c.l,
+                        "c": c.c,
+                        "v": c.v,
                     }
-                    for c in sorted(rows,key=lambda x:x.ts)[-limit:]
+                    for c in sorted(rows, key=lambda x: x.ts)[-limit:]
                 ],
-                "error":None,
-                "timestamp":int(time.time()),
+                "error": None,
+                "timestamp": int(time.time()),
             }
 
-            for other in primary_fallback_tasks:
+            for other in tasks:
                 if not other.done():
                     other.cancel()
 
-            await asyncio.gather(
-                *primary_fallback_tasks,
-                return_exceptions=True,
-            )
+            await asyncio.gather(*tasks, return_exceptions=True)
 
             chart_history._cache = getattr(chart_history, "_cache", {})
-
-            if len(chart_history._cache) > 64:
-                chart_history._cache.clear()
-
             chart_history._cache[cache_key] = {
-                "time":time.time(),
-                "payload":payload,
+                "time": time.time(),
+                "payload": payload,
             }
-
             return payload
 
         fallback_errors.append(str(err or source)[:180])
 
-    payload = {
-        "state":"NO_CANDLES",
-        "source":"NONE",
-        "candles":[],
-        "error":(
-            native_err
-            or "; ".join(fallback_errors)
-            or "NO_PUMPFUN_HISTORY"
-        ),
-        "timestamp":int(time.time()),
+    # Never cache a transient empty result. Upstream timeouts/auth failures and
+    # very new tokens can resolve moments later; caching an empty payload here
+    # used to make a broken chart stay broken for several seconds.
+    return {
+        "state": "NO_CANDLES",
+        "source": "NONE",
+        "candles": [],
+        "error": "; ".join(
+            [x for x in fallback_errors if x]
+        )[:600] or "NO_PUMPFUN_HISTORY",
+        "timestamp": int(time.time()),
     }
-
-    chart_history._cache = getattr(chart_history, "_cache", {})
-    chart_history._cache[cache_key] = {
-        "time":time.time(),
-        "payload":payload,
-    }
-
-    return payload
-
 
 @app.get("/api/chart/current")
-async def chart_current(mint: str, timeframe: int = 1):
-    """Fast Pump.fun native active-candle endpoint.
-
-    When the native Pump.fun candle endpoint is unavailable, the browser uses
-    the live Pump.fun/on-chain trade stream to build the active bar itself.
-    No Helius/DexScreener price is substituted into OHLC.
-    """
+async def chart_current(
+    mint: str,
+    timeframe: str = "1m",
+    interval: str | None = None,
+):
+    """Return the current real Pump.fun/PumpSwap bar for the requested interval."""
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
-    if timeframe not in {1, 5, 15, 60}:
-        raise HTTPException(400, "Unsupported timeframe")
+    chart_interval, timeframe_minutes = normalize_chart_interval(
+        timeframe,
+        interval,
+    )
+
+    if chart_interval == "1s":
+        live = trade_hub.current_candle(
+            mint,
+            timeframe="1s",
+        )
+        if live:
+            return {
+                "state": "READY",
+                "source": live.get("source", "PUMP.FUN LIVE TRADES"),
+                "timeframe": "1s",
+                "candles": [{
+                    "ts": int(live["ts"]),
+                    "o": float(live["o"]),
+                    "h": float(live["h"]),
+                    "l": float(live["l"]),
+                    "c": float(live["c"]),
+                    "v": float(live.get("v") or 0),
+                }],
+                "error": None,
+                "timestamp": int(time.time()),
+            }
+
+        return {
+            "state": "NO_CANDLES",
+            "source": "PUMP.FUN LIVE TRADES",
+            "timeframe": "1s",
+            "candles": [],
+            "error": "NO_CURRENT_1S_TRADE",
+            "timestamp": int(time.time()),
+        }
 
     try:
         payload, err = await asyncio.wait_for(
             pf.candles(
                 mint,
                 limit=5,
-                timeframe=timeframe,
+                timeframe=timeframe_minutes,
                 offset=0,
                 fresh=True,
             ),
@@ -1673,7 +1799,7 @@ async def chart_current(mint: str, timeframe: int = 1):
         return {
             "state": "READY",
             "source": "PUMP.FUN",
-            "timeframe": timeframe,
+            "timeframe": chart_interval,
             "candles": [{
                 "ts": current.ts,
                 "o": current.o,
@@ -1686,16 +1812,15 @@ async def chart_current(mint: str, timeframe: int = 1):
             "timestamp": int(time.time()),
         }
 
-    # Native Pump.fun OHLC is authoritative. If the native HTTP endpoint is
-    # unavailable (including JWT-protected deployments), fall back to the
-    # already-decoded Pump.fun websocket trades in memory. This keeps the active
-    # candle moving without substituting DexScreener/Helius asset prices into OHLC.
-    live = trade_hub.current_candle(mint, timeframe=timeframe)
+    live = trade_hub.current_candle(
+        mint,
+        timeframe=timeframe_minutes,
+    )
     if live:
         return {
             "state": "READY",
             "source": live.get("source", "PUMP.FUN LIVE TRADES"),
-            "timeframe": timeframe,
+            "timeframe": chart_interval,
             "candles": [{
                 "ts": int(live["ts"]),
                 "o": float(live["o"]),
@@ -1711,12 +1836,11 @@ async def chart_current(mint: str, timeframe: int = 1):
     return {
         "state": "NO_CANDLES",
         "source": "PUMP.FUN",
-        "timeframe": timeframe,
+        "timeframe": chart_interval,
         "candles": [],
         "error": err or "NO_CURRENT_CANDLE",
         "timestamp": int(time.time()),
     }
-
 
 @app.get("/api/live/price")
 async def live_price(mint: str):
