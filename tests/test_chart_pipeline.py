@@ -41,3 +41,37 @@ def test_malformed_native_candle_is_rejected():
         }
     ])
     assert candles == []
+
+
+def test_parse_pump_trade_history_uses_virtual_reserve_price():
+    from main import parse_pump_trades, aggregate_pump_trade_candles
+
+    rows = parse_pump_trades([
+        {
+            "timestamp": 1_700_000_000,
+            "sol_amount": 1_000_000_000,
+            "token_amount": 1_000_000_000,
+            "virtual_sol_reserves": 30_000_000_000,
+            "virtual_token_reserves": 1_000_000_000_000_000,
+        }
+    ])
+
+    assert len(rows) == 1
+    assert rows[0]["price"] > 0
+
+    candles = aggregate_pump_trade_candles(
+        [[
+            {
+                "timestamp": 1_700_000_000,
+                "sol_amount": 1_000_000_000,
+                "token_amount": 1_000_000_000,
+                "virtual_sol_reserves": 30_000_000_000,
+                "virtual_token_reserves": 1_000_000_000_000_000,
+            }
+        ]],
+        timeframe=1,
+        limit=10,
+    )
+
+    assert len(candles) == 1
+    assert candles[0].h == candles[0].c
