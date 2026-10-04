@@ -32,6 +32,7 @@ let markersApi = null;
 let chartInitialized = false;
 
 let chartTimeframe = 1;
+let chartInterval = "1m";
 let chartDataSource = "PUMP.FUN";
 let chartDisplayMode = "PRICE";
 let selectedSupply = 0;
@@ -428,7 +429,19 @@ function cleanSymbol(v) {
 }
 
 function timeframeLabel(tf = chartTimeframe) {
+  if (typeof tf === "string") return tf;
   return tf === 1 ? "1m" : tf === 5 ? "5m" : tf === 15 ? "15m" : "1h";
+}
+
+function timeframeSeconds() {
+  if (chartInterval === "1s") return 1;
+  return Math.max(60, Number(chartTimeframe || 1) * 60);
+}
+
+function backendTimeframe() {
+  return chartInterval === "1s"
+    ? 1
+    : Number(chartTimeframe || 1);
 }
 
 function setSource(dotId, textId, state, goodStates) {
@@ -1159,11 +1172,14 @@ function normalizeTradeForChart(trade) {
 }
 
 function aggregateCandles(source, tfMinutes) {
-  if (tfMinutes === 1) {
+  const span =
+    tfMinutes === "1s"
+      ? 1
+      : Math.max(60, Number(tfMinutes || 1) * 60);
+
+  if (span === 60) {
     return source.map(x=>({...x}));
   }
-
-  const span = tfMinutes * 60;
   const buckets = new Map();
 
   for (const c of source) {
@@ -1750,13 +1766,19 @@ async function fetchInitialHistory() {
 }
 
 async function fetchFastHistoricalBackfill(generation) {
-  if (!selectedMint || generation !== historyGeneration) return false;
+  if (
+    !selectedMint ||
+    generation !== historyGeneration ||
+    chartInterval === "1s"
+  ) {
+    return false;
+  }
 
   try {
     const r = await fetch(
       "/api/chart/history?mint=" +
       encodeURIComponent(selectedMint) +
-      "&timeframe=" + chartTimeframe +
+      "&timeframe=" + backendTimeframe() +
       "&limit=120&t=" + Date.now(),
       {cache:"no-store"}
     );
@@ -1852,10 +1874,13 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
 }
 
 function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
-  const span = Math.max(
-    60,
-    Number(tfMinutes || 1) * 60
-  );
+  const span =
+    tfMinutes === "1s"
+      ? 1
+      : Math.max(
+          60,
+          Number(tfMinutes || 1) * 60
+        );
 
   const rows = new Map();
 
@@ -1955,10 +1980,7 @@ function updateCandleFromLiveTrade(trade) {
     return false;
   }
 
-  const span = Math.max(
-    60,
-    Number(chartTimeframe || 1) * 60
-  );
+  const span = timeframeSeconds();
 
   const bucket =
     Math.floor(ts / span) * span;
@@ -2190,6 +2212,8 @@ async function pollLivePrice() {
 async function syncCurrentPumpCandle() {
   if (!selectedMint) return;
 
+  if (chartInterval === "1s") return;
+
   if (currentCandleSyncInFlight) {
     currentCandleSyncQueued = true;
     // Callers only wait on the in-flight request. The periodic loop owns
@@ -2328,16 +2352,17 @@ function startCurrentCandleSync() {
   const tick = async () => {
     if (!selectedMint) return;
 
-    // Wait for each pass before scheduling the next one. This prevents
-    // overlapping HTTP calls on slow connections and keeps the cadence
-    // predictable on low-power devices.
-    await syncCurrentPumpCandle();
+    if (chartInterval !== "1s") {
+      await syncCurrentPumpCandle();
+    }
 
     if (!selectedMint) return;
 
+    // Fast native reconciliation lane; actual websocket trades still update
+    // immediately without waiting for this HTTP path.
     currentCandleSyncTimer = setTimeout(
       tick,
-      850
+      300
     );
   };
 
@@ -2511,14 +2536,35 @@ function connectLiveTrade(mint) {
 }
 
 async function setTimeframe(tf) {
-  tf = Number(tf);
+  const requested =
+    typeof tf === "string"
+      ? tf
+      : String(tf);
 
-  if (![1,5,15,60].includes(tf)) return;
-  if (tf === chartTimeframe && selectedCandles.length) return;
+  if (![
+    "1s",
+    "1m",
+    "5m",
+    "15m",
+    "1h"
+  ].includes(requested)) {
+    return;
+  }
 
-  chartTimeframe = tf;
+  if (requested === chartInterval && selectedCandles.length) {
+    return;
+  }
+
+  chartInterval = requested;
+
+  chartTimeframe =
+    requested === "1s" ? 1 :
+    requested === "1m" ? 1 :
+    requested === "5m" ? 5 :
+    requested === "15m" ? 15 :
+    60;
+
   historyGeneration++;
-
   historyBusy = false;
   historyHasMore = true;
   historyNextOffset = 0;
@@ -2527,13 +2573,44 @@ async function setTimeframe(tf) {
   document.querySelectorAll(".tf").forEach(btn=>{
     btn.classList.toggle(
       "active",
-      Number(btn.dataset.tf) === chartTimeframe
+      btn.dataset.tf === chartInterval
     );
   });
 
-  // Keep the chart populated immediately on every timeframe switch. The
-  // canonical 1m history is already in memory, so 5m/15m/1h are deterministic
-  // resamples rather than a blank screen waiting for another provider.
+  // 1-second mode is live-only. It is built from actual trade events, never
+  // by pretending that a 1m OHLC candle contains second-by-second prices.
+  if (chartInterval === "1s") {
+    selectedCandles = aggregateLiveTrades(
+      selectedTrades,
+      "1s"
+    );
+
+    livePreviewActive = true;
+    historyBarsLoaded = selectedCandles.length;
+
+    if (selectedCandles.length) {
+      renderChart(selectedCandles,true);
+    } else if (chartInitialized) {
+      candleSeries.setData([]);
+      volumeSeries.setData([]);
+      ema9Series.setData([]);
+      ema21Series.setData([]);
+      markersApi.setMarkers([]);
+    }
+
+    $("chartMode").textContent =
+      selectedCandles.length
+        ? "LIVE PUMP.FUN · 1s · " + selectedCandles.length + " BARS"
+        : "WAITING FOR REAL 1s TRADES…";
+
+    $("historyStatus").textContent =
+      selectedCandles.length
+        ? selectedCandles.length.toLocaleString() + " bars"
+        : "live…";
+
+    return;
+  }
+
   if (selectedMinuteCandles.length) {
     selectedCandles = aggregateCandles(
       selectedMinuteCandles,
@@ -2556,22 +2633,18 @@ async function setTimeframe(tf) {
       chartTimeframe
     );
 
-    chartDataSource =
-      chartDataSource || "PUMP.FUN";
     livePreviewActive = true;
     historyBarsLoaded = selectedCandles.length;
 
     if (selectedCandles.length) {
       renderChart(selectedCandles,true);
     }
-  } else if (!selectedCandles.length) {
-    if (chartInitialized) {
-      candleSeries.setData([]);
-      volumeSeries.setData([]);
-      ema9Series.setData([]);
-      ema21Series.setData([]);
-      markersApi.setMarkers([]);
-    }
+  } else if (chartInitialized) {
+    candleSeries.setData([]);
+    volumeSeries.setData([]);
+    ema9Series.setData([]);
+    ema21Series.setData([]);
+    markersApi.setMarkers([]);
   }
 
   $("chartMode").textContent =
@@ -2585,8 +2658,6 @@ async function setTimeframe(tf) {
       ? selectedCandles.length.toLocaleString() + " bars"
       : "loading…";
 
-  // Refresh from the authoritative backend in the background. The local
-  // resample remains visible if a provider is slow or unavailable.
   fetchInitialHistory().catch(()=>{});
 }
 
@@ -2777,11 +2848,12 @@ async function selectToken(mint) {
   historyNextOffset = 0;
   historyBarsLoaded = 0;
   chartTimeframe = 1;
+  chartInterval = "1m";
 
   document.querySelectorAll(".tf").forEach(btn=>{
     btn.classList.toggle(
       "active",
-      Number(btn.dataset.tf) === 1
+      btn.dataset.tf === "1m"
     );
   });
 
@@ -2996,7 +3068,7 @@ document.addEventListener("DOMContentLoaded",()=>{
       btn.addEventListener(
         "click",
         ()=>setTimeframe(
-          Number(btn.dataset.tf)
+          btn.dataset.tf
         )
       );
     });
