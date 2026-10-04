@@ -6,6 +6,7 @@ from live_stream import (
     PUMP_AMM_BUY_DISC,
     PUMP_TRADE_DISC,
     parse_live_trade,
+    parse_pumpfun_socket_trade,
 )
 
 
@@ -371,3 +372,31 @@ def test_parse_swap_trade_prefers_executed_amounts_over_virtual_reserves():
     assert len(rows) == 1
     assert abs(rows[0]["price"] - 0.007) < 1e-12
     assert rows[0]["volume"] == 0.007
+
+
+def test_parse_native_pumpfun_socket_trade_packet():
+    import json
+
+    payload = {
+        "signature": "native-sig",
+        "sol_amount": 7_000_000,
+        "token_amount": 1_000_000,
+        "is_buy": True,
+        "timestamp": 1_700_000_000,
+        "mint": "So11111111111111111111111111111111111111112",
+        "slot": 123,
+    }
+    raw = "42" + json.dumps(["tradeCreated", payload])
+
+    trade = parse_pumpfun_socket_trade(raw)
+
+    assert trade is not None
+    assert trade["signature"] == "native-sig"
+    assert trade["source"] == "PUMP.FUN"
+    assert trade["price"] == 0.007
+    assert trade["volume_sol"] == 0.007
+    assert trade["timestamp"] == 1_700_000_000
+
+
+def test_native_pumpfun_socket_heartbeat_packet_is_not_a_trade():
+    assert parse_pumpfun_socket_trade("2") is None
