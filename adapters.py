@@ -607,15 +607,23 @@ class HeliusAdapter:
         rows = []
         seen = set()
 
-        # Query the token mint plus the PumpSwap pool when one is known. A
-        # migrated token can have very sparse/no mint-address signatures even
-        # though its live AMM transactions are recorded against the pool.
+        # Query the token mint and any PumpSwap pool with a balanced
+        # per-address budget. A migrated token can have many ordinary mint
+        # signatures that would otherwise exhaust the whole history budget before
+        # the AMM pool is examined.
+        per_address_cap = max(
+            100,
+            (max_signatures + len(addresses) - 1) // len(addresses),
+        )
+
         for address in addresses:
             before = None
+            address_rows = 0
 
-            while len(rows) < max_signatures:
+            while address_rows < per_address_cap and len(rows) < max_signatures:
                 page_limit = min(
                     100 if rpc_base else 1000,
+                    per_address_cap - address_rows,
                     max_signatures - len(rows),
                 )
                 params = {
@@ -648,6 +656,7 @@ class HeliusAdapter:
                         continue
                     seen.add(signature)
                     rows.append(item)
+                    address_rows += 1
 
                 block_times = [
                     int(item.get("blockTime"))
