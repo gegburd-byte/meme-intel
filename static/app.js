@@ -54,6 +54,7 @@ let historyBarsLoaded = 0;
 
 let renderScheduled = false;
 let liveTradeBackoff = 500;
+let lastLiveTradeAtMs = 0;
 
 const PAGE_SIZE = 30;
 const MAX_HISTORY_BARS = 120;
@@ -2117,6 +2118,8 @@ function applyLiveTrade(rawTrade, record = true) {
     return;
   }
 
+  lastLiveTradeAtMs = Date.now();
+
   const chartTrade = normalizeTradeForChart(t);
   const recordedTrade = record
     ? {
@@ -2306,7 +2309,21 @@ async function syncCurrentPumpCandle() {
           selectedCandles.length - 1
         ];
 
-      // Pump.fun native OHLC is authoritative for the active bucket.
+      // The native HTTP candle endpoint can lag the live trade stream. During
+      // a recent trade burst, never replace the newer event-driven current bar
+      // with an older/stale HTTP snapshot.
+      if (
+        livePreviewActive &&
+        current &&
+        incoming &&
+        incoming.time === current.time &&
+        Date.now() - lastLiveTradeAtMs < 2000
+      ) {
+        return;
+      }
+
+      // Pump.fun native OHLC is authoritative when it is caught up to the
+      // live event stream.
       // The live websocket only provides an immediate low-latency preview.
       if (
         current &&
