@@ -4154,6 +4154,13 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
+
+  // Run Pump.fun's own Socket.IO trade feed directly in the browser as a
+  // second real-time lane. The backend stream remains the primary on-chain
+  // path, but this prevents a quiet/stalled backend websocket from freezing
+  // the visible chart. Both lanes are deduplicated before they reach the tape.
+  connectNativePumpFunTrades(mint);
+
   // The backend live connection starts its recovery timers itself.
   // Do not start duplicate polling loops here.
   loadChartMeta(mint);
