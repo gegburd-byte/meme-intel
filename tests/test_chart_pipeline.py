@@ -102,3 +102,16 @@ def test_chart_history_has_no_gecko_source():
     assert "GECKOTERMINAL" not in history
     assert "PUMP.FUN TRADE HISTORY" in history
     assert "HELIUS_ONCHAIN_TRADES" in history
+
+
+def test_live_trade_endpoint_uses_pumpfun_semantic_units():
+    from pathlib import Path
+
+    source = Path("main.py").read_text()
+    start = source.index('@app.get("/api/chart/live-trades")')
+    end = source.index('@app.get("/api/chart")', start)
+    endpoint = source[start:end]
+
+    assert "pf.trades(" in endpoint
+    assert "parse_pump_trades" in endpoint
+    assert "GECKO" not in endpoint
