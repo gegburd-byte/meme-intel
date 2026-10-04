@@ -1262,10 +1262,12 @@ function parseNativePumpFunTrade(raw) {
         String(raw.tx_index ?? raw.txIndex ?? ""))
     ),
     signature:String(raw.signature || ""),
+    timestamp,
     time:timestamp,
     price,
     side:raw.is_buy ? "BUY" : "SELL",
     volumeSol:solAmount / 1_000_000_000,
+    volume_sol:solAmount / 1_000_000_000,
     source:"PUMP.FUN",
     nativePumpFun:true
   };
@@ -2783,15 +2785,15 @@ async function syncCurrentPumpCandle() {
           selectedCandles.length - 1
         ];
 
-      // The native HTTP candle endpoint can lag the live trade stream. During
-      // a recent trade burst, never replace the newer event-driven current bar
-      // with an older/stale HTTP snapshot.
+      // Once real Pump.fun trade events are moving the active candle,
+      // never repaint that same bucket from the slower HTTP snapshot. The
+      // native trade stream is the live candle authority; HTTP is allowed to
+      // advance us to a genuinely newer completed/current bucket only.
       if (
         livePreviewActive &&
         current &&
         incoming &&
-        incoming.time === current.time &&
-        Date.now() - lastLiveTradeAtMs < 5000
+        incoming.time === current.time
       ) {
         return;
       }
