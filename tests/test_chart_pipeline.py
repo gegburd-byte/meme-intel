@@ -221,3 +221,16 @@ def test_parse_pump_trade_history_preserves_side():
 
     assert rows
     assert rows[0]["side"] == "SELL"
+
+
+def test_frontend_uses_current_pumpfun_v3_socket():
+    from pathlib import Path
+
+    html = Path("static/index.html").read_text()
+    app = Path("static/app.js").read_text()
+
+    assert "chartfix32" in html
+    assert "frontend-api-v3.pump.fun/socket.io/" in app
+    assert "tradeCreated" in app
+    assert "refreshIndicatorHistory" in app
+    assert "VWAP / ATR" in html

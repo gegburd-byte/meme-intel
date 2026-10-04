@@ -15,6 +15,9 @@ let currentCandleSyncQueued = false;
 let liveTradeCacheTimer = null;
 let liveTradeCacheBusy = false;
 let liveTradeCacheGeneration = 0;
+let lastIndicatorCandleTime = 0;
+let lastIndicatorState = "WAIT";
+let selectedMinuteGeneration = 0;
 
 let pumpEvents = [];
 let marketCandidates = [];
@@ -554,8 +557,168 @@ function rsi(values, period = 14) {
   return 100 - (100 / (1 + avgGain / avgLoss));
 }
 
-function signalFromCandles(candles, endIndex = candles.length - 1) {
-  if (!candles.length || endIndex < 0) {
+function atr(candles, period = 14) {
+  if (!candles || candles.length < period + 1) {
+    return null;
+  }
+
+  const tr = [];
+
+  for (let i=1;i<candles.length;i++) {
+    const current = candles[i];
+    const previous = candles[i - 1];
+
+    const h = Number(current.h);
+    const l = Number(current.l);
+    const pc = Number(previous.c);
+
+    if (
+      !Number.isFinite(h) ||
+      !Number.isFinite(l) ||
+      !Number.isFinite(pc)
+    ) {
+      continue;
+    }
+
+    tr.push(
+      Math.max(
+        h - l,
+        Math.abs(h - pc),
+        Math.abs(l - pc)
+      )
+    );
+  }
+
+  if (tr.length < period) {
+    return null;
+  }
+
+  return (
+    tr
+      .slice(-period)
+      .reduce((a,b)=>a+b,0) /
+    period
+  );
+}
+
+function vwap(candles, lookback = 30) {
+  const rows =
+    candles.slice(
+      -Math.max(1,lookback)
+    );
+
+  let pv = 0;
+  let volume = 0;
+  let closeSum = 0;
+  let closeCount = 0;
+
+  for (const candle of rows) {
+    const high = Number(candle.h);
+    const low = Number(candle.l);
+    const close = Number(candle.c);
+    const vol = Math.max(
+      0,
+      Number(candle.v || 0)
+    );
+
+    if (
+      !Number.isFinite(high) ||
+      !Number.isFinite(low) ||
+      !Number.isFinite(close)
+    ) {
+      continue;
+    }
+
+    const typical =
+      (high + low + close) / 3;
+
+    if (vol > 0) {
+      pv += typical * vol;
+      volume += vol;
+    }
+
+    closeSum += close;
+    closeCount++;
+  }
+
+  if (volume > 0) {
+    return pv / volume;
+  }
+
+  return closeCount
+    ? closeSum / closeCount
+    : null;
+}
+
+function liveTradePressure() {
+  const rows =
+    selectedTrades.slice(-120);
+
+  let buy = 0;
+  let sell = 0;
+
+  for (const trade of rows) {
+    const volume = Math.max(
+      0,
+      Number(
+        trade.chartVolume ??
+        trade.volumeSol ??
+        trade.volume_sol ??
+        0
+      )
+    );
+
+    if (
+      String(trade.side || "")
+        .toUpperCase() === "SELL"
+    ) {
+      sell += volume || 1;
+    } else {
+      buy += volume || 1;
+    }
+  }
+
+  const total =
+    buy + sell;
+
+  return total > 0
+    ? buy / total
+    : null;
+}
+
+function currentIndicatorCandles(fallback) {
+  if (
+    selectedMinuteCandles.length >= 21
+  ) {
+    return selectedMinuteCandles;
+  }
+
+  if (
+    chartInterval === "1s" &&
+    selectedTrades.length
+  ) {
+    const liveMinutes =
+      aggregateLiveTrades(
+        selectedTrades,
+        "1m"
+      );
+
+    if (liveMinutes.length) {
+      return liveMinutes;
+    }
+  }
+
+  return fallback;
+}
+
+function signalFromCandles(
+  candles,
+  endIndex = candles.length - 1
+) {
+  if (
+    !candles.length ||
+    endIndex < 0
+  ) {
     return {
       state:"WAIT",
       reason:"Waiting for live Pump.fun trades…",
@@ -567,15 +730,35 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
       score:0,
       buyTrigger:null,
       sellTrigger:null,
-      slowReady:false
+      slowReady:false,
+      slowTrend:"UNKNOWN",
+      atr:null,
+      vwap:null
     };
   }
 
-  const visible = candles.slice(0,endIndex + 1);
+  const isCurrent =
+    endIndex === candles.length - 1;
 
-  const closes = visible
-    .map(x=>Number(x.c))
-    .filter(Number.isFinite);
+  let visible =
+    isCurrent
+      ? currentIndicatorCandles(candles)
+      : candles.slice(
+          0,
+          endIndex + 1
+        );
+
+  visible = visible.filter(
+    x =>
+      Number.isFinite(
+        Number(x.c)
+      )
+  );
+
+  const closes =
+    visible.map(
+      x => Number(x.c)
+    );
 
   if (closes.length < 21) {
     return {
@@ -589,56 +772,95 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
       score:0,
       buyTrigger:null,
       sellTrigger:null,
-      slowReady:false
+      slowReady:false,
+      slowTrend:"UNKNOWN",
+      atr:null,
+      vwap:null
     };
   }
 
-  const p = closes[closes.length - 1];
-  const e9 = ema(closes,9);
-  const e21 = ema(closes,21);
-  const r = rsi(closes,14);
+  const p =
+    closes[closes.length - 1];
 
-  const tail = closes.slice(-30);
-  const mean =
-    tail.reduce((a,b)=>a+b,0) /
-    tail.length;
+  const e9 =
+    ema(closes,9);
 
-  const recent = closes.slice(-12);
+  const e21 =
+    ema(closes,21);
+
+  const r =
+    rsi(closes,14);
+
+  const atrValue =
+    atr(visible,14);
+
+  const vwapValue =
+    vwap(visible,30);
+
+  const recent =
+    closes.slice(-12);
 
   let up = 0;
   let down = 0;
 
-  for (let i=1;i<recent.length;i++) {
-    if (recent[i] > recent[i-1]) {
+  for (
+    let i = 1;
+    i < recent.length;
+    i++
+  ) {
+    if (
+      recent[i] >
+      recent[i - 1]
+    ) {
       up++;
-    } else if (recent[i] < recent[i-1]) {
+    } else if (
+      recent[i] <
+      recent[i - 1]
+    ) {
       down++;
     }
   }
 
-  const moves = up + down;
-  const pressure =
-    moves
-      ? up / moves
+  let pressure =
+    up + down
+      ? up / (up + down)
       : 0.5;
 
-  // Slow-trader confirmation: derive a 5m structure from the same real candles.
-  // This adds trend confirmation without another network request.
-  const c5 = aggregateCandles(
-    visible,
-    5
-  );
+  if (isCurrent) {
+    const livePressure =
+      liveTradePressure();
+
+    if (
+      Number.isFinite(livePressure)
+    ) {
+      pressure =
+        livePressure * 0.70 +
+        pressure * 0.30;
+    }
+  }
+
+  const c5 =
+    aggregateCandles(
+      visible,
+      5
+    );
 
   let e5_9 = null;
   let e5_21 = null;
   let slowTrend = "UNKNOWN";
 
   if (c5.length >= 9) {
-    const c5Closes = c5.map(x=>Number(x.c));
-    e5_9 = ema(c5Closes,9);
+    const c5Closes =
+      c5.map(
+        x => Number(x.c)
+      );
+
+    e5_9 =
+      ema(c5Closes,9);
 
     if (c5.length >= 21) {
-      e5_21 = ema(c5Closes,21);
+      e5_21 =
+        ema(c5Closes,21);
     }
 
     if (e5_21 != null) {
@@ -656,97 +878,214 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
     }
   }
 
-  const recentStructure = closes.slice(
-    Math.max(0,closes.length - 8),
-    closes.length - 1
-  );
+  const recentStructure =
+    closes.slice(
+      Math.max(
+        0,
+        closes.length - 8
+      ),
+      closes.length - 1
+    );
 
-  const priorHigh = recentStructure.length
-    ? Math.max(...recentStructure)
-    : p;
+  const priorHigh =
+    recentStructure.length
+      ? Math.max(...recentStructure)
+      : p;
 
-  const priorLow = recentStructure.length
-    ? Math.min(...recentStructure)
-    : p;
+  const priorLow =
+    recentStructure.length
+      ? Math.min(...recentStructure)
+      : p;
 
   const momentum =
     closes.length >= 5
-      ? (p / closes[closes.length - 5] - 1) * 100
+      ? (
+          p /
+          closes[
+            closes.length - 5
+          ] -
+          1
+        ) * 100
       : 0;
+
+  const avgVolumeRows =
+    visible.slice(-21);
+
+  const avgVolume =
+    avgVolumeRows.length
+      ? (
+          avgVolumeRows.reduce(
+            (sum,x)=>
+              sum +
+              Math.max(
+                0,
+                Number(x.v || 0)
+              ),
+            0
+          ) /
+          avgVolumeRows.length
+        )
+      : 0;
+
+  const currentVolume =
+    Math.max(
+      0,
+      Number(
+        visible[
+          visible.length - 1
+        ].v || 0
+      )
+    );
+
+  const volumeRatio =
+    avgVolume > 0
+      ? currentVolume / avgVolume
+      : 1;
+
+  const volatility =
+    atrValue != null &&
+    p > 0
+      ? atrValue / p
+      : 0;
+
+  const breakoutBuffer =
+    Math.max(
+      p * 0.0015,
+      Number(
+        atrValue || 0
+      ) * 0.20
+    );
+
+  const buyTrigger =
+    priorHigh +
+    breakoutBuffer;
+
+  const sellTrigger =
+    e21 != null
+      ? Math.max(
+          priorLow,
+          e21 -
+            Number(
+              atrValue || 0
+            ) * 0.25
+        )
+      : priorLow;
 
   let score = 50;
 
-  if (e9 != null && e21 != null) {
-    score += e9 > e21 ? 16 : -16;
+  if (
+    e9 != null &&
+    e21 != null
+  ) {
+    score +=
+      e9 > e21
+        ? 18
+        : -18;
+  }
+
+  if (vwapValue != null) {
+    score +=
+      p >= vwapValue
+        ? 10
+        : -10;
   }
 
   if (r != null) {
-    if (r >= 50 && r <= 72) {
-      score += 12;
-    } else if (r < 42) {
-      score -= 12;
-    } else if (r > 78) {
-      score -= 8;
+    if (
+      r >= 48 &&
+      r <= 68
+    ) {
+      score += 10;
+    } else if (
+      r >= 68 &&
+      r <= 78
+    ) {
+      score += 3;
+    } else if (
+      r < 40
+    ) {
+      score -= 10;
+    } else if (
+      r > 82
+    ) {
+      score -= 10;
     }
   }
 
-  score += p >= mean ? 9 : -9;
+  if (pressure >= 0.58) {
+    score += 10;
+  } else if (
+    pressure <= 0.42
+  ) {
+    score -= 10;
+  }
 
-  if (pressure >= 0.60) score += 9;
-  if (pressure <= 0.40) score -= 9;
+  if (momentum > 0.5) {
+    score += 8;
+  } else if (
+    momentum < -0.5
+  ) {
+    score -= 8;
+  }
 
-  if (momentum > 1) score += 8;
-  if (momentum < -1) score -= 8;
+  if (volumeRatio >= 1.35) {
+    score += 7;
+  } else if (
+    volumeRatio < 0.65
+  ) {
+    score -= 4;
+  }
 
-  if (slowTrend === "BULLISH") score += 14;
-  if (slowTrend === "BEARISH") score -= 14;
+  if (
+    slowTrend === "BULLISH"
+  ) {
+    score += 15;
+  } else if (
+    slowTrend === "BEARISH"
+  ) {
+    score -= 15;
+  }
 
-  score = Math.round(
-    clamp(score,0,100)
-  );
+  if (
+    volatility > 0.12
+  ) {
+    score -= 8;
+  }
 
-  const buyTrigger =
-    priorHigh > 0
-      ? priorHigh * 1.002
-      : null;
+  score =
+    Math.round(
+      clamp(score,0,100)
+    );
 
-  // Slower exit: use the 5m trend line when available; otherwise use 1m
-  // structure. This is deliberately slower than reacting to every 1m wick.
-  const sellTrigger =
-    slowTrend === "BEARISH" && e5_21 != null
-      ? Math.max(priorLow,e5_21)
-      : e21 != null
-        ? Math.max(priorLow,e21)
-        : priorLow;
-
-  const slowReady = c5.length >= 9;
-
-  let state = "WAIT";
+  const slowReady =
+    c5.length >= 21;
 
   const buyReady =
     slowReady &&
     e9 != null &&
     e21 != null &&
-    r != null &&
-    slowTrend === "BULLISH" &&
-    p >= buyTrigger &&
     e9 > e21 &&
-    p > mean &&
-    r >= 50 &&
-    r <= 72 &&
-    pressure >= 0.55;
+    r != null &&
+    r >= 48 &&
+    r <= 68 &&
+    vwapValue != null &&
+    p > vwapValue &&
+    pressure >= 0.56 &&
+    volumeRatio >= 0.85 &&
+    slowTrend === "BULLISH" &&
+    p >= buyTrigger;
 
   const sellReady =
     slowReady &&
     e9 != null &&
     e21 != null &&
+    p <= sellTrigger &&
     (
-      p <= sellTrigger &&
-      (
-        slowTrend === "BEARISH" ||
-        e9 < e21
-      )
+      slowTrend === "BEARISH" ||
+      e9 < e21
     );
+
+  let state = "WAIT";
 
   if (buyReady) {
     state = "BUY";
@@ -756,30 +1095,20 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
 
   let reason =
     slowReady
-      ? "WAIT — no multi-timeframe confirmation."
+      ? "WAIT — trend, momentum, flow and breakout confirmation are not fully aligned."
       : "WAIT — building 5m trend history.";
 
   if (state === "BUY") {
     reason =
-      "BUY TRIGGER CONFIRMED — 1m momentum + 5m trend agree. " +
-      "Wait for a confirmed close above " +
-      formatChartValue(buyTrigger) +
-      ".";
+      "BUY — 1m trend + 5m trend + VWAP + RSI + flow + breakout agree.";
   } else if (state === "SELL") {
     reason =
-      "SELL / EXIT TRIGGER — the slower 5m trend/structure has broken. " +
-      "Defend below " +
-      formatChartValue(sellTrigger) +
-      ".";
-  } else if (
-    slowReady &&
-    e9 != null &&
-    e21 != null
-  ) {
+      "SELL / EXIT — structure or EMA support has failed with bearish confirmation.";
+  } else if (slowReady) {
     reason =
-      "WAIT — buy only above " +
+      "WAIT — breakout above " +
       formatChartValue(buyTrigger) +
-      " with 5m bullish confirmation; exit/defend below " +
+      " for entry; defend below " +
       formatChartValue(sellTrigger) +
       ".";
   }
@@ -790,7 +1119,7 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
     rsi:r,
     ema9:e9,
     ema21:e21,
-    mean,
+    mean:vwapValue,
     pressure,
     momentum,
     score,
@@ -799,7 +1128,9 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
     slowReady,
     slowTrend,
     ema5_9:e5_9,
-    ema5_21:e5_21
+    ema5_21:e5_21,
+    atr:atrValue,
+    vwap:vwapValue
   };
 }
 
@@ -1221,8 +1552,14 @@ function parseNativePumpFunTrade(raw) {
   if (!raw || typeof raw !== "object") return null;
 
   const mint = String(raw.mint || "").trim();
-  const solAmount = Number(raw.sol_amount);
-  const tokenAmount = Number(raw.token_amount);
+  const solAmount = Number(
+    raw.sol_amount ??
+    raw.solAmount
+  );
+  const tokenAmount = Number(
+    raw.token_amount ??
+    raw.tokenAmount
+  );
   const timestampRaw = Number(raw.timestamp);
 
   if (
@@ -1267,7 +1604,17 @@ function parseNativePumpFunTrade(raw) {
     timestamp,
     time:timestamp,
     price,
-    side:raw.is_buy ? "BUY" : "SELL",
+    side:(
+      raw.is_buy ??
+      raw.isBuy
+    ) === true ||
+    String(
+      raw.side ??
+      raw.txType ??
+      ""
+    ).toUpperCase() === "BUY"
+      ? "BUY"
+      : "SELL",
     volumeSol:solAmount / 1_000_000_000,
     volume_sol:solAmount / 1_000_000_000,
     source:"PUMP.FUN",
@@ -1785,13 +2132,37 @@ function renderLiveIndicators() {
     }))
   );
 
-  const signal = signalFromCandles(cleanCandles);
+  const signal =
+    signalFromCandles(
+      cleanCandles
+    );
+
   renderSignal(signal);
 
-  if (markersApi) {
+  const last =
+    cleanCandles[
+      cleanCandles.length - 1
+    ];
+
+  const markerNeedsRefresh =
+    lastIndicatorCandleTime !== last.time ||
+    lastIndicatorState !== signal.state;
+
+  if (
+    markersApi &&
+    markerNeedsRefresh
+  ) {
     markersApi.setMarkers(
-      buildMarkers(cleanCandles)
+      buildMarkers(
+        cleanCandles
+      )
     );
+
+    lastIndicatorCandleTime =
+      last.time;
+
+    lastIndicatorState =
+      signal.state;
   }
 }
 
@@ -1992,6 +2363,10 @@ async function fetchInitialHistory() {
         "retrying automatically";
       scheduleChartHistoryRetry(generation);
     }
+    refreshIndicatorHistory(
+        generation
+      ).catch(()=>{});
+
     return Boolean(selectedCandles.length);
   } finally {
     if (initialHistoryGeneration === generation) {
@@ -2190,7 +2565,7 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
   if (recordTrade) {
     if (!selectedTrades.some(x => x.id === recordTrade.id)) {
       selectedTrades.push(recordTrade);
-      if (selectedTrades.length > 500) {
+      if (selectedTrades.length > 2000) {
         selectedTrades.shift();
       }
     }
@@ -2294,6 +2669,173 @@ function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
     })
     .sort((a,b)=>a.time-b.time)
     .slice(-MAX_HISTORY_BARS);
+}
+
+async function refreshIndicatorHistory(generation) {
+  if (
+    !selectedMint ||
+    generation !== historyGeneration
+  ) {
+    return;
+  }
+
+  try {
+    const r = await fetch(
+      "/api/chart/history?mint=" +
+      encodeURIComponent(selectedMint) +
+      "&timeframe=1&interval=1m&limit=120&t=" +
+      Date.now(),
+      {cache:"no-store"}
+    );
+
+    if (!r.ok) return;
+
+    const j = await readJsonResponse(r);
+
+    if (
+      generation !== historyGeneration ||
+      !selectedMint
+    ) {
+      return;
+    }
+
+    const rows =
+      sanitizeChartCandles(
+        j.candles || []
+      );
+
+    if (!rows.length) return;
+
+    selectedMinuteCandles =
+      rows
+        .map(x=>({...x}))
+        .sort((a,b)=>a.time-b.time)
+        .slice(-MAX_HISTORY_BARS);
+
+    selectedMinuteSource =
+      j.source || "PUMP.FUN";
+
+    selectedMinuteGeneration =
+      generation;
+
+    lastIndicatorCandleTime = 0;
+    lastIndicatorState = "WAIT";
+
+    scheduleLiveIndicatorRender();
+  } catch {
+    // Indicator history is isolated from the displayed chart.
+  }
+}
+
+function updateIndicatorMinuteCandle(trade) {
+  if (!trade) return;
+
+  const price = Number(trade.price);
+  const ts = Number(trade.time);
+
+  if (
+    !Number.isFinite(price) ||
+    price <= 0 ||
+    !Number.isFinite(ts)
+  ) {
+    return;
+  }
+
+  const bucket =
+    Math.floor(ts / 60) * 60;
+
+  let bar =
+    selectedMinuteCandles.find(
+      x => x.time === bucket
+    );
+
+  if (!bar) {
+    const last =
+      selectedMinuteCandles[
+        selectedMinuteCandles.length - 1
+      ];
+
+    if (
+      last &&
+      bucket < last.time
+    ) {
+      return;
+    }
+
+    bar = {
+      time:bucket,
+      ts:bucket,
+      o:price,
+      h:price,
+      l:price,
+      c:price,
+      v:Math.max(
+        0,
+        Number(
+          trade.volumeSol ??
+          trade.volume_sol ??
+          0
+        )
+      ),
+      _firstTs:ts,
+      _lastTs:ts
+    };
+
+    selectedMinuteCandles = [
+      ...selectedMinuteCandles,
+      bar
+    ].slice(-MAX_HISTORY_BARS);
+  } else {
+    bar.h =
+      Math.max(
+        Number(bar.h),
+        price
+      );
+
+    bar.l =
+      Math.min(
+        Number(bar.l),
+        price
+      );
+
+    const lastTs =
+      Number.isFinite(bar._lastTs)
+        ? bar._lastTs
+        : bar.time;
+
+    if (ts >= lastTs) {
+      bar._lastTs = ts;
+      bar.c = price;
+    }
+
+    if (
+      !Number.isFinite(bar._firstTs) ||
+      ts < bar._firstTs
+    ) {
+      bar._firstTs = ts;
+      bar.o = price;
+    }
+  }
+
+  selectedMinuteSource =
+    "PUMP.FUN LIVE TRADES";
+
+  selectedMinuteCandles =
+    selectedMinuteCandles.map(x =>
+      x.time !== bar.time
+        ? x
+        : {
+            time:x.time,
+            ts:x.ts,
+            o:x.o,
+            h:x.h,
+            l:x.l,
+            c:x.c,
+            v:Number(x.v || 0),
+            _firstTs:x._firstTs,
+            _lastTs:x._lastTs
+          }
+    );
 }
 
 function updateCandleFromLiveTrade(trade) {
@@ -2583,7 +3125,13 @@ function applyLiveTrade(rawTrade, record = true) {
   // immediately on the trade/price event. Synthetic Pump.fun price pulses
   // never enter the tape, but they still keep the active wick current while
   // the next decoded trade is in flight.
-  updateCandleFromLiveTrade(chartTrade);
+  updateIndicatorMinuteCandle(
+    chartTrade
+  );
+
+  updateCandleFromLiveTrade(
+    chartTrade
+  );
 }
 
 async function pollLivePrice() {
@@ -2922,7 +3470,7 @@ function connectNativePumpFunTrades(mint) {
   }
 
   const url =
-    "wss://frontend-api.pump.fun/socket.io/" +
+    "wss://frontend-api-v3.pump.fun/socket.io/" +
     "?EIO=4&transport=websocket";
 
   try {
@@ -2984,6 +3532,13 @@ function connectNativePumpFunTrades(mint) {
       }
 
       if (!data.startsWith("42")) {
+        return;
+      }
+
+      if (
+        selectedMint &&
+        data.indexOf(selectedMint) < 0
+      ) {
         return;
       }
 
@@ -3320,6 +3875,8 @@ async function setTimeframe(tf) {
   historyHasMore = true;
   historyNextOffset = 0;
   historyBarsLoaded = 0;
+  lastIndicatorCandleTime = 0;
+  lastIndicatorState = "WAIT";
 
   document.querySelectorAll(".tf").forEach(btn=>{
     btn.classList.toggle(
@@ -3534,6 +4091,9 @@ async function selectToken(mint) {
   lastRenderedCandleTime = 0;
   selectedMinuteCandles = [];
   selectedMinuteSource = "UNKNOWN";
+  selectedMinuteGeneration = 0;
+  lastIndicatorCandleTime = 0;
+  lastIndicatorState = "WAIT";
   selectedTrades = [];
   selectedLiveUsdPrice = 0;
   selectedLiveUsdAt = 0;

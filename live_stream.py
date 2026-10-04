@@ -16,7 +16,7 @@ import websockets
 HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_HTTP_RPC = "https://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_ENHANCED_WS = "wss://atlas-mainnet.helius-rpc.com/?api-key={key}"
-PUMP_FUN_SOCKET_IO = "wss://frontend-api.pump.fun/socket.io/?EIO=4&transport=websocket"
+PUMP_FUN_SOCKET_IO = "wss://frontend-api-v3.pump.fun/socket.io/?EIO=4&transport=websocket"
 
 ANCHOR_SELF_CPI_TAG = bytes([0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d])
 
@@ -287,8 +287,18 @@ def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
     signature = str(payload.get("signature") or "").strip()
 
     try:
-        sol_amount = float(payload.get("sol_amount") or 0)
-        token_amount = float(payload.get("token_amount") or 0)
+        sol_value = (
+            payload.get("sol_amount")
+            if payload.get("sol_amount") is not None
+            else payload.get("solAmount")
+        )
+        token_value = (
+            payload.get("token_amount")
+            if payload.get("token_amount") is not None
+            else payload.get("tokenAmount")
+        )
+        sol_amount = float(sol_value or 0)
+        token_amount = float(token_value or 0)
     except (TypeError, ValueError):
         return None
 
@@ -327,7 +337,22 @@ def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
         "mint": mint,
         "source": "PUMP.FUN",
         "venue": PUMP_PROGRAM,
-        "side": "BUY" if bool(payload.get("is_buy")) else "SELL",
+        "side": (
+            "BUY"
+            if (
+                (
+                    payload.get("is_buy")
+                    if payload.get("is_buy") is not None
+                    else payload.get("isBuy")
+                )
+                or str(
+                    payload.get("side")
+                    or payload.get("txType")
+                    or ""
+                ).upper() == "BUY"
+            )
+            else "SELL"
+        ),
         "price": price,
         "volume_sol": sol_amount / 1_000_000_000,
         "token_amount": token_amount / 1_000_000,

@@ -430,3 +430,23 @@ def test_current_candle_preserves_arrival_order_for_same_second_trades():
     assert candle is not None
     assert candle["o"] == 0.010
     assert candle["c"] == 0.020
+
+
+def test_parse_pumpfun_socket_trade_supports_camel_case_fields():
+    raw = (
+        '42["tradeCreated",'
+        '{"mint":"So11111111111111111111111111111111111111112",'
+        '"signature":"camel-sig",'
+        '"solAmount":2000000000,'
+        '"tokenAmount":100000000,'
+        '"isBuy":true,'
+        '"timestamp":1700000000,'
+        '"slot":123}]'
+    )
+
+    row = parse_pumpfun_socket_trade(raw)
+
+    assert row is not None
+    assert row["source"] == "PUMP.FUN"
+    assert row["side"] == "BUY"
+    assert row["price"] == 0.02

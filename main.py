@@ -1343,7 +1343,11 @@ async def live_rest_trade_loop(mint: str) -> None:
                 published_trade = True
 
 
-            await asyncio.sleep(0.30)
+            await asyncio.sleep(
+                0.75
+                if trade_hub.pumpfun_live
+                else 0.20
+            )
 
     except asyncio.CancelledError:
         raise
