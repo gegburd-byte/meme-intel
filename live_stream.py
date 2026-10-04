@@ -295,6 +295,10 @@ class LiveTradeHub:
         self.recent_trades: dict[str, deque[dict[str, Any]]] = defaultdict(
             lambda: deque(maxlen=500)
         )
+        self._recovery_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._seen_signatures: dict[str, deque[str]] = defaultdict(
+            lambda: deque(maxlen=250)
+        )
         self._resolve_semaphore = asyncio.Semaphore(8)
         self._pending_resolutions: set[tuple[str, str]] = set()
         self._pending_tasks: set[asyncio.Task[Any]] = set()
@@ -312,6 +316,12 @@ class LiveTradeHub:
 
     async def add_client(self, mint: str, websocket: Any) -> None:
         self.clients[mint].add(websocket)
+
+        if mint not in self._recovery_tasks or self._recovery_tasks[mint].done():
+            self._recovery_tasks[mint] = asyncio.create_task(
+                self._recovery_loop(mint)
+            )
+
         if not self.task or self.task.done():
             self.task = asyncio.create_task(self._run())
 
@@ -324,6 +334,12 @@ class LiveTradeHub:
             if not rows:
                 self.clients.pop(mint, None)
                 self.recent_trades.pop(mint, None)
+                self._seen_signatures.pop(mint, None)
+
+                recovery = self._recovery_tasks.pop(mint, None)
+                if recovery and not recovery.done():
+                    recovery.cancel()
+
                 await self._unsubscribe(mint)
 
     async def _subscribe_when_ready(self, mint: str) -> None:
@@ -395,6 +411,138 @@ class LiveTradeHub:
             "v": volume,
             "source": "PUMP.FUN LIVE TRADES",
         }
+
+    def recent_trade_snapshot(
+        self,
+        mint: str,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        rows = list(self.recent_trades.get(mint, ()))
+        rows.sort(
+            key=lambda row: (
+                int(row.get("timestamp") or 0),
+                str(row.get("id") or ""),
+            )
+        )
+
+        return [
+            {
+                "id": str(row.get("id") or ""),
+                "signature": str(row.get("signature") or ""),
+                "source": str(row.get("source") or ""),
+                "side": str(row.get("side") or "BUY"),
+                "price": float(row.get("price") or 0),
+                "volume_sol": float(row.get("volume_sol") or 0),
+                "timestamp": int(row.get("timestamp") or 0),
+            }
+            for row in rows[-max(1, min(int(limit or 30), 50)):]
+        ]
+
+    async def _recovery_loop(self, mint: str) -> None:
+        """Low-rate Helius safety net for a silent/malformed websocket path."""
+        initialized = False
+
+        while mint in self.clients:
+            try:
+                signatures, err = await self._rpc(
+                    "getSignaturesForAddress",
+                    [
+                        mint,
+                        {
+                            "limit": 8,
+                            "commitment": "processed",
+                        },
+                    ],
+                )
+
+                if err or not signatures:
+                    await asyncio.sleep(0.7)
+                    continue
+
+                cutoff = int(time.time()) - 12
+                pending = []
+
+                for item in signatures:
+                    if not isinstance(item, dict):
+                        continue
+
+                    signature = str(item.get("signature") or "")
+                    if not signature:
+                        continue
+
+                    if signature in self._seen_signatures[mint]:
+                        continue
+
+                    self._seen_signatures[mint].append(signature)
+
+                    block_time = item.get("blockTime")
+                    if block_time is not None and int(block_time) < cutoff:
+                        continue
+
+                    pending.append(item)
+
+                # On first pass, only resolve the very recent tail.
+                if not initialized:
+                    initialized = True
+                    pending = [
+                        item for item in pending
+                        if item.get("blockTime") is None
+                        or int(item.get("blockTime")) >= cutoff
+                    ]
+
+                sem = asyncio.Semaphore(6)
+
+                async def resolve(item):
+                    async with sem:
+                        signature = str(item.get("signature") or "")
+                        result, tx_err = await self._rpc(
+                            "getTransaction",
+                            [
+                                signature,
+                                {
+                                    "encoding": "jsonParsed",
+                                    "commitment": "processed",
+                                    "maxSupportedTransactionVersion": 1,
+                                },
+                            ],
+                        )
+
+                        if tx_err or not isinstance(result, dict):
+                            return None
+
+                        return parse_live_trade_from_transaction(
+                            result,
+                            mint,
+                            signature=signature,
+                            slot=result.get("slot") or item.get("slot"),
+                            block_time=result.get("blockTime") or item.get("blockTime"),
+                        )
+
+                resolved = await asyncio.gather(
+                    *(resolve(item) for item in pending),
+                    return_exceptions=True,
+                )
+
+                for trade in sorted(
+                    [x for x in resolved if isinstance(x, dict)],
+                    key=lambda x: (
+                        int(x.get("timestamp") or 0),
+                        str(x.get("id") or ""),
+                    ),
+                ):
+                    self.remember_trade(mint, trade)
+                    await self._broadcast(mint, {
+                        "type": "trade",
+                        "trade": trade,
+                    })
+
+                await asyncio.sleep(0.55)
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = str(exc)[:300]
+                await asyncio.sleep(0.9)
 
     async def _resolve_standard_transaction(
         self,
