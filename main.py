@@ -44,6 +44,7 @@ app = FastAPI(
 
 RATE_LIMIT_RULES = {
     "/api/chart": (30, 10.0),
+    "/api/chart/history": (6, 10.0),
     "/api/chart/current": (20, 10.0),
     "/api/live/price": (20, 10.0),
     "/api/analyze": (4, 30.0),
@@ -1176,6 +1177,71 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     }
 
 
+@app.get("/api/chart/history")
+async def chart_history(mint: str, timeframe: int = 1, limit: int = 90):
+    """Fast historical fallback used behind the live chart.
+
+    Reconstructs recent OHLC from the same Pump.fun trade events used by the
+    live stream. It never touches the active bar; the browser only merges bars
+    that are older than the currently displayed candle.
+    """
+    mint = (mint or "").strip()
+    if len(mint) < 32 or len(mint) > 44:
+        raise HTTPException(400, "Invalid mint")
+
+    if timeframe not in {1, 5, 15, 60}:
+        raise HTTPException(400, "Unsupported timeframe")
+
+    limit = max(30, min(int(limit or 90), 120))
+
+    try:
+        candles, err = await asyncio.wait_for(
+            he.historical_trade_candles(
+                mint,
+                timeframe=timeframe,
+                lookback_minutes=min(120, max(60, limit * timeframe)),
+                max_signatures=700,
+            ),
+            timeout=7.0,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "state":"TIMEOUT",
+            "source":"HELIUS_ONCHAIN_TRADES",
+            "candles":[],
+            "error":"HISTORY_TIMEOUT",
+            "timestamp":int(time.time()),
+        }
+    except Exception as exc:
+        return {
+            "state":"ERROR",
+            "source":"HELIUS_ONCHAIN_TRADES",
+            "candles":[],
+            "error":str(exc)[:240],
+            "timestamp":int(time.time()),
+        }
+
+    rows = sorted(candles or [], key=lambda x:x.ts)[-limit:]
+
+    return {
+        "state":"READY" if rows else "NO_CANDLES",
+        "source":"HELIUS_ONCHAIN_TRADES",
+        "candles":[
+            {
+                "ts":c.ts,
+                "o":c.o,
+                "h":c.h,
+                "l":c.l,
+                "c":c.c,
+                "v":c.v,
+            }
+            for c in rows
+        ],
+        "error":None if rows else (err or "NO_TRADES_DECODED"),
+        "timestamp":int(time.time()),
+    }
+
+
 @app.get("/api/chart/current")
 async def chart_current(mint: str, timeframe: int = 1):
     """Fast Pump.fun native active-candle endpoint.
@@ -1198,6 +1264,7 @@ async def chart_current(mint: str, timeframe: int = 1):
                 limit=5,
                 timeframe=timeframe,
                 offset=0,
+                fresh=True,
             ),
             timeout=1.8,
         )
@@ -1295,6 +1362,12 @@ async def live_price(mint: str):
         "mint": mint,
         "price": price,
         "market_cap": market_cap,
+        "supply": (
+            float((asset.get("token_info") or {}).get("supply"))
+            if isinstance(asset, dict)
+            and (asset.get("token_info") or {}).get("supply") is not None
+            else None
+        ),
         "symbol": symbol,
         "name": name,
         "source": source,
