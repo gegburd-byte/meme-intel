@@ -2040,9 +2040,12 @@ function applyLiveTrade(rawTrade, record = true) {
     record ? t : null
   );
 
-  // Do not build/modify OHLC here. The single 850ms reconciliation loop reads
-  // native Pump.fun OHLC first and the backend's live-trade cache second. That
-  // avoids one HTTP request per websocket trade and prevents timer collisions.
+  // Keep the active Pump.fun candle, EMA values, RSI, and signal genuinely
+  // live between HTTP candle reconciliations. This ONLY uses decoded Pump.fun
+  // trades and only touches the current timeframe bucket. Historical candles
+  // are left alone, and the next native Pump.fun snapshot can replace the
+  // preview whenever the authoritative endpoint is available.
+  updateCandleFromLiveTrade(t);
 }
 
 async function pollLivePrice() {
