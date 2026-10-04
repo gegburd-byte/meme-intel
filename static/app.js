@@ -4082,6 +4082,7 @@ async function selectToken(mint) {
   selectedTradeKeys = new Set();
   selectedLiveUsdPrice = 0;
   selectedLiveUsdAt = 0;
+  lastLiveTradeAtMs = 0;
   livePreviewActive = false;
   selectedSupply = 0;
   selectedMarketCap = 0;
