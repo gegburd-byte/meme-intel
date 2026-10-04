@@ -801,7 +801,6 @@ class HeliusAdapter:
                     return archival_candles, None
 
         rows = []
-        rows = []
         seen = set()
 
         # Query the token mint and any PumpSwap pool with a balanced
