@@ -2028,8 +2028,14 @@ function applyLiveTrade(rawTrade, record = true) {
     return;
   }
 
-  // The live Pump.fun/on-chain trade is the fastest authoritative price
-  // signal available. Build/update only the active timeframe candle immediately.
+  // Only the Pump.fun bonding-curve event carries the token mint inside
+  // its decoded payload. Standard PumpSwap logs do not, so treating them as
+  // chart-authoritative can attach another token's trade to this chart.
+  if (t.source !== "PUMP.FUN") {
+    requestCurrentCandleSync(0);
+    return;
+  }
+
   applyLivePrice(
     t.price,
     t.time * 1000,
@@ -2037,11 +2043,9 @@ function applyLiveTrade(rawTrade, record = true) {
   );
 
   updateCandleFromLiveTrade(t);
-  refreshMarketCapFactor(t.price);
 
-  // Reconcile against Pump.fun's native OHLC when available, but never make
-  // the live chart wait for this request.
-  requestCurrentCandleSync(0);
+  // Native Pump.fun OHLC remains the reconciliation authority.
+  requestCurrentCandleSync(90);
 }
 
 async function pollLivePrice() {
@@ -2146,28 +2150,8 @@ async function syncCurrentPumpCandle() {
           selectedCandles.length - 1
         ];
 
-      // During an open candle, the real Pump.fun trade stream is fresher than
-      // an HTTP snapshot of the same bucket. Never overwrite that live bar with
-      // a slightly older native snapshot. Native OHLC can still fill older bars
-      // and can take over when it advances into a new bucket.
-      if (
-        current &&
-        incoming &&
-        incoming.time === current.time &&
-        selectedTrades.some(
-          trade => (
-            Math.floor(
-              Number(trade.time) /
-              (Math.max(60, Number(chartTimeframe || 1) * 60))
-            ) *
-            Math.max(60, Number(chartTimeframe || 1) * 60)
-            === current.time
-          )
-        )
-      ) {
-        return;
-      }
-
+      // Pump.fun native OHLC is authoritative for the active bucket.
+      // The live websocket only provides an immediate low-latency preview.
       if (
         current &&
         incoming &&
