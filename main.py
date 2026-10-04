@@ -1059,20 +1059,85 @@ def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
 
 @app.get("/api/chart/live-trades")
 async def chart_live_trades(mint: str, limit: int = 30):
-    """Return the server's bounded recent live trade cache."""
+    """Return the newest trade stream data without changing chart price units."""
     mint = (mint or "").strip()
 
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
     limit = max(1, min(int(limit or 30), 50))
+    now = time.time()
 
-    return {
-        "state": "READY" if trade_hub.active() else "UNAVAILABLE",
+    cache = getattr(
+        chart_live_trades,
+        "_cache",
+        {},
+    )
+
+    cached = cache.get(mint)
+    if cached and now - cached["time"] < 0.35:
+        return cached["payload"]
+
+    # The server-side Helius/Pump.fun event stream is the primary live source.
+    rows = trade_hub.recent_trade_snapshot(mint, limit=limit)
+
+    # When the current Pump.fun JWT is configured, also sample Pump.fun's own
+    # trade endpoint. This is an exact-venue confirmation lane, not a price
+    # conversion/fallback to another venue.
+    if os.getenv("PUMP_FUN_JWT"):
+        try:
+            native_payload, native_err = await asyncio.wait_for(
+                pf.trades(
+                    mint,
+                    limit=50,
+                    offset=0,
+                    minimum_size=0,
+                    fresh=True,
+                ),
+                timeout=0.35,
+            )
+
+            native_rows = parse_pump_trades(native_payload)
+
+            if native_rows:
+                rows = [
+                    {
+                        "id": f"pump-http:{mint}:{int(row['ts'])}:{i}",
+                        "signature": "",
+                        "source": "PUMP.FUN",
+                        "side": "BUY",
+                        "price": float(row["price"]),
+                        "volume_sol": float(row["volume"]),
+                        "timestamp": int(row["ts"]),
+                    }
+                    for i, row in enumerate(native_rows[-limit:])
+                ]
+        except Exception:
+            pass
+
+    payload = {
+        "state": "READY" if rows else (
+            "UNAVAILABLE" if not trade_hub.active()
+            else "WAITING_FOR_TRADES"
+        ),
         "mint": mint,
-        "trades": trade_hub.recent_trade_snapshot(mint, limit=limit),
+        "trades": rows,
         "timestamp": int(time.time() * 1000),
     }
+
+    cache[mint] = {
+        "time": now,
+        "payload": payload,
+    }
+
+    if len(cache) > 32:
+        oldest = min(
+            cache.items(),
+            key=lambda item: item[1]["time"],
+        )[0]
+        cache.pop(oldest, None)
+
+    return payload
 
 
 @app.get("/api/chart")
