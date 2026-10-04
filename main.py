@@ -1676,14 +1676,32 @@ async def chart_history(
             # trade events / on-chain PumpSwap trades.
             if not pool_address:
                 try:
-                    pair, _ = await asyncio.wait_for(
-                        ds.best_pair(mint),
+                    pairs_payload, _ = await asyncio.wait_for(
+                        ds.pairs(mint),
                         timeout=1.25,
                     )
-                    if isinstance(pair, dict):
-                        dex_id = str(pair.get("dexId") or "").lower()
-                        if dex_id in {"pumpswap", "pump-swap", "pump_swap"}:
-                            pool_address = pair.get("pairAddress")
+                    pairs = pairs_payload if isinstance(pairs_payload, list) else []
+                    pump_pairs = [
+                        pair for pair in pairs
+                        if isinstance(pair, dict)
+                        and str(pair.get("dexId") or "").lower()
+                            in {"pumpswap", "pump-swap", "pump_swap"}
+                        and pair.get("pairAddress")
+                    ]
+
+                    if pump_pairs:
+                        def pump_liquidity(pair):
+                            try:
+                                return float(
+                                    (pair.get("liquidity") or {}).get("usd") or 0
+                                )
+                            except (TypeError, ValueError):
+                                return 0.0
+
+                        pool_address = max(
+                            pump_pairs,
+                            key=pump_liquidity,
+                        ).get("pairAddress")
                 except Exception:
                     pool_address = None
 
