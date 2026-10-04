@@ -222,3 +222,26 @@ def test_live_trade_hub_accepts_pumpswap_for_current_candle():
     assert candle["l"] == 0.020
     assert candle["c"] == 0.021
     assert candle["v"] == 3.0
+
+
+def test_recent_trade_snapshot_returns_bounded_clean_rows():
+    hub = LiveTradeHub("test-key")
+    mint = "So11111111111111111111111111111111111111112"
+
+    hub.remember_trade(mint, {
+        "id": "one",
+        "signature": "sig-one",
+        "source": "PUMP.FUN",
+        "side": "BUY",
+        "price": 0.01,
+        "volume_sol": 1.5,
+        "timestamp": 1_700_000_001,
+    })
+
+    rows = hub.recent_trade_snapshot(mint, limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "one"
+    assert rows[0]["signature"] == "sig-one"
+    assert rows[0]["price"] == 0.01
+    assert rows[0]["volume_sol"] == 1.5
