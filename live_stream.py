@@ -721,18 +721,30 @@ class LiveTradeHub:
     ) -> None:
         """Resolve the newest transaction after an exact market-account change."""
         try:
-            signatures, err = await self._rpc(
-                "getSignaturesForAddress",
-                [
-                    address,
-                    {
-                        "limit": 4,
-                        "commitment": "processed",
-                    },
-                ],
-            )
+            signatures = None
 
-            if err or not signatures:
+            # A processed account notification can arrive a few milliseconds
+            # before the signature index catches up. Retry the tiny lookup a few
+            # times instead of missing the exact trade that caused the update.
+            for lookup_attempt in range(3):
+                signatures, err = await self._rpc(
+                    "getSignaturesForAddress",
+                    [
+                        address,
+                        {
+                            "limit": 6,
+                            "commitment": "processed",
+                        },
+                    ],
+                )
+
+                if signatures:
+                    break
+
+                if lookup_attempt < 2:
+                    await asyncio.sleep(0.045)
+
+            if not signatures:
                 return
 
             for item in signatures:
@@ -746,17 +758,28 @@ class LiveTradeHub:
                 if signature in self._seen_signatures[mint]:
                     continue
 
-                result, tx_err = await self._rpc(
-                    "getTransaction",
-                    [
-                        signature,
-                        {
-                            "encoding": "jsonParsed",
-                            "commitment": "processed",
-                            "maxSupportedTransactionVersion": 1,
-                        },
-                    ],
-                )
+                result = None
+
+                for tx_attempt, commitment in enumerate(
+                    ("processed", "confirmed")
+                ):
+                    result, tx_err = await self._rpc(
+                        "getTransaction",
+                        [
+                            signature,
+                            {
+                                "encoding": "jsonParsed",
+                                "commitment": commitment,
+                                "maxSupportedTransactionVersion": 1,
+                            },
+                        ],
+                    )
+
+                    if isinstance(result, dict):
+                        break
+
+                    if tx_attempt == 0:
+                        await asyncio.sleep(0.045)
 
                 if not isinstance(result, dict):
                     continue
