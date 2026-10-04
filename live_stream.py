@@ -937,9 +937,11 @@ class LiveTradeHub:
             try:
                 self.state = "CONNECTING"
 
-                # Standard Solana WSS works on free Helius plans and is all
-                # the chart needs because we subscribe to logs mentioning
-                # exactly one mint. Enhanced transactionSubscribe is optional.
+                # Standard Solana WSS works on free Helius plans. In standard
+                # mode we watch the exact bonding-curve / PumpSwap market
+                # accounts so every state-changing trade can wake the resolver.
+                # Enhanced transactionSubscribe remains the lower-latency path
+                # when the configured Helius plan supports it.
                 enhanced_mode = os.getenv(
                     "HELIUS_USE_ENHANCED_WS",
                     "auto",
