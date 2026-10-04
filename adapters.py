@@ -321,6 +321,8 @@ class PumpFunAdapter:
         # Use the currently documented v3 coin endpoint first, then the
         # legacy frontend hostname as a compatibility fallback.
         urls = (
+            f"{self.base_urls[0]}/coins-v2/{mint}",
+            f"{self.base_urls[0]}/coins-v2/{mint}?sync=true",
             f"{self.base_urls[0]}/coins/{mint}?sync=true",
             f"{self.base_urls[0]}/coins/{mint}",
             f"{self.base_urls[1]}/coins/{mint}?sync=true",
