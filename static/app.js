@@ -2446,6 +2446,32 @@ function updateCandleFromLiveTrade(trade) {
 }
 
 
+function liveTradePriceIsPlausible(price) {
+  price = Number(price);
+
+  if (
+    !Number.isFinite(price) ||
+    price <= 0 ||
+    !selectedCandles.length
+  ) {
+    return true;
+  }
+
+  const current = selectedCandles[selectedCandles.length - 1];
+  const baseline = Number(current?.c);
+
+  if (!Number.isFinite(baseline) || baseline <= 0) {
+    return true;
+  }
+
+  // A real Pump.fun trade can move very quickly, but a 100x+ or 100x-
+  // single update against the already-rendered candle is overwhelmingly more
+  // likely to be a unit/schema error than a real execution. Refuse it before
+  // it can move the active price or corrupt the visible candle.
+  const ratio = price / baseline;
+  return ratio >= 0.01 && ratio <= 100;
+}
+
 function applyLiveTrade(rawTrade, record = true) {
   const t = normalizeTrade(rawTrade);
   if (!t || !selectedMint) return;
@@ -2470,6 +2496,11 @@ function applyLiveTrade(rawTrade, record = true) {
   lastLiveTradeAtMs = Date.now();
 
   const chartTrade = normalizeTradeForChart(t);
+
+  if (!liveTradePriceIsPlausible(chartTrade.price)) {
+    return;
+  }
+
   const recordedTrade = (
     record &&
     !t.synthetic
