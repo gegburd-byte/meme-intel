@@ -425,10 +425,21 @@ def parse_pump_trades(payload):
                 if volume > 1_000_000:
                     volume /= 1_000_000_000
 
+            raw_side = (
+                item.get("is_buy")
+                if "is_buy" in item
+                else item.get("isBuy")
+            )
+
             trades.append({
                 "ts": ts,
                 "price": price,
                 "volume": max(0.0, volume),
+                "side": (
+                    "BUY"
+                    if raw_side is True or str(raw_side).lower() == "true"
+                    else "SELL"
+                ),
             })
         except (TypeError, ValueError):
             continue
@@ -1105,7 +1116,7 @@ async def chart_live_trades(mint: str, limit: int = 30):
                         "id": f"pump-http:{mint}:{int(row['ts'])}:{i}",
                         "signature": "",
                         "source": "PUMP.FUN",
-                        "side": "BUY",
+                        "side": row.get("side", "BUY"),
                         "price": float(row["price"]),
                         "volume_sol": float(row["volume"]),
                         "timestamp": int(row["ts"]),
