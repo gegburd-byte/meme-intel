@@ -1288,15 +1288,30 @@ async def chart_live_trades(mint: str, limit: int = 200):
     # exist in memory.
     rows = trade_hub.recent_trade_snapshot(mint, limit=limit)
 
-    # Only use Pump.fun's own HTTP trade endpoint when the live on-chain lane
-    # has not produced anything yet. This preserves the fallback without
-    # putting a 300-350 ms network request in the hot path.
-    if not rows and os.getenv("PUMP_FUN_JWT"):
+    # Use Pump.fun's authenticated trade endpoint only when the in-memory
+    # on-chain lane is empty or has gone stale. This gives us an independent
+    # exact-venue recovery path without adding a network request to every hot
+    # poll while the live stream is healthy.
+    latest_server_trade = max(
+        (
+            int(row.get("timestamp") or 0)
+            for row in rows
+            if isinstance(row, dict)
+        ),
+        default=0,
+    )
+    now_sec = int(time.time())
+    live_lane_stale = (
+        latest_server_trade <= 0
+        or now_sec - latest_server_trade >= 2
+    )
+
+    if live_lane_stale and os.getenv("PUMP_FUN_JWT"):
         try:
             native_payload, native_err = await asyncio.wait_for(
                 pf.trades(
                     mint,
-                    limit=50,
+                    limit=25,
                     offset=0,
                     minimum_size=0,
                     fresh=True,
