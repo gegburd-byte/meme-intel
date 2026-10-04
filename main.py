@@ -434,7 +434,10 @@ def parse_pump_trades(payload):
                 "created_timestamp",
                 "createdTimestamp",
                 "created_at",
+                "createdTs",
+                "created_ts",
                 "block_time",
+                "blockTime",
             )
 
             if timestamp is None:
@@ -475,21 +478,28 @@ def parse_pump_trades(payload):
                 "sol_amount",
                 "solAmount",
                 "sol_amount_lamports",
+                "quote_amount",
+                "quoteAmount",
+                "quote_amount_lamports",
                 "sol",
                 "amount_sol",
                 "amountSol",
                 "sol_ui",
+                "quote_ui",
             )
 
             token_raw, token_key = first_value(
                 item,
                 "token_amount",
                 "tokenAmount",
+                "base_amount",
+                "baseAmount",
                 "token_amount_raw",
                 "tokens",
                 "amount_token",
                 "amountToken",
                 "token_ui",
+                "base_ui",
             )
 
             if price is None and sol_raw is not None and token_raw is not None:
@@ -505,6 +515,10 @@ def parse_pump_trades(payload):
                     "price",
                     "price_sol",
                     "priceSol",
+                    "tokenPrice",
+                    "token_price",
+                    "pricePerToken",
+                    "price_per_token",
                 )
 
                 if raw_price is not None:
@@ -520,7 +534,14 @@ def parse_pump_trades(payload):
                     sol_amount_ui(sol_raw, sol_key),
                 )
 
-            raw_side, _ = first_value(item, "is_buy", "isBuy", "side")
+            raw_side, _ = first_value(
+                item,
+                "is_buy",
+                "isBuy",
+                "side",
+                "txType",
+                "tx_type",
+            )
 
             side = "SELL"
             if (
