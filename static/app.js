@@ -1818,12 +1818,16 @@ async function fetchInitialHistory() {
     $("historyStatus").textContent =
       selectedCandles.length
         ? selectedCandles.length.toLocaleString() + " live bars"
-        : "live…";
+        : "loading…";
 
-    // Never let the current-candle request block the historical chart.
-    // A slow/auth-protected Pump.fun endpoint must not leave the canvas blank.
-    syncCurrentPumpCandle().catch(()=>{});
-    fetchFastHistoricalBackfill(generation).catch(()=>{});
+    // Current-candle reconciliation never blocks the history request.
+    if (chartInterval !== "1s") {
+      syncCurrentPumpCandle().catch(()=>{});
+    }
+
+    // Await the real history load so a timeframe switch cannot leave the
+    // chart empty while its only population request continues invisibly.
+    const loaded = await fetchFastHistoricalBackfill(generation);
 
     if (
       generation !== historyGeneration ||
@@ -1840,15 +1844,29 @@ async function fetchInitialHistory() {
       }
 
       $("chartMode").textContent =
-        "PUMP.FUN LIVE · " +
+        chartDataSource +
+        " · " +
         timeframeLabel() +
-        " · LIVE TRADES";
+        " · " +
+        (chartInterval === "1s" ? "LIVE TRADES" : "LIVE");
+
+      $("historyStatus").textContent =
+        historyBarsLoaded.toLocaleString() + " bars";
+    } else if (!loaded) {
+      $("chartMode").textContent =
+        "WAITING FOR REAL PUMP.FUN HISTORY…";
+      $("historyStatus").textContent =
+        "no bars yet";
     }
 
-    // Background history is already running above; the websocket/current
-    // candle path can update independently.
     return Boolean(selectedCandles.length);
   } catch {
+    if (generation === historyGeneration && !selectedCandles.length) {
+      $("chartMode").textContent =
+        "WAITING FOR REAL PUMP.FUN HISTORY…";
+      $("historyStatus").textContent =
+        "no bars yet";
+    }
     return Boolean(selectedCandles.length);
   } finally {
     if (initialHistoryGeneration === generation) {
@@ -1856,12 +1874,10 @@ async function fetchInitialHistory() {
     }
   }
 }
-
 async function fetchFastHistoricalBackfill(generation) {
   if (
     !selectedMint ||
-    generation !== historyGeneration ||
-    chartInterval === "1s"
+    generation !== historyGeneration
   ) {
     return false;
   }
@@ -1871,6 +1887,7 @@ async function fetchFastHistoricalBackfill(generation) {
       "/api/chart/history?mint=" +
       encodeURIComponent(selectedMint) +
       "&timeframe=" + backendTimeframe() +
+      "&interval=" + encodeURIComponent(chartInterval) +
       "&limit=120&t=" + Date.now(),
       {cache:"no-store"}
     );
@@ -2304,7 +2321,9 @@ async function syncLiveTradeCache() {
     const r = await fetch(
       "/api/chart/live-trades?mint=" +
       encodeURIComponent(selectedMint) +
-      "&limit=50&t=" + Date.now(),
+      "&limit=" +
+        (chartInterval === "1s" ? "200" : "50") +
+        "&t=" + Date.now(),
       {cache:"no-store"}
     );
 
@@ -2743,7 +2762,9 @@ async function setTimeframe(tf) {
   });
 
   if (chartInterval === "1s") {
-    // 1s is trade-driven only. Seed from the actual server cache immediately.
+    // Paint any already-captured real trades immediately. The authoritative
+    // history request below then replaces this preview with actual 1-second
+    // Pump.fun trade buckets.
     selectedCandles = aggregateLiveTrades(
       selectedTrades,
       "1s"
@@ -2754,31 +2775,24 @@ async function setTimeframe(tf) {
 
     if (selectedCandles.length) {
       renderChart(selectedCandles,true);
-    } else if (chartInitialized) {
-      candleSeries.setData([]);
-      volumeSeries.setData([]);
-      ema9Series.setData([]);
-      ema21Series.setData([]);
-      markersApi.setMarkers([]);
     }
 
     $("chartMode").textContent =
       selectedCandles.length
-        ? "LIVE PUMP.FUN · 1s · " + selectedCandles.length + " BARS"
-        : "WAITING FOR REAL PUMP.FUN TRADES…";
+        ? "LOADING PUMP.FUN · 1s · HISTORY"
+        : "LOADING PUMP.FUN · 1s · HISTORY…";
 
     $("historyStatus").textContent =
       selectedCandles.length
-        ? selectedCandles.length.toLocaleString() + " bars"
-        : "LIVE";
-        
+        ? selectedCandles.length.toLocaleString() + " live bars"
+        : "loading…";
+
+    fetchInitialHistory().catch(()=>{});
     syncLiveTradeCache().catch(()=>{});
     return;
   }
 
-  // Do not clear the current chart here. The prior timeframe remains visible
-  // while the requested timeframe loads. fetchFastHistoricalBackfill replaces
-  // selectedCandles atomically when the correct real series arrives.
+  // Keep the last visible chart while the requested Pump.fun timeframe loads.
   $("chartMode").textContent =
     "LOADING PUMP.FUN " + timeframeLabel() + " HISTORY…";
 
@@ -2786,7 +2800,6 @@ async function setTimeframe(tf) {
 
   fetchInitialHistory().catch(()=>{});
 }
-
 function showAll() {
   if (!chart) return;
 
