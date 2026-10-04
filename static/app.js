@@ -2470,7 +2470,10 @@ function applyLiveTrade(rawTrade, record = true) {
   lastLiveTradeAtMs = Date.now();
 
   const chartTrade = normalizeTradeForChart(t);
-  const recordedTrade = record
+  const recordedTrade = (
+    record &&
+    !t.synthetic
+  )
     ? {
         ...t,
         chartPrice: chartTrade.price,
@@ -2484,8 +2487,10 @@ function applyLiveTrade(rawTrade, record = true) {
     recordedTrade
   );
 
-  // Update the current OHLC bucket and every dependent indicator immediately
-  // on the trade event. No polling delay and no historical redraw.
+  // Update the current OHLC bucket and every dependent indicator
+  // immediately on the trade/price event. Synthetic Pump.fun price pulses
+  // never enter the tape, but they still keep the active wick current while
+  // the next decoded trade is in flight.
   updateCandleFromLiveTrade(chartTrade);
 }
 
