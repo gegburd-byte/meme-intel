@@ -280,3 +280,72 @@ def test_live_trade_hub_rpc_helper_uses_http_client(monkeypatch):
     assert error is None
     assert result == {"value": 1}
     assert calls
+
+
+
+def test_live_trade_hub_account_subscription_targets_exact_market_account():
+    import asyncio
+
+    hub = LiveTradeHub("test-key")
+    hub.stream_mode = "STANDARD"
+    sent = []
+
+    async def fake_send(payload):
+        sent.append(payload)
+
+    hub._send = fake_send
+
+    asyncio.run(
+        hub._subscribe(
+            "mint-address",
+            "pool-address",
+        )
+    )
+
+    assert sent
+    assert sent[0]["method"] == "accountSubscribe"
+    assert sent[0]["params"][0] == "pool-address"
+    assert sent[0]["params"][1]["commitment"] == "processed"
+
+
+def test_live_trade_hub_stale_current_candle_is_rejected():
+    import time
+
+    hub = LiveTradeHub("test-key")
+    mint = "So11111111111111111111111111111111111111112"
+    hub.remember_trade(
+        mint,
+        {
+            "id": "old",
+            "source": "PUMP.FUN",
+            "timestamp": int(time.time()) - 10,
+            "price": 0.01,
+            "volume_sol": 1.0,
+        },
+    )
+
+    assert hub.current_candle(
+        mint,
+        timeframe=1,
+        max_age_seconds=2,
+    ) is None
+
+
+def test_parse_pump_trade_history_accepts_swap_quote_and_base_aliases():
+    from main import parse_pump_trades
+
+    payload = [{
+        "id": "swap-trade-1",
+        "createdTs": 1_700_000_000_000,
+        "quoteAmountIn": 2_000_000_000,
+        "baseAmountOut": 100_000_000,
+        "txType": "buy",
+    }]
+
+    rows = parse_pump_trades(payload)
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "swap-trade-1"
+    assert rows[0]["ts"] == 1_700_000_000
+    assert abs(rows[0]["price"] - 0.02) < 1e-12
+    assert rows[0]["volume"] == 2.0
