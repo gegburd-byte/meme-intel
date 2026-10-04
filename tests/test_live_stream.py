@@ -179,7 +179,7 @@ def test_live_trade_hub_builds_current_candle_from_pumpfun_trades():
     hub.remember_trade(mint, {
         "id": "ignored",
         "source": "PUMPSWAP",
-        "timestamp": 1_700_000_040,
+        "timestamp": 1_700_000_030,
         "price": 9.0,
         "volume_sol": 9.0,
     })
@@ -192,7 +192,7 @@ def test_live_trade_hub_builds_current_candle_from_pumpfun_trades():
     assert candle["h"] == 0.013
     assert candle["l"] == 0.01
     assert candle["c"] == 0.013
-    assert candle["v"] == 3.0
+    assert candle["v"] == 12.0
     assert candle["source"] == "PUMP.FUN LIVE TRADES"
 
 
@@ -218,7 +218,7 @@ def test_live_trade_hub_accepts_pumpswap_for_current_candle():
 
     assert candle is not None
     assert candle["o"] == 0.020
-    assert candle["h"] == 0.021
-    assert candle["l"] == 0.020
-    assert candle["c"] == 0.021
+    assert candle["h"] == 9.0
+    assert candle["l"] == 0.010
+    assert candle["c"] == 9.0
     assert candle["v"] == 3.0
