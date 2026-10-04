@@ -395,6 +395,10 @@ def parse_pump_trades(payload):
             "quoteAmount",
             "quote_amount_lamports",
             "quoteAmountLamports",
+            "quote_amount_in",
+            "quoteAmountIn",
+            "quote_amount_out",
+            "quoteAmountOut",
         }:
             return number / 1_000_000_000
 
@@ -416,6 +420,10 @@ def parse_pump_trades(payload):
             "tokenAmount",
             "base_amount",
             "baseAmount",
+            "base_amount_in",
+            "baseAmountIn",
+            "base_amount_out",
+            "baseAmountOut",
             "base_amount_raw",
             "baseAmountRaw",
             "token_amount_raw",
@@ -444,6 +452,8 @@ def parse_pump_trades(payload):
                 "created_at",
                 "createdTs",
                 "created_ts",
+                "createdAt",
+                "created_at_ms",
                 "block_time",
                 "blockTime",
             )
@@ -502,6 +512,10 @@ def parse_pump_trades(payload):
                 "tokenAmount",
                 "base_amount",
                 "baseAmount",
+                "base_amount_in",
+                "baseAmountIn",
+                "base_amount_out",
+                "baseAmountOut",
                 "token_amount_raw",
                 "tokens",
                 "amount_token",
