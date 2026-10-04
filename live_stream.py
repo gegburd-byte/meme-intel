@@ -366,6 +366,10 @@ class LiveTradeHub:
             return
         rows.append(dict(trade))
 
+        signature = str(trade.get("signature") or "")
+        if signature:
+            self._seen_signatures[mint].append(signature)
+
     def current_candle(self, mint: str, timeframe: int = 1) -> dict[str, Any] | None:
         """Build a bounded current Pump.fun candle from the already-decoded live feed.
 
@@ -506,6 +510,19 @@ class LiveTradeHub:
                                 },
                             ],
                         )
+
+                        if not isinstance(result, dict):
+                            result, tx_err = await self._rpc(
+                                "getTransaction",
+                                [
+                                    signature,
+                                    {
+                                        "encoding": "jsonParsed",
+                                        "commitment": "confirmed",
+                                        "maxSupportedTransactionVersion": 1,
+                                    },
+                                ],
+                            )
 
                         if tx_err or not isinstance(result, dict):
                             return None
