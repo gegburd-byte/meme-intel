@@ -1160,43 +1160,67 @@ async def live_rest_trade_loop(mint: str) -> None:
             now = time.time()
             rows = []
 
-            # Fast current Pump.fun/PumpSwap lane.
-            try:
-                swap_payload, _ = await asyncio.wait_for(
-                    pf.swap_trades(
-                        mint,
-                        limit=40,
-                        cursor=0,
-                        fresh=True,
-                    ),
-                    timeout=0.55,
+            # Run the fast Pump.fun/PumpSwap lane and the slower authenticated
+            # legacy lane concurrently so a slow fallback can never delay the
+            # primary live path.
+            swap_task = asyncio.create_task(
+                pf.swap_trades(
+                    mint,
+                    limit=40,
+                    cursor=0,
+                    fresh=True,
                 )
-                rows.extend(parse_pump_trades(swap_payload))
-            except Exception:
-                pass
+            )
 
-            # The authenticated legacy frontend trade endpoint is a second
-            # independent source. Poll it less often so it cannot become the
-            # hot-path bottleneck or rate-limit the deployment.
-            if (
+            legacy_due = (
                 os.getenv("PUMP_FUN_JWT")
                 and now - last_legacy_poll >= 1.0
-            ):
-                last_legacy_poll = now
-                try:
-                    native_payload, _ = await asyncio.wait_for(
-                        pf.trades(
-                            mint,
-                            limit=40,
-                            offset=0,
-                            minimum_size=0,
-                            fresh=True,
-                        ),
-                        timeout=0.60,
+            )
+            legacy_task = (
+                asyncio.create_task(
+                    pf.trades(
+                        mint,
+                        limit=40,
+                        offset=0,
+                        minimum_size=0,
+                        fresh=True,
                     )
-                    rows.extend(parse_pump_trades(native_payload))
-                except Exception:
-                    pass
+                )
+                if legacy_due
+                else None
+            )
+
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(
+                        swap_task,
+                        legacy_task,
+                        return_exceptions=True,
+                    ),
+                    timeout=0.65,
+                )
+            except asyncio.TimeoutError:
+                results = [None, None]
+                swap_task.cancel()
+                if legacy_task:
+                    legacy_task.cancel()
+
+            swap_result = results[0] if len(results) > 0 else None
+            if (
+                isinstance(swap_result, tuple)
+                and len(swap_result) == 2
+            ):
+                rows.extend(parse_pump_trades(swap_result[0]))
+
+            if legacy_task:
+                last_legacy_poll = now
+
+            legacy_result = results[1] if len(results) > 1 else None
+            if (
+                isinstance(legacy_result, tuple)
+                and len(legacy_result) == 2
+            ):
+                rows.extend(parse_pump_trades(legacy_result[0]))
 
             # Deduplicate the two exact-venue HTTP sources. Stable transaction
             # IDs are preferred; the timestamp/price/side/volume tuple is only
