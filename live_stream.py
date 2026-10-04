@@ -264,6 +264,48 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
     return None
 
 
+def _find_pumpfun_trade_payload(value: Any, depth: int = 0) -> dict[str, Any] | None:
+    """Unwrap the envelopes Pump.fun may place around tradeCreated payloads."""
+    if depth > 7:
+        return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text[0] not in "[{":
+            return None
+        try:
+            return _find_pumpfun_trade_payload(json.loads(text), depth + 1)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    if isinstance(value, dict):
+        mint = str(value.get("mint") or "").strip()
+        has_sol = value.get("sol_amount") is not None or value.get("solAmount") is not None
+        has_token = value.get("token_amount") is not None or value.get("tokenAmount") is not None
+        if mint and has_sol and has_token:
+            return value
+
+        for key in ("payload", "trade", "result", "subscribe", "data", "event"):
+            if key in value:
+                found = _find_pumpfun_trade_payload(value.get(key), depth + 1)
+                if found:
+                    return found
+
+        for child in value.values():
+            if isinstance(child, (dict, list, str)):
+                found = _find_pumpfun_trade_payload(child, depth + 1)
+                if found:
+                    return found
+        return None
+
+    if isinstance(value, list):
+        for child in value:
+            found = _find_pumpfun_trade_payload(child, depth + 1)
+            if found:
+                return found
+
+    return None
+
 def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
     """Parse Pump.fun's native Engine.IO/Socket.IO tradeCreated packet."""
     if not isinstance(raw, str) or not raw.startswith("42"):
@@ -278,25 +320,19 @@ def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
         not isinstance(packet, list)
         or len(packet) < 2
         or packet[0] != "tradeCreated"
-        or not isinstance(packet[1], dict)
     ):
         return None
 
-    payload = packet[1]
+    payload = _find_pumpfun_trade_payload(packet[1])
+    if payload is None:
+        return None
+
     mint = str(payload.get("mint") or "").strip()
     signature = str(payload.get("signature") or "").strip()
 
     try:
-        sol_value = (
-            payload.get("sol_amount")
-            if payload.get("sol_amount") is not None
-            else payload.get("solAmount")
-        )
-        token_value = (
-            payload.get("token_amount")
-            if payload.get("token_amount") is not None
-            else payload.get("tokenAmount")
-        )
+        sol_value = payload.get("sol_amount") if payload.get("sol_amount") is not None else payload.get("solAmount")
+        token_value = payload.get("token_amount") if payload.get("token_amount") is not None else payload.get("tokenAmount")
         sol_amount = float(sol_value or 0)
         token_amount = float(token_value or 0)
     except (TypeError, ValueError):
@@ -305,10 +341,7 @@ def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
     if not mint or sol_amount <= 0 or token_amount <= 0:
         return None
 
-    price = (
-        (sol_amount / 1_000_000_000)
-        / (token_amount / 1_000_000)
-    )
+    price = ((sol_amount / 1_000_000_000) / (token_amount / 1_000_000))
     if price <= 0:
         return None
 
@@ -345,11 +378,7 @@ def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
                     if payload.get("is_buy") is not None
                     else payload.get("isBuy")
                 )
-                or str(
-                    payload.get("side")
-                    or payload.get("txType")
-                    or ""
-                ).upper() == "BUY"
+                or str(payload.get("side") or payload.get("txType") or "").upper() == "BUY"
             )
             else "SELL"
         ),
@@ -359,7 +388,6 @@ def parse_pumpfun_socket_trade(raw: str) -> dict[str, Any] | None:
         "timestamp": timestamp,
         "native_pumpfun_ws": True,
     }
-
 
 class LiveTradeHub:
     """One Helius WebSocket multiplexed across all selected-token clients."""
