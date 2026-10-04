@@ -413,39 +413,66 @@ class PumpFunAdapter:
         # Pump.fun's current swap API exposes token trades. Prefer the
         # unfiltered feed so this continues across bonding-curve -> PumpSwap
         # migration; fall back to explicit program selectors when required.
+        # Current Pump.fun traffic includes a creation-time cursor in the
+        # query. The older implementation omitted it, which could return an
+        # old page (or an error) forever and made the "live" candle look frozen.
+        created_ts_ms = max(
+            0,
+            int((time.time() - 90) * 1000),
+        )
+
         query_variants = (
-            {},
-            {"program": "pump"},
-            {"program": "pump-amm"},
-            {"program": "pump_amm"},
+            {
+                "program": "pump",
+                "createdTs": created_ts_ms,
+            },
+            {
+                "program": "pump-amm",
+                "createdTs": created_ts_ms,
+            },
+            {
+                "program": "pump_amm",
+                "createdTs": created_ts_ms,
+            },
+            {
+                "program": "pump",
+                "createdTs": created_ts_ms,
+                "chainId": "solana",
+            },
+        )
+
+        hosts = (
+            PUMP_SWAP_API,
+            "https://advanced-api-v2.pump.fun",
         )
 
         last_error = None
-        for extra in query_variants:
-            try:
-                params = {
-                    "limit": limit,
-                    "cursor": cursor,
-                    "minSolAmount": 0,
-                    **extra,
-                }
-                r = await self._client.get(
-                    f"{PUMP_SWAP_API}/v2/coins/{mint}/trades",
-                    params=params,
-                )
+        for host in hosts:
+            for extra in query_variants:
+                try:
+                    params = {
+                        "limit": limit,
+                        "cursor": cursor,
+                        "minSolAmount": 0,
+                        **extra,
+                    }
+                    r = await self._client.get(
+                        f"{host}/v2/coins/{mint}/trades",
+                        params=params,
+                    )
 
-                if r.status_code >= 400:
-                    last_error = f"HTTP_{r.status_code}"
-                    continue
+                    if r.status_code >= 400:
+                        last_error = f"HTTP_{r.status_code}"
+                        continue
 
-                payload = r.json()
-                self._cache[key] = {
-                    "time": time.time(),
-                    "payload": payload,
-                }
-                return payload, None
-            except Exception as exc:
-                last_error = str(exc)
+                    payload = r.json()
+                    self._cache[key] = {
+                        "time": time.time(),
+                        "payload": payload,
+                    }
+                    return payload, None
+                except Exception as exc:
+                    last_error = str(exc)
 
         return None, last_error or "PUMP_SWAP_TRADES_UNAVAILABLE"
 
