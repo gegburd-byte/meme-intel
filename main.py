@@ -542,6 +542,20 @@ def parse_pump_trades(payload):
                     sol_amount_ui(sol_raw, sol_key),
                 )
 
+            trade_id, _ = first_value(
+                item,
+                "signature",
+                "tx_signature",
+                "txSignature",
+                "txHash",
+                "tx_hash",
+                "transaction",
+                "transactionHash",
+                "id",
+                "tradeId",
+                "trade_id",
+            )
+
             raw_side, _ = first_value(
                 item,
                 "is_buy",
@@ -560,6 +574,7 @@ def parse_pump_trades(payload):
                 side = "BUY"
 
             trades.append({
+                "id": str(trade_id or ""),
                 "ts": ts,
                 "price": float(price),
                 "volume": volume,
