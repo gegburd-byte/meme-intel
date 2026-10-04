@@ -383,6 +383,18 @@ def parse_pump_trades(payload):
                 return value, key
         return None, None
 
+    def first_positive_value(item, *keys):
+        for key in keys:
+            value = item.get(key)
+            if value is None:
+                continue
+            try:
+                if float(value) > 0:
+                    return value, key
+            except (TypeError, ValueError):
+                continue
+        return None, None
+
     def sol_amount_ui(value, key):
         number = float(value)
 
@@ -469,34 +481,19 @@ def parse_pump_trades(payload):
             if ts < 1_500_000_000:
                 continue
 
-            virtual_sol, _ = first_value(
-                item,
-                "virtual_sol_reserves",
-                "virtualSolReserves",
-            )
-            virtual_token, _ = first_value(
-                item,
-                "virtual_token_reserves",
-                "virtualTokenReserves",
-            )
-
-            price = None
-
-            if virtual_sol is not None and virtual_token is not None:
-                vs = float(virtual_sol)
-                vt = float(virtual_token)
-
-                if vs > 0 and vt > 0:
-                    price = (
-                        (vs / 1_000_000_000) /
-                        (vt / 1_000_000)
-                    )
-
-            sol_raw, sol_key = first_value(
+            # Executed quote/base amounts are the trade price authority.
+            # This matters after migration: stale bonding-curve virtual
+            # reserves can remain in API rows even though the token is trading
+            # on PumpSwap.
+            sol_raw, sol_key = first_positive_value(
                 item,
                 "sol_amount",
                 "solAmount",
                 "sol_amount_lamports",
+                "quote_amount_in",
+                "quoteAmountIn",
+                "quote_amount_out",
+                "quoteAmountOut",
                 "quote_amount",
                 "quoteAmount",
                 "quote_amount_lamports",
@@ -507,16 +504,16 @@ def parse_pump_trades(payload):
                 "quote_ui",
             )
 
-            token_raw, token_key = first_value(
+            token_raw, token_key = first_positive_value(
                 item,
                 "token_amount",
                 "tokenAmount",
-                "base_amount",
-                "baseAmount",
-                "base_amount_in",
-                "baseAmountIn",
                 "base_amount_out",
                 "baseAmountOut",
+                "base_amount_in",
+                "baseAmountIn",
+                "base_amount",
+                "baseAmount",
                 "token_amount_raw",
                 "tokens",
                 "amount_token",
@@ -525,12 +522,37 @@ def parse_pump_trades(payload):
                 "base_ui",
             )
 
-            if price is None and sol_raw is not None and token_raw is not None:
+            price = None
+
+            if sol_raw is not None and token_raw is not None:
                 sol_value = sol_amount_ui(sol_raw, sol_key)
                 token_value = token_amount_ui(token_raw, token_key)
 
                 if sol_value > 0 and token_value > 0:
                     price = sol_value / token_value
+
+            # Legacy bonding-curve rows without executed quote/base fields.
+            if price is None:
+                virtual_sol, _ = first_positive_value(
+                    item,
+                    "virtual_sol_reserves",
+                    "virtualSolReserves",
+                )
+                virtual_token, _ = first_positive_value(
+                    item,
+                    "virtual_token_reserves",
+                    "virtualTokenReserves",
+                )
+
+                if virtual_sol is not None and virtual_token is not None:
+                    vs = float(virtual_sol)
+                    vt = float(virtual_token)
+
+                    if vs > 0 and vt > 0:
+                        price = (
+                            (vs / 1_000_000_000) /
+                            (vt / 1_000_000)
+                        )
 
             if price is None:
                 raw_price, _ = first_value(
