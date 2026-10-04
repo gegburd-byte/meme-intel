@@ -1439,7 +1439,7 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
                     offset=0,
                     fresh=True,
                 ),
-                timeout=3.0,
+                timeout=1.0,
             )
             rows = parse_pump_candles(payload)
             return "PUMP.FUN", rows, err
