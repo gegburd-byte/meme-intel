@@ -381,7 +381,7 @@ class LiveTradeHub:
         )
 
     def active(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key or self.pumpfun_live)
 
     async def add_client(
         self,
@@ -632,6 +632,10 @@ class LiveTradeHub:
                     self.pumpfun_live = True
                     self.state = "LIVE"
                     self.last_error = ""
+                    await self._status_all(
+                        "LIVE",
+                        "PUMP.FUN native trade stream",
+                    )
 
                     # Engine.IO opens the underlying transport first; Socket.IO
                     # CONNECT (40) then enters the default namespace.
