@@ -31,6 +31,9 @@ let chartDataSource = "PUMP.FUN";
 let chartDisplayMode = "PRICE";
 let selectedSupply = 0;
 let selectedMarketCap = 0;
+let selectedMarketCapUsd = 0;
+let selectedMarketCapSol = 0;
+let chartMcFactor = 0;
 let historyGeneration = 0;
 let historyBusy = false;
 let historyBusyGeneration = 0;
@@ -51,22 +54,40 @@ function formatCompactNumber(value) {
   if (!Number.isFinite(n)) return "—";
 
   const abs = Math.abs(n);
-  if (abs >= 1e9) return (n / 1e9).toFixed(2).replace(/\.00$/,"") + "B";
-  if (abs >= 1e6) return (n / 1e6).toFixed(2).replace(/\.00$/,"") + "M";
-  if (abs >= 1e3) return (n / 1e3).toFixed(2).replace(/\.00$/,"") + "K";
-  return n.toLocaleString(undefined,{maximumFractionDigits:2});
+
+  if (abs >= 1e9) {
+    return (n / 1e9).toFixed(2).replace(/\.00$/,"") + "B";
+  }
+
+  if (abs >= 1e6) {
+    return (n / 1e6).toFixed(2).replace(/\.00$/,"") + "M";
+  }
+
+  if (abs >= 1e3) {
+    return (n / 1e3).toFixed(2).replace(/\.00$/,"") + "K";
+  }
+
+  return n.toLocaleString(
+    undefined,
+    {maximumFractionDigits:2}
+  );
 }
 
 function displayValue(price) {
   const p = Number(price);
-  if (!Number.isFinite(p)) return null;
+
+  if (!Number.isFinite(p)) {
+    return null;
+  }
 
   if (
     chartDisplayMode === "MC" &&
-    Number.isFinite(Number(selectedSupply)) &&
-    Number(selectedSupply) > 0
+    Number.isFinite(chartMcFactor) &&
+    chartMcFactor > 0
   ) {
-    return p * Number(selectedSupply);
+    // Candle prices are SOL/token. Pump.fun's exact current market cap
+    // gives us the correct USD scale factor for this token.
+    return p * chartMcFactor;
   }
 
   return p;
@@ -74,7 +95,10 @@ function displayValue(price) {
 
 function formatChartValue(price) {
   const value = displayValue(price);
-  if (value == null) return "—";
+
+  if (value == null) {
+    return "—";
+  }
 
   if (chartDisplayMode === "MC") {
     return "$" + formatCompactNumber(value);
@@ -85,60 +109,108 @@ function formatChartValue(price) {
 
 async function loadChartMeta(mint) {
   const mintAtStart = mint;
+
   try {
     const r = await fetch(
-      "/api/live/price?mint=" +
+      "/api/chart/meta?mint=" +
       encodeURIComponent(mint) +
       "&t=" + Date.now(),
-      {cache:"no-store"}
+      {
+        cache:"no-store"
+      }
     );
 
     const data = await readJsonResponse(r);
 
-    if (mintAtStart !== selectedMint) return;
+    if (mintAtStart !== selectedMint) {
+      return;
+    }
 
-    let supply = Number(data.supply);
-    const price = Number(data.price);
-    const marketCap = Number(data.market_cap);
+    const supplyRaw = Number(data.total_supply);
+    const mcUsd = Number(data.market_cap_usd);
+    const mcSol = Number(data.market_cap_sol);
+    const priceSol = Number(data.price_sol);
 
-    // Some price providers return market cap but not supply. Derive it once;
-    // this keeps the MC toggle useful without another network request.
+    let supplyUi = supplyRaw;
+
     if (
-      (!Number.isFinite(supply) || supply <= 0) &&
-      Number.isFinite(price) &&
-      price > 0 &&
-      Number.isFinite(marketCap) &&
-      marketCap > 0
+      Number.isFinite(supplyUi) &&
+      supplyUi > 1e9
     ) {
-      supply = marketCap / price;
+      supplyUi /= 1e6;
     }
 
-    if (Number.isFinite(supply) && supply > 0) {
-      selectedSupply = supply;
+    if (
+      Number.isFinite(supplyUi) &&
+      supplyUi > 0
+    ) {
+      selectedSupply = supplyUi;
     }
 
-    if (Number.isFinite(marketCap) && marketCap > 0) {
-      selectedMarketCap = marketCap;
+    if (
+      Number.isFinite(mcUsd) &&
+      mcUsd > 0
+    ) {
+      selectedMarketCapUsd = mcUsd;
+      selectedMarketCap = mcUsd;
+    }
+
+    if (
+      Number.isFinite(mcSol) &&
+      mcSol > 0
+    ) {
+      selectedMarketCapSol = mcSol;
+    }
+
+    // Exact Pump.fun market cap divided by Pump.fun's current SOL price/token
+    // gives the USD multiplier used for every chart candle.
+    if (
+      Number.isFinite(mcUsd) &&
+      mcUsd > 0 &&
+      Number.isFinite(priceSol) &&
+      priceSol > 0
+    ) {
+      chartMcFactor = mcUsd / priceSol;
+    } else if (
+      selectedSupply > 0 &&
+      selectedMarketCapUsd > 0 &&
+      Number.isFinite(Number(window.__memeIntelSolPrice)) &&
+      Number(window.__memeIntelSolPrice) > 0
+    ) {
+      chartMcFactor =
+        selectedSupply *
+        Number(window.__memeIntelSolPrice);
     }
 
     const button = $("chartMc");
+
     if (button) {
-      button.disabled = !(selectedSupply > 0);
-      button.title = selectedSupply > 0
-        ? "Show market-cap scale like Pump.fun"
-        : "Market-cap data unavailable";
+      button.disabled = !(chartMcFactor > 0);
+      button.title =
+        chartMcFactor > 0
+          ? "Show Pump.fun market-cap scale"
+          : "Pump.fun market-cap data unavailable";
     }
 
-    if (chartDisplayMode === "MC" && selectedSupply > 0 && chartInitialized) {
+    if (
+      chartDisplayMode === "MC" &&
+      chartMcFactor > 0 &&
+      chartInitialized
+    ) {
       chart.applyOptions({
         localization:{
           priceFormatter:formatChartValue
         }
       });
-      renderChart(selectedCandles,false);
+
+      renderChart(
+        selectedCandles,
+        false
+      );
     }
   } catch {
     const button = $("chartMc");
+
     if (button) {
       button.disabled = true;
     }
@@ -146,16 +218,29 @@ async function loadChartMeta(mint) {
 }
 
 function setChartDisplayMode(mode) {
-  const next = mode === "MC" ? "MC" : "PRICE";
+  const next =
+    mode === "MC"
+      ? "MC"
+      : "PRICE";
 
-  if (next === "MC" && !(selectedSupply > 0)) {
+  if (
+    next === "MC" &&
+    !(chartMcFactor > 0)
+  ) {
     return;
   }
 
   chartDisplayMode = next;
 
-  $("chartPrice")?.classList.toggle("active", chartDisplayMode === "PRICE");
-  $("chartMc")?.classList.toggle("active", chartDisplayMode === "MC");
+  $("chartPrice")?.classList.toggle(
+    "active",
+    chartDisplayMode === "PRICE"
+  );
+
+  $("chartMc")?.classList.toggle(
+    "active",
+    chartDisplayMode === "MC"
+  );
 
   if (chart) {
     chart.applyOptions({
@@ -165,21 +250,30 @@ function setChartDisplayMode(mode) {
     });
   }
 
-  if (chartDisplayMode === "MC") {
-    $("activePriceLabel").textContent = "ACTIVE MC";
-  } else {
-    $("activePriceLabel").textContent = "ACTIVE PRICE";
-  }
+  $("activePriceLabel").textContent =
+    chartDisplayMode === "MC"
+      ? "ACTIVE MC"
+      : "ACTIVE PRICE";
 
-  if (selectedCandles.length && chartInitialized) {
-    renderChart(selectedCandles,false);
+  if (
+    selectedCandles.length &&
+    chartInitialized
+  ) {
+    renderChart(
+      selectedCandles,
+      false
+    );
   } else if (selectedMint) {
     $("activePrice").textContent =
-      chartDisplayMode === "MC" && selectedMarketCap > 0
-        ? formatCompactNumber(selectedMarketCap)
+      chartDisplayMode === "MC" &&
+      selectedMarketCapUsd > 0
+        ? "$" + formatCompactNumber(
+            selectedMarketCapUsd
+          )
         : "—";
   }
 }
+
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, Number(v) || 0));
@@ -338,18 +432,20 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
   if (!candles.length || endIndex < 0) {
     return {
       state:"WAIT",
-      reason:"Waiting for live on-chain trades…",
+      reason:"Waiting for live Pump.fun trades…",
       rsi:null,
       ema9:null,
       ema21:null,
       mean:null,
       pressure:null,
-      score:0
+      score:0,
+      buyTrigger:null,
+      sellTrigger:null
     };
   }
 
   const closes = candles
-    .slice(0, endIndex + 1)
+    .slice(0,endIndex + 1)
     .map(x=>Number(x.c))
     .filter(Number.isFinite);
 
@@ -362,7 +458,9 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
       ema21:null,
       mean:null,
       pressure:null,
-      score:0
+      score:0,
+      buyTrigger:null,
+      sellTrigger:null
     };
   }
 
@@ -372,7 +470,9 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
   const r = rsi(closes,14);
 
   const tail = closes.slice(-30);
-  const m = tail.reduce((a,b)=>a+b,0) / tail.length;
+  const mean =
+    tail.reduce((a,b)=>a+b,0) /
+    tail.length;
 
   const recent = closes.slice(-12);
 
@@ -380,71 +480,149 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
   let down = 0;
 
   for (let i=1;i<recent.length;i++) {
-    if (recent[i] > recent[i-1]) up++;
-    else if (recent[i] < recent[i-1]) down++;
-  }
-
-  const moves = up + down;
-  const pressure = moves ? up / moves : 0.5;
-  const momentum = closes.length >= 5
-    ? (p / closes[closes.length - 5] - 1) * 100
-    : 0;
-
-  let score = 50;
-
-  if (e9 != null && e21 != null) score += e9 > e21 ? 16 : -16;
-
-  if (r != null) {
-    if (r >= 50 && r <= 72) score += 12;
-    else if (r < 42) score -= 12;
-    else if (r > 78) score -= 8;
-  }
-
-  score += p >= m ? 9 : -9;
-
-  if (pressure >= 0.60) score += 9;
-  if (pressure <= 0.40) score -= 9;
-
-  if (momentum > 1.0) score += 8;
-  if (momentum < -1.0) score -= 8;
-
-  score = Math.round(clamp(score,0,100));
-
-  let state = "WAIT";
-
-  if (e9 != null && e21 != null && r != null) {
-    if (
-      score >= 65 &&
-      e9 > e21 &&
-      p > m &&
-      r >= 50 &&
-      r <= 72 &&
-      pressure >= 0.55
-    ) {
-      state = "BUY";
-    } else if (
-      score <= 35 &&
-      e9 < e21 &&
-      p < m &&
-      r <= 50 &&
-      pressure <= 0.45
-    ) {
-      state = "SELL";
+    if (recent[i] > recent[i-1]) {
+      up++;
+    } else if (recent[i] < recent[i-1]) {
+      down++;
     }
   }
 
-  let reason = "Mixed conditions — wait for confirmation.";
+  const moves = up + down;
+  const pressure =
+    moves
+      ? up / moves
+      : 0.5;
+
+  const priorBreakout = closes.slice(
+    Math.max(0,closes.length - 7),
+    closes.length - 1
+  );
+
+  const priorHigh = priorBreakout.length
+    ? Math.max(...priorBreakout)
+    : p;
+
+  const priorLow = priorBreakout.length
+    ? Math.min(...priorBreakout)
+    : p;
+
+  const momentum =
+    closes.length >= 5
+      ? (p / closes[closes.length - 5] - 1) * 100
+      : 0;
+
+  let score = 50;
+
+  if (
+    e9 != null &&
+    e21 != null
+  ) {
+    score +=
+      e9 > e21
+        ? 16
+        : -16;
+  }
+
+  if (r != null) {
+    if (r >= 50 && r <= 72) {
+      score += 12;
+    } else if (r < 42) {
+      score -= 12;
+    } else if (r > 78) {
+      score -= 8;
+    }
+  }
+
+  score +=
+    p >= mean
+      ? 9
+      : -9;
+
+  if (pressure >= 0.60) {
+    score += 9;
+  }
+
+  if (pressure <= 0.40) {
+    score -= 9;
+  }
+
+  if (momentum > 1) {
+    score += 8;
+  }
+
+  if (momentum < -1) {
+    score -= 8;
+  }
+
+  score = Math.round(
+    clamp(score,0,100)
+  );
+
+  const buyTrigger =
+    priorHigh > 0
+      ? priorHigh * 1.002
+      : null;
+
+  const sellTrigger =
+    e21 != null
+      ? Math.max(
+          priorLow,
+          e21
+        )
+      : priorLow;
+
+  let state = "WAIT";
+
+  const buyReady =
+    e9 != null &&
+    e21 != null &&
+    r != null &&
+    p >= buyTrigger &&
+    e9 > e21 &&
+    p > mean &&
+    r >= 50 &&
+    r <= 72 &&
+    pressure >= 0.55;
+
+  const sellReady =
+    e9 != null &&
+    e21 != null &&
+    r != null &&
+    (
+      p <= sellTrigger &&
+      e9 < e21 &&
+      pressure <= 0.45
+    );
+
+  if (buyReady) {
+    state = "BUY";
+  } else if (sellReady) {
+    state = "SELL";
+  }
+
+  let reason =
+    "WAIT — no confirmed trigger.";
 
   if (state === "BUY") {
     reason =
-      "Bullish " + timeframeLabel() +
-      " trend: EMA 9 > EMA 21, price is above the mean, and upside pressure leads.";
-  }
-
-  if (state === "SELL") {
+      "BUY TRIGGER CONFIRMED — wait for the current 1m candle to close above " +
+      safe(buyTrigger,12) +
+      " with EMA 9 above EMA 21 and positive trade pressure.";
+  } else if (state === "SELL") {
     reason =
-      "Bearish " + timeframeLabel() +
-      " trend: EMA 9 < EMA 21, price is below the mean, and downside pressure leads.";
+      "SELL / EXIT TRIGGER — price is below the defined trend/structure level " +
+      safe(sellTrigger,12) +
+      " with bearish EMA and trade pressure.";
+  } else if (
+    e9 != null &&
+    e21 != null
+  ) {
+    reason =
+      "WAIT — buy only on a confirmed close above " +
+      safe(buyTrigger,12) +
+      "; exit/defend below " +
+      safe(sellTrigger,12) +
+      ".";
   }
 
   return {
@@ -453,12 +631,15 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
     rsi:r,
     ema9:e9,
     ema21:e21,
-    mean:m,
+    mean,
     pressure,
     momentum,
-    score
+    score,
+    buyTrigger,
+    sellTrigger
   };
 }
+
 
 function launchScore(e) {
   const age = Math.max(0, (Date.now() - e.ts) / 1000);
@@ -922,6 +1103,16 @@ function updateIndicatorPanel(signal) {
 
   $("metricConfirm").textContent =
     signal.score + "/100";
+
+  $("buyTrigger").textContent =
+    signal.buyTrigger == null
+      ? "—"
+      : formatChartValue(signal.buyTrigger);
+
+  $("sellTrigger").textContent =
+    signal.sellTrigger == null
+      ? "—"
+      : formatChartValue(signal.sellTrigger);
 }
 
 function renderSignal(signal) {
@@ -2313,6 +2504,9 @@ async function selectToken(mint) {
   selectedTrades = [];
   selectedSupply = 0;
   selectedMarketCap = 0;
+  selectedMarketCapUsd = 0;
+  selectedMarketCapSol = 0;
+  chartMcFactor = 0;
   chartDisplayMode = "PRICE";
   $("chartPrice")?.classList.add("active");
   $("chartMc")?.classList.remove("active");
