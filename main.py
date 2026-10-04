@@ -1430,21 +1430,6 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
         except Exception as exc:
             return "HELIUS_ONCHAIN_TRADES", [], str(exc)[:240]
 
-    async def gecko_history():
-        try:
-            payload, err = await asyncio.wait_for(
-                gt.candles(mint, "1m"),
-                timeout=5.0,
-            )
-            base = parse_candles(payload)
-            rows = aggregate_timeframe_candles(
-                base,
-                timeframe,
-            )[-limit:]
-            return "GECKOTERMINAL", rows, err
-        except Exception as exc:
-            return "GECKOTERMINAL", [], str(exc)[:240]
-
     native_task = asyncio.create_task(native_history())
 
     # Accuracy-first fallback chain:
