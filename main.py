@@ -2077,6 +2077,7 @@ async def chart_current(
     live = trade_hub.current_candle(
         mint,
         timeframe=chart_interval,
+        max_age_seconds=2,
     )
     if live:
         return {
