@@ -3556,162 +3556,84 @@ function connectNativePumpFunTrades(mint) {
   if (!mint) return;
 
   if (pumpFunNativeReconnectTimer) {
-    clearTimeout(
-      pumpFunNativeReconnectTimer
-    );
+    clearTimeout(pumpFunNativeReconnectTimer);
     pumpFunNativeReconnectTimer = null;
   }
 
   if (pumpFunNativeTradeSocket) {
     const oldSocket = pumpFunNativeTradeSocket;
     pumpFunNativeTradeSocket = null;
-
     try {
       oldSocket.close();
     } catch {}
   }
 
-  const url =
-    "wss://frontend-api-v3.pump.fun/socket.io/" +
-    "?EIO=4&transport=websocket";
+  const url = "wss://frontend-api-v3.pump.fun/socket.io/?EIO=4&transport=websocket";
 
   try {
     const socket = new WebSocket(url);
     pumpFunNativeTradeSocket = socket;
 
     socket.addEventListener("open",() => {
-      if (socket !== pumpFunNativeTradeSocket) {
-        return;
-      }
-
+      if (socket !== pumpFunNativeTradeSocket) return;
       pumpFunNativeBackoff = 500;
-
-      $("chartMode").textContent =
-        "PUMP.FUN NATIVE LIVE · " +
-        timeframeLabel() +
-        " · CONNECTING";
+      $("chartMode").textContent = "PUMP.FUN NATIVE LIVE · " + timeframeLabel() + " · CONNECTING";
     });
 
     socket.addEventListener("message",(ev) => {
-      if (sock      if (data.startsWith("40")) {
-        for (const frame of PUMP_FUN_SUBSCRIBE_FRAMES) {
-          try {
-            socket.send(frame);
-          } catch {}
-        }
-open.
+      if (socket !== pumpFunNativeTradeSocket) return;
+      const data = String(ev.data || "");
+
       if (data.startsWith("0")) {
-        try {
-          socket.send("40");
-        } catch {}
+        try { socket.send("40"); } catch {}
         return;
       }
 
       if (data.startsWith("40")) {
-        try {
-          socket.send(
-            '42["subscribe","tradeCreated"]'
-          );
-        } catch {}
-
-        $("chartMode").textContent =
-          "PUMP.FUN NATIVE LIVE · " +
-          timeframeLabel() +
-          " · LIVE";
-
+        for (const frame of PUMP_FUN_SUBSCRIBE_FRAMES) {
+          try { socket.send(frame); } catch {}
+        }
+        $("chartMode").textContent = "PUMP.FUN NATIVE LIVE · " + timeframeLabel() + " · LIVE";
         return;
       }
 
-      // Engine.IO ping -> pong.
-      if (
-        data === "2" ||
-        data.startsWith("2")
-      ) {
-        try {
-          socket.send("3");
-        } catch {}
+      if (data === "2" || data.startsWith("2")) {
+        try { socket.send("3"); } catch {}
         return;
       }
 
-      if (!data.startsWith("42")) {
-        return;
-      }
-
-      if (
-        selectedMint &&
-        data.indexOf(selectedMint) < 0
-      ) {
-        return;
-      }
+      if (!data.startsWith("42")) return;
+      if (selectedMint && data.indexOf(selectedMint) < 0) return;
 
       try {
-        const packet =
-          JSON.parse(
-            data.slice(2)
-          );
+        const packet = JSON.parse(data.slice(2));
+        if (!Array.isArray(packet) || packet.length < 2 || packet[0] !== "tradeCreated") return;
 
-        if (
-          !Array.isArray(packet) ||
-          packet.length < 2 ||
-          packet[0] !== "tradeCreated" ||
-          !packet[1] ||
-          typeof packet[1] !== "object"
-        ) {
-          return;
-        }
+        const trade = parseNativePumpFunTrade(packet[1]);
+        if (!trade || !selectedMint) return;
 
-        const raw = packet[1];
+        const payload = findNativePumpFunTradePayload(packet[1]);
+        if (!payload || String(payload.mint || "").trim() !== selectedMint) return;
 
-        if (
-          !selectedMint ||
-          raw.mint !== selectedMint
-        ) {
-          return;
-        }
-
-        const trade =
-          parseNativePumpFunTrade(raw);
-
-        if (!trade) {
-          return;
-        }
-
-        applyLiveTrade(
-          trade,
-          true
-        );
+        applyLiveTrade(trade,true);
       } catch {}
     });
 
     socket.addEventListener("close",() => {
-      if (socket !== pumpFunNativeTradeSocket) {
-        return;
-      }
-
+      if (socket !== pumpFunNativeTradeSocket) return;
       pumpFunNativeTradeSocket = null;
-
-      $("chartMode").textContent =
-        "RECONNECTING PUMP.FUN LIVE FEED…";
-
-      scheduleNativePumpFunReconnect(
-        mint
-      );
+      $("chartMode").textContent = "RECONNECTING PUMP.FUN LIVE FEED…";
+      scheduleNativePumpFunReconnect(mint);
     });
 
     socket.addEventListener("error",() => {
-      if (socket !== pumpFunNativeTradeSocket) {
-        return;
-      }
-
-      try {
-        socket.close();
-      } catch {}
+      if (socket !== pumpFunNativeTradeSocket) return;
+      try { socket.close(); } catch {}
     });
   } catch {
     scheduleNativePumpFunReconnect(mint);
   }
 }
-
 function disconnectBackendLiveTrade() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
