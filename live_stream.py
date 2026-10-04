@@ -700,7 +700,7 @@ class LiveTradeHub:
                         "User-Agent": "Meme-Intel/1.0",
                     },
                     transports=["websocket"],
-                    socketio_path="/socket.io",
+                    socketio_path="socket.io",
                     wait_timeout=8,
                 )
 
