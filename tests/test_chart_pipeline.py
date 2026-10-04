@@ -235,3 +235,16 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     assert "findNativePumpFunTradePayload" in app
     assert "refreshIndicatorHistory" in app
     assert "VWAP / ATR" in html
+
+def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
+    from pathlib import Path
+
+    app = Path("static/app.js").read_text()
+    html = Path("static/index.html").read_text()
+
+    select_block = app[app.index("connectLiveTrade(mint);"):app.index("loadChartMeta(mint);")]
+    assert "connectNativePumpFunTrades(mint);" not in select_block
+    assert "selectedTrades.some(x => x.id === t.id)" not in app
+    assert "renderTape();" not in app[app.index("function updateCandleFromLiveTrade"):app.index("function liveTradePriceIsPlausible")]
+    assert "selectedMinuteCandles = selectedMinuteCandles.map" not in app
+    assert "chartfix33" in html
