@@ -28,6 +28,9 @@ let chartInitialized = false;
 
 let chartTimeframe = 1;
 let chartDataSource = "PUMP.FUN";
+let chartDisplayMode = "PRICE";
+let selectedSupply = 0;
+let selectedMarketCap = 0;
 let historyGeneration = 0;
 let historyBusy = false;
 let historyBusyGeneration = 0;
@@ -42,6 +45,141 @@ let liveTradeBackoff = 500;
 
 const PAGE_SIZE = 30;
 const MAX_HISTORY_BARS = 120;
+
+function formatCompactNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return (n / 1e9).toFixed(2).replace(/\.00$/,"") + "B";
+  if (abs >= 1e6) return (n / 1e6).toFixed(2).replace(/\.00$/,"") + "M";
+  if (abs >= 1e3) return (n / 1e3).toFixed(2).replace(/\.00$/,"") + "K";
+  return n.toLocaleString(undefined,{maximumFractionDigits:2});
+}
+
+function displayValue(price) {
+  const p = Number(price);
+  if (!Number.isFinite(p)) return null;
+
+  if (
+    chartDisplayMode === "MC" &&
+    Number.isFinite(Number(selectedSupply)) &&
+    Number(selectedSupply) > 0
+  ) {
+    return p * Number(selectedSupply);
+  }
+
+  return p;
+}
+
+function formatChartValue(price) {
+  const value = displayValue(price);
+  if (value == null) return "—";
+
+  if (chartDisplayMode === "MC") {
+    return "$" + formatCompactNumber(value);
+  }
+
+  return safe(value,12);
+}
+
+async function loadChartMeta(mint) {
+  const mintAtStart = mint;
+  try {
+    const r = await fetch(
+      "/api/live/price?mint=" +
+      encodeURIComponent(mint) +
+      "&t=" + Date.now(),
+      {cache:"no-store"}
+    );
+
+    const data = await readJsonResponse(r);
+
+    if (mintAtStart !== selectedMint) return;
+
+    let supply = Number(data.supply);
+    const price = Number(data.price);
+    const marketCap = Number(data.market_cap);
+
+    // Some price providers return market cap but not supply. Derive it once;
+    // this keeps the MC toggle useful without another network request.
+    if (
+      (!Number.isFinite(supply) || supply <= 0) &&
+      Number.isFinite(price) &&
+      price > 0 &&
+      Number.isFinite(marketCap) &&
+      marketCap > 0
+    ) {
+      supply = marketCap / price;
+    }
+
+    if (Number.isFinite(supply) && supply > 0) {
+      selectedSupply = supply;
+    }
+
+    if (Number.isFinite(marketCap) && marketCap > 0) {
+      selectedMarketCap = marketCap;
+    }
+
+    const button = $("chartMc");
+    if (button) {
+      button.disabled = !(selectedSupply > 0);
+      button.title = selectedSupply > 0
+        ? "Show market-cap scale like Pump.fun"
+        : "Market-cap data unavailable";
+    }
+
+    if (chartDisplayMode === "MC" && selectedSupply > 0 && chartInitialized) {
+      chart.applyOptions({
+        localization:{
+          priceFormatter:formatChartValue
+        }
+      });
+      renderChart(selectedCandles,false);
+    }
+  } catch {
+    const button = $("chartMc");
+    if (button) {
+      button.disabled = true;
+    }
+  }
+}
+
+function setChartDisplayMode(mode) {
+  const next = mode === "MC" ? "MC" : "PRICE";
+
+  if (next === "MC" && !(selectedSupply > 0)) {
+    return;
+  }
+
+  chartDisplayMode = next;
+
+  $("chartPrice")?.classList.toggle("active", chartDisplayMode === "PRICE");
+  $("chartMc")?.classList.toggle("active", chartDisplayMode === "MC");
+
+  if (chart) {
+    chart.applyOptions({
+      localization:{
+        priceFormatter:formatChartValue
+      }
+    });
+  }
+
+  if (chartDisplayMode === "MC") {
+    $("activePriceLabel").textContent = "ACTIVE MC";
+  } else {
+    $("activePriceLabel").textContent = "ACTIVE PRICE";
+  }
+
+  if (selectedCandles.length && chartInitialized) {
+    renderChart(selectedCandles,false);
+  } else if (selectedMint) {
+    $("activePrice").textContent =
+      chartDisplayMode === "MC" && selectedMarketCap > 0
+        ? formatCompactNumber(selectedMarketCap)
+        : "—";
+  }
+}
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, Number(v) || 0));
@@ -517,7 +655,7 @@ function initChart() {
     },
 
     localization:{
-      priceFormatter:(price)=>safe(price,12)
+      priceFormatter:formatChartValue
     }
   });
 
@@ -804,7 +942,7 @@ function renderSignal(signal) {
 }
 
 function updateActivePrice(price, ts = Date.now()) {
-  $("activePrice").textContent = safe(price,12);
+  $("activePrice").textContent = formatChartValue(price);
   $("livePrice").textContent = safe(price,12);
 
   const age = Math.max(
@@ -974,10 +1112,10 @@ function renderChart(candles, fit = false) {
   candleSeries.setData(
     candles.map(x=>({
       time:x.time,
-      open:x.o,
-      high:x.h,
-      low:x.l,
-      close:x.c
+      open:displayValue(x.o),
+      high:displayValue(x.h),
+      low:displayValue(x.l),
+      close:displayValue(x.c)
     }))
   );
 
@@ -993,8 +1131,18 @@ function renderChart(candles, fit = false) {
 
   const ind = indicatorSeries(candles);
 
-  ema9Series.setData(ind.ema9);
-  ema21Series.setData(ind.ema21);
+  ema9Series.setData(
+    ind.ema9.map(x=>({
+      time:x.time,
+      value:displayValue(x.value / 1)
+    }))
+  );
+  ema21Series.setData(
+    ind.ema21.map(x=>({
+      time:x.time,
+      value:displayValue(x.value / 1)
+    }))
+  );
   markersApi.setMarkers(buildMarkers(candles));
 
   const signal = signalFromCandles(candles);
@@ -1025,10 +1173,10 @@ function updateLiveCandleOnSeries(candle) {
 
   candleSeries.update({
     time:candle.time,
-    open:candle.o,
-    high:candle.h,
-    low:candle.l,
-    close:candle.c
+    open:displayValue(candle.o),
+    high:displayValue(candle.h),
+    low:displayValue(candle.l),
+    close:displayValue(candle.c)
   });
 
   volumeSeries.update({
@@ -1055,14 +1203,14 @@ function updateRealtimeChart(candle) {
   if (e9 != null) {
     ema9Series.update({
       time:candle.time,
-      value:e9
+      value:displayValue(e9)
     });
   }
 
   if (e21 != null) {
     ema21Series.update({
       time:candle.time,
-      value:e21
+      value:displayValue(e21)
     });
   }
 
@@ -1233,6 +1381,8 @@ async function fetchInitialHistory() {
       historyBarsLoaded = selectedCandles.length;
       renderChart(selectedCandles,true);
 
+      fetchFastHistoricalBackfill(generation);
+
       $("chartMode").textContent =
         chartDataSource === "LIVE_PRICE"
           ? "LIVE PRICE · " + timeframeLabel() + " · HISTORY LOADING"
@@ -1265,6 +1415,8 @@ async function fetchInitialHistory() {
 
       renderChart(selectedCandles,true);
 
+      fetchFastHistoricalBackfill(generation);
+
       setTimeout(() => {
         if (generation === historyGeneration) {
           loadOlderHistory(generation);
@@ -1294,6 +1446,72 @@ async function fetchInitialHistory() {
     if (initialHistoryGeneration === generation) {
       initialHistoryBusy = false;
     }
+  }
+}
+
+async function fetchFastHistoricalBackfill(generation) {
+  if (!selectedMint || generation !== historyGeneration) return false;
+
+  try {
+    const r = await fetch(
+      "/api/chart/history?mint=" +
+      encodeURIComponent(selectedMint) +
+      "&timeframe=" + chartTimeframe +
+      "&limit=90&t=" + Date.now(),
+      {cache:"no-store"}
+    );
+
+    if (!r.ok) return false;
+
+    const j = await readJsonResponse(r);
+    const candles = (j.candles || [])
+      .map(normalizeCandle)
+      .filter(Boolean)
+      .sort((a,b)=>a.time-b.time);
+
+    if (
+      generation !== historyGeneration ||
+      !selectedMint ||
+      !candles.length
+    ) {
+      return false;
+    }
+
+    const activeTime = selectedCandles.length
+      ? selectedCandles[selectedCandles.length - 1].time
+      : null;
+
+    const historicalOnly = candles.filter(
+      c => activeTime == null || c.time < activeTime
+    );
+
+    if (!historicalOnly.length) return false;
+
+    const byTime = new Map(
+      selectedCandles.map(x=>[x.time,x])
+    );
+
+    for (const candle of historicalOnly) {
+      byTime.set(candle.time,{...candle});
+    }
+
+    selectedCandles = [...byTime.values()]
+      .sort((a,b)=>a.time-b.time)
+      .slice(-MAX_HISTORY_BARS);
+
+    historyBarsLoaded = selectedCandles.length;
+    chartDataSource = j.source || "ON-CHAIN HISTORY";
+
+    if (chartInitialized) {
+      renderChart(selectedCandles,true);
+    }
+
+    $("historyStatus").textContent =
+      historyBarsLoaded.toLocaleString() + " bars";
+
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1928,6 +2146,7 @@ async function setTimeframe(tf) {
   // Ask for authoritative Pump.fun history in the background. It can replace
   // the temporary live-trade history without blocking the already-visible chart.
   fetchInitialHistory().catch(()=>{});
+  fetchFastHistoricalBackfill(historyGeneration);
 }
 
 function showAll() {
@@ -2092,6 +2311,13 @@ async function selectToken(mint) {
   selectedMint = mint;
   selectedCandles = [];
   selectedTrades = [];
+  selectedSupply = 0;
+  selectedMarketCap = 0;
+  chartDisplayMode = "PRICE";
+  $("chartPrice")?.classList.add("active");
+  $("chartMc")?.classList.remove("active");
+  $("chartMc")?.setAttribute("disabled","disabled");
+  $("activePriceLabel").textContent = "ACTIVE PRICE";
   selectedInfo =
     mergedCandidates().find(x=>x.mint===mint) ||
     {mint};
@@ -2173,6 +2399,7 @@ async function selectToken(mint) {
   // loading without being captured.
   connectLiveTrade(mint);
   startCurrentCandleSync();
+  loadChartMeta(mint);
 
   // Paint real chart data first. The heavier security/risk analysis starts
   // immediately after the first chart request has had a chance to render.
@@ -2324,6 +2551,16 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("chartLive").addEventListener(
     "click",
     showLive
+  );
+
+  $("chartPrice").addEventListener(
+    "click",
+    ()=>setChartDisplayMode("PRICE")
+  );
+
+  $("chartMc").addEventListener(
+    "click",
+    ()=>setChartDisplayMode("MC")
   );
 
   health();
