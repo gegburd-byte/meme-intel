@@ -1381,6 +1381,50 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
   scheduleLiveRender();
 }
 
+function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
+  const span = Math.max(60, Number(tfMinutes || 1) * 60);
+  const rows = new Map();
+
+  for (const trade of [...(trades || [])].sort((a,b)=>a.time-b.time)) {
+    const price = Number(trade.price);
+    const ts = Number(trade.time);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts)) {
+      continue;
+    }
+
+    const bucket = Math.floor(ts / span) * span;
+    const volume = Math.max(
+      0,
+      Number(trade.volumeSol ?? trade.volume_sol ?? 0)
+    );
+
+    let row = rows.get(bucket);
+
+    if (!row) {
+      row = {
+        time:bucket,
+        ts:bucket,
+        o:price,
+        h:price,
+        l:price,
+        c:price,
+        v:volume
+      };
+      rows.set(bucket,row);
+      continue;
+    }
+
+    row.h = Math.max(row.h,price);
+    row.l = Math.min(row.l,price);
+    row.c = price;
+    row.v += volume;
+  }
+
+  return [...rows.values()]
+    .sort((a,b)=>a.time-b.time)
+    .slice(-MAX_HISTORY_BARS);
+}
+
 function updateCandleFromLiveTrade(trade) {
   if (!trade || !selectedMint) return false;
 
@@ -1838,7 +1882,6 @@ async function setTimeframe(tf) {
   historyHasMore = true;
   historyNextOffset = 0;
   historyBarsLoaded = 0;
-  selectedCandles = [];
 
   document.querySelectorAll(".tf").forEach(btn=>{
     btn.classList.toggle(
@@ -1847,18 +1890,44 @@ async function setTimeframe(tf) {
     );
   });
 
-  $("chartMode").textContent =
-    "LOADING " + timeframeLabel() + " HISTORY…";
-  $("historyStatus").textContent = "loading…";
+  // Rebuild immediately from real Pump.fun trade events already received.
+  // This makes timeframe switching instant instead of blanking the chart.
+  if (selectedTrades.length) {
+    selectedCandles = aggregateLiveTrades(
+      selectedTrades,
+      chartTimeframe
+    );
 
-  const knownText = String($("activePrice")?.textContent || "")
-    .replace(/,/g,"");
-  const knownPrice = Number(knownText);
-  if (Number.isFinite(knownPrice) && knownPrice > 0) {
-    seedLivePriceBar(knownPrice, Date.now());
+    chartDataSource = "PUMP.FUN LIVE TRADES";
+    historyBarsLoaded = selectedCandles.length;
+
+    if (selectedCandles.length) {
+      renderChart(selectedCandles,true);
+    }
+  } else {
+    selectedCandles = [];
+    if (chartInitialized) {
+      candleSeries.setData([]);
+      volumeSeries.setData([]);
+      ema9Series.setData([]);
+      ema21Series.setData([]);
+      markersApi.setMarkers([]);
+    }
   }
 
-  await fetchInitialHistory();
+  $("chartMode").textContent =
+    selectedCandles.length
+      ? "PUMP.FUN LIVE · " + timeframeLabel() + " · LIVE TRADES"
+      : "LOADING " + timeframeLabel() + " HISTORY…";
+
+  $("historyStatus").textContent =
+    selectedCandles.length
+      ? selectedCandles.length.toLocaleString() + " live bars"
+      : "loading…";
+
+  // Ask for authoritative Pump.fun history in the background. It can replace
+  // the temporary live-trade history without blocking the already-visible chart.
+  fetchInitialHistory().catch(()=>{});
 }
 
 function showAll() {
@@ -2015,69 +2084,6 @@ async function analyzeSelected() {
       "ANALYZE";
   }
 }
-function seedLivePriceBar(price, timestampMs = Date.now()) {
-  price = Number(price);
-  if (!Number.isFinite(price) || price <= 0 || !selectedMint) return false;
-
-  const span = Math.max(60, Number(chartTimeframe || 1) * 60);
-  const bucket = Math.floor(
-    Number(timestampMs || Date.now()) / 1000 / span
-  ) * span;
-
-  const p = price;
-  let bar = selectedCandles.find(
-    x => x.time === bucket
-  );
-  const wasEmpty = selectedCandles.length === 0;
-
-  if (bar) {
-    bar.h = Math.max(bar.h, p);
-    bar.l = Math.min(bar.l, p);
-    bar.c = p;
-    bar.v = Number(bar.v || 0);
-  } else if (wasEmpty) {
-    bar = {
-      time:bucket,
-      ts:bucket,
-      o:p,
-      h:p,
-      l:p,
-      c:p,
-      v:0
-    };
-    selectedCandles = [bar];
-  } else {
-    // A real historical chart has arrived. Never append a synthetic bar
-    // outside its current bucket or overwrite that history.
-    return false;
-  }
-
-  chartDataSource = "LIVE_PRICE";
-  historyBarsLoaded = selectedCandles.length;
-
-  updateActivePrice(p, timestampMs);
-
-  if (chartInitialized) {
-    if (wasEmpty) {
-      // One full render only: this is the first visible bar.
-      renderChart(
-        selectedCandles.slice(-MAX_HISTORY_BARS),
-        true
-      );
-    } else {
-      // Every later price tick updates only the active bar.
-      updateRealtimeChart(bar);
-      renderTape();
-    }
-
-    $("chartMode").textContent =
-      "LIVE PRICE · " + timeframeLabel() + " · HISTORY LOADING";
-  }
-
-  return true;
-}
-
-
 async function selectToken(mint) {
   if (!mint) return;
 
