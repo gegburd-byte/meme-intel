@@ -1186,10 +1186,18 @@ async def chart_meta(mint: str):
         )
 
         market_cap_sol = num_value(
-            # Pump.fun exposes this field in SOL, not lamports.
+            # Pump.fun exposes market_cap in SOL on current responses. Some
+            # older/legacy shapes reported atomic lamports, so defensively
+            # normalize only implausibly-large values.
             "market_cap",
             "marketCap",
         )
+
+        if (
+            market_cap_sol is not None and
+            market_cap_sol > 1_000_000
+        ):
+            market_cap_sol /= 1_000_000_000
 
         market_cap_usd = num_value(
             "usd_market_cap",
