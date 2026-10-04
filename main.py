@@ -391,6 +391,10 @@ def parse_pump_trades(payload):
             "sol_amount",
             "solAmount",
             "sol_amount_lamports",
+            "quote_amount",
+            "quoteAmount",
+            "quote_amount_lamports",
+            "quoteAmountLamports",
         }:
             return number / 1_000_000_000
 
@@ -410,6 +414,10 @@ def parse_pump_trades(payload):
         if key in {
             "token_amount",
             "tokenAmount",
+            "base_amount",
+            "baseAmount",
+            "base_amount_raw",
+            "baseAmountRaw",
             "token_amount_raw",
             "tokens",
         }:
