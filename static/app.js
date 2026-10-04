@@ -1042,14 +1042,33 @@ function normalizeCandle(x) {
   const c = Number(x.c ?? x.close);
   const v = Number(x.v ?? x.volume ?? 0);
 
-  if (!Number.isFinite(ts) ||
-      ![o,h,l,c].every(Number.isFinite)) {
+  if (
+    !Number.isFinite(ts) ||
+    ![o,h,l,c].every(Number.isFinite) ||
+    ![o,h,l,c].every(value => value > 0)
+  ) {
+    return null;
+  }
+
+  // Reject raw atomic/unit-mismatched prices before they can blow up the
+  // Lightweight Charts price scale.
+  if ([o,h,l,c].some(value => value > 1_000_000)) {
+    return null;
+  }
+
+  if (
+    l > Math.min(o,c) ||
+    h < Math.max(o,c) ||
+    h < l
+  ) {
     return null;
   }
 
   const time = Math.floor(
     ts > 2e10 ? ts / 1000 : ts
   );
+
+  if (time < 1_500_000_000) return null;
 
   return {
     time,
@@ -1529,6 +1548,10 @@ function renderChart(candles, fit = false) {
   const signal = signalFromCandles(candles);
   renderSignal(signal);
 
+  chart.priceScale("right").applyOptions({
+    autoScale:true
+  });
+
   if (fit) {
     chart.timeScale().fitContent();
   }
@@ -1689,8 +1712,10 @@ async function fetchInitialHistory() {
         ? selectedCandles.length.toLocaleString() + " live bars"
         : "live…";
 
-    // Never block the first paint on historical HTTP.
-    await syncCurrentPumpCandle();
+    // Never let the current-candle request block the historical chart.
+    // A slow/auth-protected Pump.fun endpoint must not leave the canvas blank.
+    syncCurrentPumpCandle().catch(()=>{});
+    fetchFastHistoricalBackfill(generation).catch(()=>{});
 
     if (
       generation !== historyGeneration ||
@@ -1712,10 +1737,8 @@ async function fetchInitialHistory() {
         " · LIVE TRADES";
     }
 
-    // Background history only. It may take seconds, but it cannot delay the
-    // active candle or make the chart blank.
-    fetchFastHistoricalBackfill(generation);
-
+    // Background history is already running above; the websocket/current
+    // candle path can update independently.
     return Boolean(selectedCandles.length);
   } catch {
     return Boolean(selectedCandles.length);
