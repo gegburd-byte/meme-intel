@@ -527,8 +527,6 @@ class LiveTradeHub:
                         if signature in self._seen_signatures[mint]:
                             continue
 
-                        self._seen_signatures[mint].append(signature)
-
                         block_time = item.get("blockTime")
                         if block_time is not None and int(block_time) < cutoff:
                             continue
@@ -594,8 +592,25 @@ class LiveTradeHub:
                     return_exceptions=True,
                 )
 
+                resolved_items = []
+                for item, result in zip(pending, resolved):
+                    signature = str(item.get("signature") or "")
+
+                    if isinstance(result, dict):
+                        # Mark a signature as seen only after it actually
+                        # decoded. A transient getTransaction failure must be
+                        # retried instead of permanently losing the live trade.
+                        if signature:
+                            self._seen_signatures[mint].append(signature)
+                        resolved_items.append(result)
+                    elif signature:
+                        try:
+                            self._seen_signatures[mint].remove(signature)
+                        except ValueError:
+                            pass
+
                 for trade in sorted(
-                    [x for x in resolved if isinstance(x, dict)],
+                    resolved_items,
                     key=lambda x: (
                         int(x.get("timestamp") or 0),
                         str(x.get("id") or ""),
@@ -607,7 +622,7 @@ class LiveTradeHub:
                         "trade": trade,
                     })
 
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.18)
 
             except asyncio.CancelledError:
                 raise
