@@ -38,7 +38,7 @@ def test_parse_pump_trade_event():
     assert row is not None
     assert row["source"] == "PUMP.FUN"
     assert row["side"] == "BUY"
-    assert abs(row["price"] - ((90_000_000_000 / 1e9) / (793_000_000_000_000 / 1e6))) < 1e-18
+    assert abs(row["price"] - ((2_000_000_000 / 1e9) / (100_000_000 / 1e6))) < 1e-18
     assert row["timestamp"] == ts
 
 

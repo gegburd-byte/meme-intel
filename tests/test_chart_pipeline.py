@@ -132,7 +132,7 @@ def test_one_second_trade_history_produces_distinct_second_bars():
             },
             {
                 "timestamp": 1_700_000_001,
-                "sol_amount": 1_000_000_000,
+                "sol_amount": 1_100_000_000,
                 "token_amount": 1_000_000,
                 "virtual_sol_reserves": 31_000_000_000,
                 "virtual_token_reserves": 1_000_000_000_000_000,
