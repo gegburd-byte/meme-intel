@@ -2498,22 +2498,11 @@ async function syncLiveTradeCache() {
         continue;
       }
 
-      // A history snapshot may contain these exact recent trades already.
-      // Record them for recovery, but only mutate the chart with trades that
-      // happened after the history response was generated.
-      if (
-        chartHistoryLoadedAtSec > 0 &&
-        normalized.time <= chartHistoryLoadedAtSec
-      ) {
-        if (!selectedTrades.some(x => x.id === normalized.id)) {
-          selectedTrades.push(normalized);
-          if (selectedTrades.length > 500) {
-            selectedTrades.shift();
-          }
-        }
-        continue;
-      }
-
+      // Do not compare the trade timestamp with the history-response
+      // timestamp. A processed/block trade can arrive a little late, so that
+      // comparison was capable of discarding every real trade for a live chart
+      // while the feed itself was healthy. applyLiveTrade already deduplicates
+      // exact trade IDs, so replaying the tiny live buffer is safe.
       applyLiveTrade(normalized, true);
     }
   } catch {
