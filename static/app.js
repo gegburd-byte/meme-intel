@@ -4150,11 +4150,8 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
-  // The browser does NOT subscribe to Pump.fun's global firehose by default.
-  // The backend relay is mint-filtered and avoids flooding the browser event loop.
-  startCurrentCandleSync();
-  startLivePricePoll();
-  startLiveTradeCachePoll();
+  // The backend live connection starts its recovery timers itself.
+  // Do not start duplicate polling loops here.
   loadChartMeta(mint);
   setTimeout(() => {
     if (
