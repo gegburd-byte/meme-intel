@@ -351,17 +351,61 @@ def parse_pump_candles(payload):
     return list(sorted(deduped.values(), key=lambda x: x.ts))
 
 def parse_pump_trades(payload):
-    """Normalize Pump.fun trade-history rows into simple price/time/volume trades."""
+    """Normalize Pump.fun trade-history rows into real price/time/volume trades."""
     if isinstance(payload, dict):
-        payload = (
-            payload.get("data")
-            or payload.get("trades")
-            or payload.get("results")
-            or []
-        )
+        for key in ("data", "trades", "results", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                payload = value
+                break
 
     if not isinstance(payload, list):
         return []
+
+    def first_value(item, *keys):
+        for key in keys:
+            value = item.get(key)
+            if value is not None:
+                return value, key
+        return None, None
+
+    def sol_amount_ui(value, key):
+        number = float(value)
+
+        # Pump.fun canonical fields are integer lamports. Normalize them
+        # explicitly instead of using magnitude heuristics that break on tiny trades.
+        if key in {
+            "sol_amount",
+            "solAmount",
+            "sol_amount_lamports",
+        }:
+            return number / 1_000_000_000
+
+        # Legacy/direct UI fields may already be SOL.
+        if key in {"amount_sol", "amountSol", "sol_ui"}:
+            return number
+
+        # Generic sol fields can be either form depending on endpoint shape.
+        if key == "sol" and number > 1_000_000:
+            return number / 1_000_000_000
+
+        return number
+
+    def token_amount_ui(value, key):
+        number = float(value)
+
+        if key in {
+            "token_amount",
+            "tokenAmount",
+            "token_amount_raw",
+            "tokens",
+        }:
+            return number / 1_000_000
+
+        if key in {"amount_token", "amountToken", "token_ui"}:
+            return number
+
+        return number
 
     trades = []
 
@@ -370,11 +414,14 @@ def parse_pump_trades(payload):
             continue
 
         try:
-            timestamp = (
-                item.get("timestamp")
-                or item.get("time")
-                or item.get("created_timestamp")
-                or item.get("block_time")
+            timestamp, _ = first_value(
+                item,
+                "timestamp",
+                "time",
+                "created_timestamp",
+                "createdTimestamp",
+                "created_at",
+                "block_time",
             )
 
             if timestamp is None:
@@ -387,29 +434,15 @@ def parse_pump_trades(payload):
             if ts < 1_500_000_000:
                 continue
 
-            # Pump.fun trade history normally exposes raw lamport/token units.
-            sol_raw = (
-                item.get("sol_amount")
-                or item.get("solAmount")
-                or item.get("sol_amount_lamports")
-                or item.get("sol")
-                or item.get("amount_sol")
+            virtual_sol, _ = first_value(
+                item,
+                "virtual_sol_reserves",
+                "virtualSolReserves",
             )
-
-            token_raw = (
-                item.get("token_amount")
-                or item.get("tokenAmount")
-                or item.get("token_amount_raw")
-                or item.get("tokens")
-            )
-
-            virtual_sol = (
-                item.get("virtual_sol_reserves")
-                or item.get("virtualSolReserves")
-            )
-            virtual_token = (
-                item.get("virtual_token_reserves")
-                or item.get("virtualTokenReserves")
+            virtual_token, _ = first_value(
+                item,
+                "virtual_token_reserves",
+                "virtualTokenReserves",
             )
 
             price = None
@@ -424,24 +457,41 @@ def parse_pump_trades(payload):
                         (vt / 1_000_000)
                     )
 
+            sol_raw, sol_key = first_value(
+                item,
+                "sol_amount",
+                "solAmount",
+                "sol_amount_lamports",
+                "sol",
+                "amount_sol",
+                "amountSol",
+                "sol_ui",
+            )
+
+            token_raw, token_key = first_value(
+                item,
+                "token_amount",
+                "tokenAmount",
+                "token_amount_raw",
+                "tokens",
+                "amount_token",
+                "amountToken",
+                "token_ui",
+            )
+
             if price is None and sol_raw is not None and token_raw is not None:
-                sol_value = float(sol_raw)
-                token_value = float(token_raw)
-
-                if sol_value > 1_000_000:
-                    sol_value /= 1_000_000_000
-
-                if token_value > 1_000_000_000:
-                    token_value /= 1_000_000
+                sol_value = sol_amount_ui(sol_raw, sol_key)
+                token_value = token_amount_ui(token_raw, token_key)
 
                 if sol_value > 0 and token_value > 0:
                     price = sol_value / token_value
 
             if price is None:
-                raw_price = (
-                    item.get("price")
-                    or item.get("price_sol")
-                    or item.get("priceSol")
+                raw_price, _ = first_value(
+                    item,
+                    "price",
+                    "price_sol",
+                    "priceSol",
                 )
 
                 if raw_price is not None:
@@ -451,34 +501,33 @@ def parse_pump_trades(payload):
                 continue
 
             volume = 0.0
-
             if sol_raw is not None:
-                volume = float(sol_raw)
-                if volume > 1_000_000:
-                    volume /= 1_000_000_000
+                volume = max(
+                    0.0,
+                    sol_amount_ui(sol_raw, sol_key),
+                )
 
-            raw_side = (
-                item.get("is_buy")
-                if "is_buy" in item
-                else item.get("isBuy")
-            )
+            raw_side, _ = first_value(item, "is_buy", "isBuy", "side")
+
+            side = "SELL"
+            if (
+                raw_side is True
+                or str(raw_side).lower() == "true"
+                or str(raw_side).upper() == "BUY"
+            ):
+                side = "BUY"
 
             trades.append({
                 "ts": ts,
-                "price": price,
-                "volume": max(0.0, volume),
-                "side": (
-                    "BUY"
-                    if raw_side is True or str(raw_side).lower() == "true"
-                    else "SELL"
-                ),
+                "price": float(price),
+                "volume": volume,
+                "side": side,
             })
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
 
     trades.sort(key=lambda x: x["ts"])
     return trades
-
 
 def aggregate_pump_trade_candles(payloads, timeframe=1, limit=120):
     raw = str(timeframe or "1").strip().lower()
