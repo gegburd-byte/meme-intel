@@ -1414,9 +1414,31 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
 
         trade_rows, trade_err = await pump_trade_history()
 
-        # Fill only the older part of the native window from Pump.fun trades.
-        # Native candles always win at overlapping timestamps.
-        combined = {c.ts: c for c in trade_rows}
+        # One fallback only: if Pump.fun's authenticated history is unavailable,
+        # rebuild recent real trades from Solana through the already-configured
+        # Helius adapter. This keeps the chart populated instead of blank.
+        helius_rows = []
+        helius_err = None
+        if not native_rows and not trade_rows:
+            try:
+                helius_rows, helius_err = await asyncio.wait_for(
+                    he.historical_trade_candles(
+                        mint,
+                        timeframe=timeframe,
+                        lookback_minutes=min(120, max(60, limit * timeframe)),
+                        max_signatures=900,
+                    ),
+                    timeout=7.0,
+                )
+            except Exception as exc:
+                helius_rows = []
+                helius_err = str(exc)[:240]
+
+        # Pump.fun candles win wherever they exist. Pump.fun's own trade
+        # reconstruction is next. Helius is only the no-data fallback.
+        combined = {c.ts: c for c in helius_rows}
+        for c in trade_rows:
+            combined[c.ts] = c
         for c in native_rows:
             combined[c.ts] = c
 
@@ -1425,7 +1447,9 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
         payload = {
             "state": "READY" if rows else "NO_CANDLES",
             "source": "PUMP.FUN" if native_rows else (
-                "PUMP.FUN TRADE HISTORY" if trade_rows else "NONE"
+                "PUMP.FUN TRADE HISTORY" if trade_rows else (
+                    "HELIUS ON-CHAIN" if helius_rows else "NONE"
+                )
             ),
             "candles": [
                 {"ts": c.ts, "o": c.o, "h": c.h, "l": c.l, "c": c.c, "v": c.v}
@@ -1438,7 +1462,7 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
             "diagnostics": {
                 "native_bars": len(native_rows),
                 "pump_trade_bars": len(trade_rows),
-                "helius_bars": 0,
+                "helius_bars": len(helius_rows),
             },
         }
 
