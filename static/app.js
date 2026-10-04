@@ -561,13 +561,14 @@ function initChart() {
     LightweightCharts.HistogramSeries,
     {
       priceFormat:{type:"volume"},
-      priceScaleId:""
+      priceScaleId:"volume"
     }
   );
 
-  chart.priceScale("").applyOptions({
+  chart.priceScale("volume").applyOptions({
     scaleMargins:{top:0.82,bottom:0},
-    borderVisible:false
+    borderVisible:false,
+    visible:false
   });
 
   markersApi = LightweightCharts.createSeriesMarkers(
@@ -1380,6 +1381,93 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
   scheduleLiveRender();
 }
 
+function updateCandleFromLiveTrade(trade) {
+  if (!trade || !selectedMint) return false;
+
+  const price = Number(trade.price);
+  const ts = Number(trade.time);
+
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts)) {
+    return false;
+  }
+
+  const span = Math.max(60, Number(chartTimeframe || 1) * 60);
+  const bucket = Math.floor(ts / span) * span;
+  const volume = Math.max(
+    0,
+    Number(trade.volumeSol ?? trade.volume_sol ?? 0)
+  );
+
+  let bar = selectedCandles.find(
+    x => x.time === bucket
+  );
+
+  // A synthetic/fallback price bar is not an OHLC candle. The first real
+  // Pump.fun trade in that bucket replaces it completely.
+  if (
+    chartDataSource === "LIVE_PRICE" &&
+    selectedCandles.length === 1 &&
+    selectedCandles[0].time === bucket
+  ) {
+    bar = {
+      time:bucket,
+      ts:bucket,
+      o:price,
+      h:price,
+      l:price,
+      c:price,
+      v:volume
+    };
+    selectedCandles = [bar];
+  } else if (!bar) {
+    const last = selectedCandles[selectedCandles.length - 1];
+
+    if (last && bucket < last.time) {
+      return false;
+    }
+
+    bar = {
+      time:bucket,
+      ts:bucket,
+      o:price,
+      h:price,
+      l:price,
+      c:price,
+      v:volume
+    };
+
+    selectedCandles = [
+      ...selectedCandles,
+      bar
+    ].slice(-MAX_HISTORY_BARS);
+  } else {
+    bar.h = Math.max(bar.h, price);
+    bar.l = Math.min(bar.l, price);
+    bar.c = price;
+    bar.v = Number(bar.v || 0) + volume;
+  }
+
+  chartDataSource = "PUMP.FUN LIVE TRADES";
+  historyBarsLoaded = selectedCandles.length;
+
+  updateActivePrice(
+    price,
+    ts * 1000
+  );
+
+  if (chartInitialized && candleSeries) {
+    updateRealtimeChart(bar);
+    renderTape();
+
+    $("chartMode").textContent =
+      "PUMP.FUN LIVE · " +
+      timeframeLabel() +
+      " · LIVE TRADES";
+  }
+
+  return true;
+}
+
 function applyLiveTrade(rawTrade, record = true) {
   const t = normalizeTrade(rawTrade);
   if (!t || !selectedMint) return;
@@ -1391,15 +1479,19 @@ function applyLiveTrade(rawTrade, record = true) {
     return;
   }
 
-  // Show the trade instantly in the tape/header, then pull the authoritative
-  // Pump.fun candle so the displayed OHLC matches the live chart.
+  // The live Pump.fun/on-chain trade is the fastest authoritative price
+  // signal available. Build/update only the active timeframe candle immediately.
   applyLivePrice(
     t.price,
     t.time * 1000,
     record ? t : null
   );
 
-  requestCurrentCandleSync();
+  updateCandleFromLiveTrade(t);
+
+  // Reconcile against Pump.fun's native OHLC when available, but never make
+  // the live chart wait for this request.
+  requestCurrentCandleSync(0);
 }
 
 async function pollLivePrice() {
@@ -1419,24 +1511,18 @@ async function pollLivePrice() {
     if (Number.isFinite(price) && price > 0) {
       const now = Date.now();
 
-      updateActivePrice(
-        price,
-        now
-      );
-
+      // HTTP asset price is only a backup display value. Never let it
+      // overwrite a live Pump.fun trade or a real chart candle.
       if (
-        selectedMint &&
-        (
-          !selectedCandles.length ||
-          chartDataSource === "LIVE_PRICE"
-        )
+        !selectedTrades.length &&
+        !selectedCandles.length
       ) {
-        seedLivePriceBar(price, now);
+        updateActivePrice(price, now);
       }
 
-      // Keep the authoritative Pump.fun bar reconciliation running, but never
-      // let it prevent the live-price bar from being visible.
-      requestCurrentCandleSync(75);
+      if (!selectedCandles.length) {
+        requestCurrentCandleSync(75);
+      }
     }
   } catch {}
 }
@@ -1492,10 +1578,14 @@ async function syncCurrentPumpCandle() {
       );
 
       if (
-        incomingSource === "LIVE_PRICE" &&
-        selectedCandles.length &&
-        chartDataSource !== "LOADING" &&
-        chartDataSource !== "LIVE_PRICE"
+        (
+          incomingSource === "LIVE_PRICE" &&
+          selectedCandles.length
+        ) ||
+        (
+          chartDataSource === "PUMP.FUN LIVE TRADES" &&
+          incomingSource !== "PUMP.FUN"
+        )
       ) {
         return;
       }
@@ -2068,18 +2158,14 @@ async function selectToken(mint) {
   $("activePrice").textContent = "—";
   $("activeAge").textContent = "—";
 
-  if (Number(selectedInfo.price) > 0) {
-    const knownPrice = Number(selectedInfo.price);
-    updateActivePrice(knownPrice, Date.now());
-    seedLivePriceBar(knownPrice, Date.now());
-  }
+  // Do not use the scanner/asset price as chart OHLC. The live trade stream
+  // and native Pump.fun candle feed are the chart's price authority.
 
   renderCandidates();
 
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
-  startLivePricePoll();
   startCurrentCandleSync();
 
   // Paint real chart data first. The heavier security/risk analysis starts
