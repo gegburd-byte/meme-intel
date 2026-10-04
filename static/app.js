@@ -129,17 +129,21 @@ function refreshMarketCapFactor(priceSol = null) {
     chartMcFactor =
       selectedMarketCapUsd / p;
   } else if (
+    Number.isFinite(selectedMarketCapSol) &&
+    selectedMarketCapSol > 0 &&
     Number.isFinite(selectedSupply) &&
     selectedSupply > 0 &&
     Number.isFinite(selectedMarketCapUsd) &&
     selectedMarketCapUsd > 0
   ) {
-    // Fallback when the exact Pump.fun price is temporarily unavailable.
-    // This still yields the correct current MC because the factor is tied to
-    // the token's current USD market cap and supply.
+    // MC = SOL/token price × supply × SOL/USD.
+    // Therefore the chart's raw SOL/token price needs this single scale
+    // factor to become Pump.fun's USD market-cap scale.
     chartMcFactor =
-      selectedMarketCapUsd /
-      Math.max(selectedSupply,1);
+      (
+        selectedMarketCapUsd /
+        selectedMarketCapSol
+      ) * selectedSupply;
   }
 
   const button =
@@ -253,14 +257,14 @@ async function loadChartMeta(mint) {
         mcUsd;
     }
 
+    const marketCapSol =
+      Number(data.market_cap_sol);
+
     if (
-      Number.isFinite(priceSol) &&
-      priceSol > 0
+      Number.isFinite(marketCapSol) &&
+      marketCapSol > 0
     ) {
-      selectedMarketCapSol =
-        Number(
-          data.market_cap_sol
-        ) || 0;
+      selectedMarketCapSol = marketCapSol;
     }
 
     refreshMarketCapFactor(
