@@ -2098,6 +2098,40 @@ async def chart_history(
         except Exception as exc:
             return "PUMP.FUN TRADE HISTORY", [], str(exc)[:240]
 
+    async def gecko_history():
+        # Pump.fun migrations trade on PumpSwap. When the native Pump.fun
+        # candle/trade endpoints are unavailable, GeckoTerminal can still
+        # provide on-chain OHLCV for the selected PumpSwap pool. The adapter
+        # prefers PumpSwap when selecting the pool.
+        if chart_interval == "1s":
+            return "GECKO_SKIP_1S", [], "GECKO_1S_UNSUPPORTED"
+
+        try:
+            source_interval = "1m" if chart_interval == "1m" else "5m"
+            payload, err = await asyncio.wait_for(
+                gt.candles(
+                    mint,
+                    interval=source_interval,
+                ),
+                timeout=2.5,
+            )
+            rows = parse_candles(payload)
+
+            if chart_interval in {"15m", "1h"}:
+                target_minutes = timeframe_minutes
+                rows = aggregate_timeframe_candles(
+                    rows,
+                    target_minutes,
+                )
+
+            rows = rows[-limit:]
+            if rows and chart_data_quality(rows, minimum_bars=1) > 0:
+                return "PUMPSWAP ONSHAIN", rows, None
+
+            return "PUMPSWAP ONSHAIN", [], err or "NO_GECKO_CANDLES"
+        except Exception as exc:
+            return "PUMPSWAP ONSHAIN", [], str(exc)[:240]
+
     async def helius_history():
         try:
             pool_address = None
@@ -2181,6 +2215,7 @@ async def chart_history(
 
     tasks = [
         asyncio.create_task(pump_trade_history()),
+        asyncio.create_task(gecko_history()),
         asyncio.create_task(helius_history()),
     ]
 
