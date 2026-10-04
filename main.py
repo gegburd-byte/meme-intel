@@ -1317,7 +1317,12 @@ async def chart_meta(mint: str):
 
 @app.get("/api/chart/history")
 async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
-    """Historical chart backfill with Pump.fun price-unit integrity."""
+    """Return chart history without mixing incompatible price definitions.
+
+    Pump.fun native candles are authoritative. If the native endpoint only
+    exposes a very short recent window, older bars are reconstructed only from
+    Pump.fun's own trade history.
+    """
     mint = (mint or "").strip()
 
     if len(mint) < 32 or len(mint) > 44:
@@ -1326,339 +1331,124 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
     if timeframe not in {1, 5, 15, 60}:
         raise HTTPException(400, "Unsupported timeframe")
 
-    limit = max(
-        30,
-        min(int(limit or 120), 120),
-    )
+    limit = max(30, min(int(limit or 120), 120))
 
-    cache_key = (
-        mint,
-        timeframe,
-        limit,
-    )
-
-    cache = getattr(
-        chart_history,
-        "_cache",
-        {}
-    )
-
-    cached = cache.get(cache_key)
+    cache_key = (mint, timeframe, limit)
+    cache = getattr(chart_history, "_cache", {})
     now = time.time()
+    cached = cache.get(cache_key)
 
-    if (
-        cached and
-        now - cached["time"] < 5.0
-    ):
+    if cached and now - cached["time"] < 5.0:
         return cached["payload"]
 
-    async def native_history():
-        try:
-            payload, err = await asyncio.wait_for(
-                pf.candles(
-                    mint,
-                    limit=max(limit,120),
-                    timeframe=timeframe,
-                    offset=0,
-                    fresh=True,
-                ),
-                timeout=3.0,
-            )
-
-            rows = parse_pump_candles(
-                payload
-            )
-
-            return {
-                "source":"PUMP.FUN",
-                "priority":3,
-                "rows":rows,
-                "error":err,
-            }
-        except Exception as exc:
-            return {
-                "source":"PUMP.FUN",
-                "priority":3,
-                "rows":[],
-                "error":str(exc)[:240],
-            }
-
-    async def pump_trade_history():
-        try:
-            # More trade pages means we can cover substantially more 1m bars
-            # on active tokens while keeping the browser payload capped at 120.
-            offsets = [
-                i * 200
-                for i in range(8)
-            ]
-
-            results = await asyncio.gather(
-                *[
-                    pf.trades(
-                        mint,
-                        limit=200,
-                        offset=offset,
-                        minimum_size=0,
-                        fresh=False,
-                    )
-                    for offset in offsets
-                ],
-                return_exceptions=True,
-            )
-
-            payloads = [
-                result[0]
-                for result in results
-                if (
-                    isinstance(result, tuple) and
-                    len(result) == 2 and
-                    isinstance(result[0], list)
-                )
-            ]
-
-            rows = aggregate_pump_trade_candles(
-                payloads,
+    try:
+        native_payload, native_err = await asyncio.wait_for(
+            pf.candles(
+                mint,
+                limit=max(limit, 120),
                 timeframe=timeframe,
-                limit=limit,
-            )
-
-            return {
-                "source":"PUMP.FUN TRADE HISTORY",
-                "priority":2,
-                "rows":rows,
-                "error":None if rows else "NO_TRADES_DECODED",
-            }
-        except Exception as exc:
-            return {
-                "source":"PUMP.FUN TRADE HISTORY",
-                "priority":2,
-                "rows":[],
-                "error":str(exc)[:240],
-            }
-
-    async def helius_history():
-        try:
-            rows, err = await asyncio.wait_for(
-                he.historical_trade_candles(
-                    mint,
-                    timeframe=timeframe,
-                    lookback_minutes=min(
-                        120,
-                        max(
-                            60,
-                            limit * timeframe
-                        ),
-                    ),
-                    max_signatures=900,
-                ),
-                timeout=7.0,
-            )
-
-            return {
-                "source":"HELIUS ON-CHAIN",
-                "priority":1,
-                "rows":rows or [],
-                "error":err,
-            }
-        except Exception as exc:
-            return {
-                "source":"HELIUS ON-CHAIN",
-                "priority":1,
-                "rows":[],
-                "error":str(exc)[:240],
-            }
-
-    native_task = asyncio.create_task(
-        native_history()
-    )
-
-    fallback_tasks = [
-        asyncio.create_task(
-            pump_trade_history()
-        ),
-        asyncio.create_task(
-            helius_history()
-        ),
-    ]
-
-    native = await native_task
-
-    # Native Pump.fun candles are exact and therefore win whenever they provide
-    # meaningful history. A tiny native response is supplemented with on-chain
-    # Pump.fun trades rather than leaving the chart at 2-6 bars.
-    candidates = [native]
-
-    fallback_results = await asyncio.gather(
-        *fallback_tasks,
-        return_exceptions=False,
-    )
-
-    candidates.extend(
-        fallback_results
-    )
-
-    valid = [
-        item for item in candidates
-        if item.get("rows")
-    ]
-
-    if valid:
-        best = max(
-            valid,
-            key=lambda item: (
-                len(item["rows"]),
-                item["priority"],
+                offset=0,
+                fresh=True,
             ),
+            timeout=3.0,
         )
+        native_rows = parse_pump_candles(native_payload)
+    except Exception as exc:
+        native_rows = []
+        native_err = str(exc)[:240]
 
-        # Merge all trustworthy SOL/token candle sources, with native Pump.fun
-        # winning when timestamps overlap.
-        combined = {}
-
-        # Lowest-priority first.
-        for priority in sorted(
-            valid,
-            key=lambda item: item["priority"],
-        ):
-            for candle in item["rows"]:
-                combined[candle.ts] = candle
-
-        rows = sorted(
-            combined.values(),
-            key=lambda x: x.ts,
-        )[-limit:]
-
+    # Normal case: Pump.fun provides enough history. Do not merge another
+    # provider into a native chart because even small price-definition changes
+    # become visible as false wicks.
+    if len(native_rows) >= min(limit, 30):
+        rows = sorted(native_rows, key=lambda c: c.ts)[-limit:]
         payload = {
-            "state":"READY",
-            "source": (
-                "PUMP.FUN"
-                if native.get("rows")
-                else best["source"]
-            ),
-            "candles":[
-                {
-                    "ts":c.ts,
-                    "o":c.o,
-                    "h":c.h,
-                    "l":c.l,
-                    "c":c.c,
-                    "v":c.v,
-                }
+            "state": "READY",
+            "source": "PUMP.FUN",
+            "candles": [
+                {"ts": c.ts, "o": c.o, "h": c.h, "l": c.l, "c": c.c, "v": c.v}
                 for c in rows
             ],
-            "error":None,
-            "timestamp":int(time.time()),
-            "diagnostics":{
-                "native_bars":len(
-                    native.get("rows") or []
-                ),
-                "pump_trade_bars":len(
-                    next(
-                        (
-                            x["rows"]
-                            for x in fallback_results
-                            if x["source"] ==
-                            "PUMP.FUN TRADE HISTORY"
-                        ),
-                        [],
+            "error": None,
+            "timestamp": int(time.time()),
+            "diagnostics": {
+                "native_bars": len(native_rows),
+                "pump_trade_bars": 0,
+                "helius_bars": 0,
+            },
+        }
+    else:
+        async def pump_trade_history():
+            offsets = [i * 200 for i in range(8)]
+            try:
+                results = await asyncio.gather(
+                    *[
+                        pf.trades(
+                            mint,
+                            limit=200,
+                            offset=offset,
+                            minimum_size=0,
+                            fresh=False,
+                        )
+                        for offset in offsets
+                    ],
+                    return_exceptions=True,
+                )
+                payloads = [
+                    result[0]
+                    for result in results
+                    if (
+                        isinstance(result, tuple)
+                        and len(result) == 2
+                        and isinstance(result[0], list)
                     )
-                ),
-                "helius_bars":len(
-                    next(
-                        (
-                            x["rows"]
-                            for x in fallback_results
-                            if x["source"] ==
-                            "HELIUS ON-CHAIN"
-                        ),
-                        [],
-                    )
-                ),
+                ]
+                rows = aggregate_pump_trade_candles(
+                    payloads,
+                    timeframe=timeframe,
+                    limit=limit,
+                )
+                return rows, None if rows else "NO_TRADES_DECODED"
+            except Exception as exc:
+                return [], str(exc)[:240]
+
+        trade_rows, trade_err = await pump_trade_history()
+
+        # Fill only the older part of the native window from Pump.fun trades.
+        # Native candles always win at overlapping timestamps.
+        combined = {c.ts: c for c in trade_rows}
+        for c in native_rows:
+            combined[c.ts] = c
+
+        rows = sorted(combined.values(), key=lambda c: c.ts)[-limit:]
+
+        payload = {
+            "state": "READY" if rows else "NO_CANDLES",
+            "source": "PUMP.FUN" if native_rows else (
+                "PUMP.FUN TRADE HISTORY" if trade_rows else "NONE"
+            ),
+            "candles": [
+                {"ts": c.ts, "o": c.o, "h": c.h, "l": c.l, "c": c.c, "v": c.v}
+                for c in rows
+            ],
+            "error": None if rows else (
+                native_err or trade_err or "NO_HISTORY"
+            ),
+            "timestamp": int(time.time()),
+            "diagnostics": {
+                "native_bars": len(native_rows),
+                "pump_trade_bars": len(trade_rows),
+                "helius_bars": 0,
             },
         }
 
-        if native.get("rows"):
-            # Native candles remain authoritative at matching timestamps, even
-            # when the fallback contributed older bars.
-            native_times = {
-                c.ts
-                for c in native["rows"]
-            }
-
-            by_time = {
-                c.ts:c
-                for c in rows
-            }
-
-            for c in native["rows"]:
-                if c.ts in native_times:
-                    by_time[c.ts] = c
-
-            rows = sorted(
-                by_time.values(),
-                key=lambda x:x.ts,
-            )[-limit:]
-
-            payload["candles"] = [
-                {
-                    "ts":c.ts,
-                    "o":c.o,
-                    "h":c.h,
-                    "l":c.l,
-                    "c":c.c,
-                    "v":c.v,
-                }
-                for c in rows
-            ]
-
-        cache = getattr(
-            chart_history,
-            "_cache",
-            {}
-        )
-
-        if len(cache) > 64:
-            cache.clear()
-
-        cache[cache_key] = {
-            "time":time.time(),
-            "payload":payload,
-        }
-
-        chart_history._cache = cache
-
-        return payload
-
-    errors = [
-        item.get("error")
-        for item in candidates
-        if item.get("error")
-    ]
-
-    payload = {
-        "state":"NO_CANDLES",
-        "source":"NONE",
-        "candles":[],
-        "error":"; ".join(
-            str(x)
-            for x in errors
-        ) or "NO_HISTORY",
-        "timestamp":int(time.time()),
-    }
-
-    cache = getattr(
-        chart_history,
-        "_cache",
-        {}
-    )
-
+    if len(cache) > 64:
+        cache.clear()
     cache[cache_key] = {
-        "time":time.time(),
-        "payload":payload,
+        "time": time.time(),
+        "payload": payload,
     }
-
     chart_history._cache = cache
-
     return payload
 
 
