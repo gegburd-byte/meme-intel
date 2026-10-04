@@ -468,27 +468,49 @@ class LiveTradeHub:
             await self._subscribe(mint, address)
 
     def remember_trade(self, mint: str, trade: dict[str, Any]) -> bool:
-        """Remember one real trade while deduplicating by ID and signature."""
+        """Remember one real trade while deduplicating identical event fingerprints."""
         if not mint or not isinstance(trade, dict):
             return False
         if trade.get("source") not in {"PUMP.FUN", "PUMPSWAP"}:
             return False
 
         rows = self.recent_trades[mint]
-        trade_id = str(trade.get("id") or "").strip()
-        signature = str(trade.get("signature") or "").strip()
 
+        def fingerprint(item: dict[str, Any]) -> str:
+            signature = str(item.get("signature") or "").strip()
+            timestamp = int(item.get("timestamp") or 0)
+            price = float(item.get("price") or 0)
+            side = str(item.get("side") or "")
+            token_amount = float(item.get("token_amount") or 0)
+            event_id = str(item.get("id") or "").strip()
+
+            if signature:
+                return (
+                    f"{signature}|{timestamp}|{price:.18g}|"
+                    f"{side}|{token_amount:.18g}"
+                )
+            return event_id or (
+                f"{timestamp}|{price:.18g}|{side}|{token_amount:.18g}"
+            )
+
+        key = fingerprint(trade)
         for item in reversed(rows):
-            item_id = str(item.get("id") or "").strip()
-            item_signature = str(item.get("signature") or "").strip()
-            if trade_id and item_id == trade_id:
-                return False
-            if signature and item_signature == signature:
+            if fingerprint(item) == key:
                 return False
 
         rows.append(dict(trade))
-        if signature:
-            self._seen_signatures[mint].append(signature)
+
+        # Only Helius-recovered signatures enter the signature safety ring.
+        # Native Pump.fun events are left eligible for on-chain recovery if
+        # the native socket ever misses a single event.
+        if (
+            str(trade.get("signature") or "").strip()
+            and not trade.get("native_pumpfun_ws")
+        ):
+            self._seen_signatures[mint].append(
+                str(trade.get("signature"))
+            )
+
         return True
 
     def current_candle(
