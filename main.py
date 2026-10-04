@@ -1700,7 +1700,7 @@ async def chart_current(mint: str, timeframe: int = 1):
                 offset=0,
                 fresh=True,
             ),
-            timeout=1.8,
+            timeout=0.65,
         )
     except asyncio.TimeoutError:
         payload, err = None, "PUMPFUN_CURRENT_TIMEOUT"
