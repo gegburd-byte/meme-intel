@@ -2825,6 +2825,7 @@ async function selectToken(mint) {
   // loading without being captured.
   connectLiveTrade(mint);
   startCurrentCandleSync();
+  startLivePricePoll();
   loadChartMeta(mint);
   setTimeout(() => {
     if (
