@@ -61,7 +61,9 @@ let chartResizeObserver = null;
 let chartHistoryRetryTimer = null;
 let chartHistoryRetryGeneration = 0;
 let liveTradeBackoff = 500;
+let liveTradeWatchdogTimer = null;
 let lastLiveTradeAtMs = 0;
+let lastPolledTradeAtSec = 0;
 
 const PAGE_SIZE = 30;
 const MAX_HISTORY_BARS = 120;
@@ -2483,6 +2485,19 @@ async function syncLiveTradeCache() {
     const j = await readJsonResponse(r);
     const rows = Array.isArray(j.trades) ? j.trades : [];
 
+    // Track the newest trade seen through the polling lane. This lane runs
+    // even when the websocket reports OPEN, so a connected-but-stalled socket
+    // can never silently freeze the chart.
+    for (const row of rows) {
+      const ts = Number(row?.timestamp);
+      if (Number.isFinite(ts)) {
+        lastPolledTradeAtSec = Math.max(
+          lastPolledTradeAtSec,
+          ts > 2e10 ? Math.floor(ts / 1000) : ts
+        );
+      }
+    }
+
     if (
       generation !== historyGeneration ||
       !selectedMint
@@ -2527,24 +2542,56 @@ function startLiveTradeCachePoll() {
     clearInterval(liveTradeCacheTimer);
   }
 
-  liveTradeCacheGeneration = historyGeneration;
+  if (liveTradeWatchdogTimer) {
+    clearInterval(liveTradeWatchdogTimer);
+    liveTradeWatchdogTimer = null;
+  }
 
+  liveTradeCacheGeneration = historyGeneration;
+  lastPolledTradeAtSec = 0;
+
+  // This is deliberately a very small local recovery request. The endpoint
+  // reads the already-open server-side on-chain feed, so it does not add a
+  // second blockchain subscription. Polling it at 100 ms makes the browser
+  // react almost immediately when a trade was decoded, even if the browser's
+  // websocket path is stalled.
   liveTradeCacheTimer = setInterval(() => {
     if (
       selectedMint &&
-      liveTradeCacheGeneration === historyGeneration &&
-      (
-        chartInterval === "1s" ||
-        !liveTradeSocket ||
-        liveTradeSocket.readyState !== WebSocket.OPEN
-      )
+      liveTradeCacheGeneration === historyGeneration
     ) {
-      // The 1s chart deliberately polls the tiny recovery lane even while the
-      // websocket is open. This catches decoded trades that a websocket path
-      // can miss without waiting seconds for a reconnect.
       syncLiveTradeCache();
     }
-  }, 300);
+  }, 100);
+
+  // If the websocket says OPEN but no live trade has reached the browser for
+  // several seconds after there was recent activity, force one clean reconnect.
+  // This is a watchdog only; it does not touch candles or chart rendering.
+  liveTradeWatchdogTimer = setInterval(() => {
+    if (
+      !selectedMint ||
+      liveTradeCacheGeneration !== historyGeneration ||
+      !liveTradeSocket ||
+      liveTradeSocket.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const recentActivity = Math.max(
+      lastLiveTradeAtMs,
+      lastPolledTradeAtSec > 0
+        ? lastPolledTradeAtSec * 1000
+        : 0
+    );
+
+    if (
+      recentActivity > 0 &&
+      now - recentActivity > 4500
+    ) {
+      connectLiveTrade(selectedMint);
+    }
+  }, 1000);
 
   syncLiveTradeCache();
 }
@@ -2635,7 +2682,7 @@ async function syncCurrentPumpCandle() {
         current &&
         incoming &&
         incoming.time === current.time &&
-        Date.now() - lastLiveTradeAtMs < 2000
+        Date.now() - lastLiveTradeAtMs < 5000
       ) {
         return;
       }
@@ -2746,6 +2793,11 @@ function disconnectLiveTrade() {
   if (liveTradeCacheTimer) {
     clearInterval(liveTradeCacheTimer);
     liveTradeCacheTimer = null;
+  }
+
+  if (liveTradeWatchdogTimer) {
+    clearInterval(liveTradeWatchdogTimer);
+    liveTradeWatchdogTimer = null;
   }
 
   liveTradeCacheBusy = false;
