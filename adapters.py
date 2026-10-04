@@ -422,6 +422,14 @@ class PumpFunAdapter:
         )
 
         query_variants = (
+            # First ask the current swap API for the newest unfiltered page.
+            # This is important because a migrated token can move from the
+            # bonding curve to PumpSwap and the program selector can otherwise
+            # return a valid 200 with no rows.
+            {},
+            {
+                "createdTs": created_ts_ms,
+            },
             {
                 "program": "pump",
                 "createdTs": created_ts_ms,
@@ -477,34 +485,30 @@ class PumpFunAdapter:
 
                     # A valid 200 can still be an empty page for the wrong
                     # program selector. Try the next selector/host instead of
-                    # freezing on an empty first response.
-                    has_rows = False
-                    if isinstance(payload, list):
-                        has_rows = bool(payload)
-                    elif isinstance(payload, dict):
+                    # freezing on an empty first response. The current API has
+                    # used both flat arrays and nested data/trades/items/rows
+                    # shapes, so recurse instead of trusting one exact schema.
+                    def contains_rows(value):
+                        if isinstance(value, list):
+                            return bool(value)
+                        if not isinstance(value, dict):
+                            return False
                         for field in (
                             "data",
                             "trades",
                             "results",
                             "items",
                             "rows",
+                            "results",
                         ):
-                            value = payload.get(field)
-                            if isinstance(value, list) and value:
-                                has_rows = True
-                                break
-                            if isinstance(value, dict):
-                                nested = (
-                                    value.get("data")
-                                    or value.get("trades")
-                                    or value.get("results")
-                                    or value.get("items")
-                                )
-                                if isinstance(nested, list) and nested:
-                                    has_rows = True
-                                    break
+                            nested = value.get(field)
+                            if isinstance(nested, list) and nested:
+                                return True
+                            if isinstance(nested, dict) and contains_rows(nested):
+                                return True
+                        return False
 
-                    if not has_rows:
+                    if not contains_rows(payload):
                         last_error = "EMPTY_TRADE_PAGE"
                         continue
 
