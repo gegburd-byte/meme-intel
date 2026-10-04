@@ -58,6 +58,8 @@ let renderScheduled = false;
 let indicatorRenderScheduled = false;
 let chartInitRetryTimer = null;
 let chartResizeObserver = null;
+let chartHistoryRetryTimer = null;
+let chartHistoryRetryGeneration = 0;
 let liveTradeBackoff = 500;
 let lastLiveTradeAtMs = 0;
 
@@ -1825,24 +1827,47 @@ async function fetchInitialHistory() {
 
   initialHistoryBusy = true;
   initialHistoryGeneration = generation;
+  chartHistoryRetryGeneration = generation;
 
   try {
     $("chartMode").textContent =
-      "CONNECTING TO PUMP.FUN LIVE…";
+      "CONNECTING TO REAL MARKET HISTORY…";
 
     $("historyStatus").textContent =
       selectedCandles.length
         ? selectedCandles.length.toLocaleString() + " live bars"
         : "loading…";
 
-    // Current-candle reconciliation never blocks the history request.
     if (chartInterval !== "1s") {
       syncCurrentPumpCandle().catch(()=>{});
     }
 
-    // Await the real history load so a timeframe switch cannot leave the
-    // chart empty while its only population request continues invisibly.
-    const loaded = await fetchFastHistoricalBackfill(generation);
+    // Try the history pipeline more than once. A just-migrated Pump.fun coin,
+    // a provider timeout, or a rate-limit response should not leave the user
+    // staring at a permanently empty chart.
+    let loaded = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (
+        generation !== historyGeneration ||
+        !selectedMint
+      ) {
+        return false;
+      }
+
+      loaded = await fetchFastHistoricalBackfill(generation);
+
+      if (loaded || selectedCandles.length) {
+        break;
+      }
+
+      if (attempt < 2) {
+        $("historyStatus").textContent =
+          "retrying history (" + (attempt + 2) + "/3)…";
+        await new Promise(resolve =>
+          setTimeout(resolve, 500 * Math.pow(2, attempt))
+        );
+      }
+    }
 
     if (
       generation !== historyGeneration ||
@@ -1869,18 +1894,21 @@ async function fetchInitialHistory() {
         historyBarsLoaded.toLocaleString() + " bars";
     } else if (!loaded) {
       $("chartMode").textContent =
-        "WAITING FOR REAL PUMP.FUN HISTORY…";
+        "NO HISTORY YET — WAITING FOR MARKET DATA…";
       $("historyStatus").textContent =
-        "no bars yet";
+        "retrying automatically";
+
+      scheduleChartHistoryRetry(generation);
     }
 
     return Boolean(selectedCandles.length);
   } catch {
     if (generation === historyGeneration && !selectedCandles.length) {
       $("chartMode").textContent =
-        "WAITING FOR REAL PUMP.FUN HISTORY…";
+        "NO HISTORY YET — RETRYING…";
       $("historyStatus").textContent =
-        "no bars yet";
+        "retrying automatically";
+      scheduleChartHistoryRetry(generation);
     }
     return Boolean(selectedCandles.length);
   } finally {
@@ -1888,6 +1916,30 @@ async function fetchInitialHistory() {
       initialHistoryBusy = false;
     }
   }
+}
+
+function scheduleChartHistoryRetry(generation) {
+  if (chartHistoryRetryTimer) {
+    clearTimeout(chartHistoryRetryTimer);
+    chartHistoryRetryTimer = null;
+  }
+
+  chartHistoryRetryGeneration = generation;
+
+  chartHistoryRetryTimer = setTimeout(() => {
+    chartHistoryRetryTimer = null;
+
+    if (
+      !selectedMint ||
+      generation !== historyGeneration ||
+      generation !== chartHistoryRetryGeneration ||
+      selectedCandles.length
+    ) {
+      return;
+    }
+
+    fetchInitialHistory().catch(()=>{});
+  }, 2500);
 }
 async function fetchFastHistoricalBackfill(generation) {
   if (
@@ -2671,6 +2723,11 @@ function startCurrentCandleSync() {
   tick();
 }
 function disconnectLiveTrade() {
+  if (chartHistoryRetryTimer) {
+    clearTimeout(chartHistoryRetryTimer);
+    chartHistoryRetryTimer = null;
+  }
+
   if (fallbackTimer) {
     clearInterval(fallbackTimer);
     fallbackTimer = null;
