@@ -410,45 +410,69 @@ class PumpFunAdapter:
         if not fresh and cached and now - cached["time"] < 0.20:
             return cached["payload"], None
 
-        # Pump.fun's current swap API exposes token trades. Prefer the
-        # unfiltered feed so this continues across bonding-curve -> PumpSwap
-        # migration; fall back to explicit program selectors when required.
-        # Current Pump.fun traffic includes a creation-time cursor in the
-        # query. The older implementation omitted it, which could return an
-        # old page (or an error) forever and made the "live" candle look frozen.
-        created_ts_ms = max(
-            0,
-            int((time.time() - 90) * 1000),
-        )
+        # Pump.fun's current swap API accepts a creation timestamp for the
+        # coin being queried. It is NOT a "last 90 seconds" filter. The old
+        # implementation sent now-90s here, which makes every older token
+        # return an empty live page and freezes the chart indefinitely.
+        created_ts_ms = None
+        try:
+            coin_payload, _ = await self.coin(mint, fresh=False)
 
-        # The current API contract requires chainId + program.
-        query_variants = (
-            {
+            def unwrap_coin(value):
+                if isinstance(value, dict):
+                    data = value.get("data")
+                    if isinstance(data, dict):
+                        nested = unwrap_coin(data)
+                        if nested:
+                            return nested
+                    return value
+                return {}
+
+            coin = unwrap_coin(coin_payload)
+            for field in (
+                "created_timestamp",
+                "createdTimestamp",
+                "created_ts",
+                "createdTs",
+                "created_at",
+                "createdAt",
+            ):
+                raw_created = coin.get(field)
+                if raw_created is None:
+                    continue
+                value = int(float(raw_created))
+                created_ts_ms = value * 1000 if value < 10_000_000_000 else value
+                break
+        except (TypeError, ValueError, OverflowError):
+            created_ts_ms = None
+
+        def variant(program, include_created=True):
+            params = {
                 "chainId": "solana",
-                "program": "pump",
-                "createdTs": created_ts_ms,
-            },
-            {
-                "chainId": "solana",
-                "program": "pump-amm",
-                "createdTs": created_ts_ms,
-            },
-            {
-                "chainId": "solana",
-                "program": "pump_amm",
-                "createdTs": created_ts_ms,
-            },
-            {
-                "chainId": "solana",
-                "program": "pumpswap",
-                "createdTs": created_ts_ms,
-            },
-            {
-                "chainId": "solana",
-                "program": "pump_swap",
-                "createdTs": created_ts_ms,
-            },
-        )
+                "program": program,
+            }
+            if include_created and created_ts_ms:
+                params["createdTs"] = created_ts_ms
+            return params
+
+        # Keep the exact current Pump.fun/PumpSwap program names first, then
+        # retain compatibility selectors for older swap-api deployments.
+        query_variants = [
+            variant("pump"),
+            variant("pump-amm"),
+            variant("pump_amm"),
+            variant("pumpswap"),
+            variant("pump_swap"),
+        ]
+
+        # If the coin endpoint did not expose creation time, retry the
+        # canonical program selectors without createdTs rather than inventing
+        # a timestamp that can silently exclude all live trades.
+        if not created_ts_ms:
+            query_variants.extend([
+                variant("pump", include_created=False),
+                variant("pump-amm", include_created=False),
+            ])
 
         hosts = (
             PUMP_SWAP_API,
