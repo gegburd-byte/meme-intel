@@ -1969,28 +1969,32 @@ async def chart_current(
         interval,
     )
 
-    if chart_interval == "1s":
-        live = trade_hub.current_candle(
-            mint,
-            timeframe="1s",
-        )
-        if live:
-            return {
-                "state": "READY",
-                "source": live.get("source", "PUMP.FUN LIVE TRADES"),
-                "timeframe": "1s",
-                "candles": [{
-                    "ts": int(live["ts"]),
-                    "o": float(live["o"]),
-                    "h": float(live["h"]),
-                    "l": float(live["l"]),
-                    "c": float(live["c"]),
-                    "v": float(live.get("v") or 0),
-                }],
-                "error": None,
-                "timestamp": int(time.time()),
-            }
+    # The decoded live trade candle wins whenever it is newer than the
+    # HTTP OHLC endpoint. Pump.fun's native candle endpoint can lag the trade
+    # stream, which previously allowed a stale candle to keep repainting over
+    # the moving chart.
+    live = trade_hub.current_candle(
+        mint,
+        timeframe=chart_interval,
+    )
+    if live:
+        return {
+            "state": "READY",
+            "source": live.get("source", "PUMP.FUN LIVE TRADES"),
+            "timeframe": chart_interval,
+            "candles": [{
+                "ts": int(live["ts"]),
+                "o": float(live["o"]),
+                "h": float(live["h"]),
+                "l": float(live["l"]),
+                "c": float(live["c"]),
+                "v": float(live.get("v") or 0),
+            }],
+            "error": None,
+            "timestamp": int(time.time()),
+        }
 
+    if chart_interval == "1s":
         return {
             "state": "NO_CANDLES",
             "source": "PUMP.FUN LIVE TRADES",
