@@ -181,22 +181,10 @@ def parse_live_trade(logs: list[str] | None, mint: str, signature: str = "", slo
                 if not price or price <= 0:
                     continue
 
-                # Updated bonding-curve reserves are part of the event and
-                # are what the Pump.fun UI uses to represent the live curve price.
-                # Fall back to execution price only if a legacy event omits them.
-                virtual_sol = 0
-                virtual_token = 0
-                if len(payload) >= start + 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8:
-                    virtual_sol = _u64(payload, start + 89)
-                    virtual_token = _u64(payload, start + 97)
-
-                if virtual_sol > 0 and virtual_token > 0:
-                    price = (
-                        virtual_sol / 1_000_000_000
-                    ) / (
-                        virtual_token / 1_000_000
-                    )
-
+                # Keep the execution price from this exact Pump.fun trade.
+                # The virtual-reserve ratio is the post-trade spot price for
+                # the next fill, not this fill's execution price. Mixing those
+                # definitions can create false chart wicks.
                 event_ts = None
                 if len(payload) >= start + 89:
                     try:
