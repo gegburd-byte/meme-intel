@@ -1168,6 +1168,8 @@ async def live_rest_trade_loop(mint: str) -> None:
     seen_set: set[str] = set()
     initialized = False
     last_legacy_poll = 0.0
+    last_pulse_price = 0.0
+    last_pulse_ms = 0
 
     try:
         while mint in trade_hub.clients:
@@ -1180,8 +1182,18 @@ async def live_rest_trade_loop(mint: str) -> None:
             swap_task = asyncio.create_task(
                 pf.swap_trades(
                     mint,
-                    limit=40,
+                    limit=100,
                     cursor=0,
+                    fresh=True,
+                )
+            )
+
+            # Pump.fun's coin record is a second exact-venue price lane. It
+            # is used only when the trade page did not advance, so it can
+            # repair a missed wick without replacing real trade volume.
+            coin_task = asyncio.create_task(
+                pf.coin(
+                    mint,
                     fresh=True,
                 )
             )
@@ -1204,7 +1216,7 @@ async def live_rest_trade_loop(mint: str) -> None:
                 else None
             )
 
-            tasks = [swap_task]
+            tasks = [swap_task, coin_task]
             if legacy_task:
                 tasks.append(legacy_task)
 
@@ -1229,9 +1241,20 @@ async def live_rest_trade_loop(mint: str) -> None:
             ):
                 rows.extend(parse_pump_trades(swap_result[0]))
 
+            coin_result_index = 1
+            coin_result = (
+                results[coin_result_index]
+                if len(results) > coin_result_index
+                else None
+            )
+
             if legacy_task:
                 last_legacy_poll = now
-                legacy_result = results[1] if len(results) > 1 else None
+                legacy_result = (
+                    results[2]
+                    if len(results) > 2
+                    else None
+                )
                 if (
                     isinstance(legacy_result, tuple)
                     and len(legacy_result) == 2
@@ -1298,6 +1321,8 @@ async def live_rest_trade_loop(mint: str) -> None:
                 await asyncio.sleep(0.30)
                 continue
 
+            published_trade = False
+
             for item in ordered:
                 trade_id = item["id"]
                 if trade_id in seen_set:
@@ -1311,6 +1336,82 @@ async def live_rest_trade_loop(mint: str) -> None:
                         seen_set.discard(old_id)
 
                 await trade_hub.publish_external_trade(mint, item)
+                published_trade = True
+
+            # If the trade endpoint is momentarily stale/empty, use Pump.fun's
+            # current coin price as a no-volume price pulse. The frontend does
+            # not put these synthetic pulses in the tape; they only keep the
+            # active candle/wick visibly moving until a real trade arrives.
+            if not published_trade and isinstance(coin_result, tuple) and len(coin_result) == 2:
+                coin_payload = coin_result[0]
+                if isinstance(coin_payload, dict):
+                    try:
+                        virtual_sol = float(
+                            coin_payload.get("virtual_sol_reserves")
+                            or coin_payload.get("virtualSolReserves")
+                            or 0
+                        )
+                        virtual_token = float(
+                            coin_payload.get("virtual_token_reserves")
+                            or coin_payload.get("virtualTokenReserves")
+                            or 0
+                        )
+                        price_sol = 0.0
+
+                        if virtual_sol > 0 and virtual_token > 0:
+                            price_sol = (
+                                virtual_sol / 1_000_000_000
+                            ) / (
+                                virtual_token / 1_000_000
+                            )
+                        else:
+                            market_cap_sol = float(
+                                coin_payload.get("market_cap")
+                                or coin_payload.get("marketCap")
+                                or 0
+                            )
+                            supply_raw = float(
+                                coin_payload.get("total_supply")
+                                or coin_payload.get("totalSupply")
+                                or 0
+                            )
+                            supply_ui = (
+                                supply_raw / 1_000_000
+                                if supply_raw > 1_000_000_000
+                                else supply_raw
+                            )
+                            if market_cap_sol > 1_000_000:
+                                market_cap_sol /= 1_000_000_000
+                            if market_cap_sol > 0 and supply_ui > 0:
+                                price_sol = market_cap_sol / supply_ui
+
+                        if price_sol > 0:
+                            now_ms = int(time.time() * 1000)
+                            changed = (
+                                last_pulse_price <= 0
+                                or abs(price_sol - last_pulse_price)
+                                / max(last_pulse_price, price_sol, 1e-30)
+                                > 1e-9
+                            )
+
+                            if changed and now_ms != last_pulse_ms:
+                                last_pulse_price = price_sol
+                                last_pulse_ms = now_ms
+                                await trade_hub.publish_external_trade(
+                                    mint,
+                                    {
+                                        "id": f"coin-price:{now_ms}:{price_sol:.18g}",
+                                        "signature": "",
+                                        "source": "PUMP.FUN",
+                                        "side": "BUY",
+                                        "price": price_sol,
+                                        "volume_sol": 0.0,
+                                        "timestamp": now_ms,
+                                        "synthetic": True,
+                                    },
+                                )
+                    except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+                        pass
 
             await asyncio.sleep(0.30)
 
