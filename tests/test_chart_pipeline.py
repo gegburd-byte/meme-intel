@@ -79,6 +79,24 @@ def test_parse_pump_trade_history_uses_virtual_reserve_price():
 
 
 
+def test_tiny_pump_trade_uses_lamports_not_sol():
+    from main import parse_pump_trades
+
+    rows = parse_pump_trades([
+        {
+            "timestamp": 1_700_000_000,
+            "sol_amount": 1_000_000,
+            "token_amount": 1_000_000,
+            "virtual_sol_reserves": 30_000_000_000,
+            "virtual_token_reserves": 1_000_000_000_000_000,
+            "is_buy": True,
+        }
+    ])
+
+    assert rows
+    assert rows[0]["volume"] == 0.001
+
+
 def test_one_second_trade_history_produces_distinct_second_bars():
     from main import aggregate_pump_trade_candles
 
