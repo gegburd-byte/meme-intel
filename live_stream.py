@@ -16,7 +16,7 @@ import websockets
 HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_HTTP_RPC = "https://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_ENHANCED_WS = "wss://atlas-mainnet.helius-rpc.com/?api-key={key}"
-PUMP_FUN_SOCKET_IO = "wss://frontend-api-v3.pump.fun/socket.io/?EIO=4&transport=websocket"
+PUMP_FUN_SOCKET_IO = "wss://frontend-api.pump.fun/socket.io/?EIO=4&transport=websocket"
 
 ANCHOR_SELF_CPI_TAG = bytes([0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d])
 
@@ -659,9 +659,10 @@ class LiveTradeHub:
                         "PUMP.FUN native trade stream",
                     )
 
-                    # Engine.IO opens the underlying transport first; Socket.IO
+                    # Engine.IO opens the underlying transport first. Socket.IO
                     # CONNECT (40) then enters the default namespace.
                     await ws.send("40")
+                    socketio_connected = False
 
                     async for raw in ws:
                         if not isinstance(raw, str):
@@ -673,7 +674,14 @@ class LiveTradeHub:
                             continue
 
                         if raw.startswith("40"):
-                            self.pumpfun_live = True
+                            if not socketio_connected:
+                                socketio_connected = True
+                                self.pumpfun_live = True
+                                # Pump.fun's native client subscribes to the
+                                # tradeCreated event after Socket.IO connects.
+                                await ws.send(
+                                    '42["subscribe","tradeCreated"]'
+                                )
                             continue
 
                         if not raw.startswith("42"):
