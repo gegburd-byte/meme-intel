@@ -71,6 +71,7 @@ let liveTradeBackoff = 500;
 let liveTradeWatchdogTimer = null;
 let lastLiveTradeAtMs = 0;
 let lastRenderedCandleTime = 0;
+let nativeFallbackTimer = null;
 
 const PAGE_SIZE = 30;
 const MAX_HISTORY_BARS = 120;
@@ -3257,7 +3258,7 @@ function startLiveTradeCachePoll() {
     ) {
       syncLiveTradeCache();
     }
-  },250);
+  },500);
 
   liveTradeWatchdogTimer = setInterval(() => {
     if (
@@ -3434,7 +3435,7 @@ function startCurrentCandleSync() {
     // only repairs missed/stalled live updates.
     currentCandleSyncTimer = setTimeout(
       tick,
-      250
+      750
     );
   };
 
@@ -3633,6 +3634,11 @@ function disconnectLiveTrade() {
     currentCandleSyncTimer = null;
   }
 
+  if (nativeFallbackTimer) {
+    clearTimeout(nativeFallbackTimer);
+    nativeFallbackTimer = null;
+  }
+
   disconnectBackendLiveTrade();
 }
 
@@ -3705,6 +3711,16 @@ function connectLiveTrade(mint) {
 
       liveTradeBackoff = 500;
 
+      if (nativeFallbackTimer) {
+        clearTimeout(nativeFallbackTimer);
+        nativeFallbackTimer = null;
+      }
+      if (pumpFunNativeTradeSocket) {
+        const nativeSocket = pumpFunNativeTradeSocket;
+        pumpFunNativeTradeSocket = null;
+        try { nativeSocket.close(); } catch {}
+      }
+
       if (fallbackTimer) {
         clearInterval(fallbackTimer);
         fallbackTimer = null;
@@ -3721,6 +3737,23 @@ function connectLiveTrade(mint) {
         "LIVE ON-CHAIN · " +
         timeframeLabel() +
         " · WAITING FOR TRADES";
+
+      // If the backend websocket is connected but remains silent, the native
+      // Pump.fun socket becomes an emergency low-latency lane. It is never
+      // opened alongside a healthy backend stream.
+      if (nativeFallbackTimer) {
+        clearTimeout(nativeFallbackTimer);
+      }
+      nativeFallbackTimer = setTimeout(() => {
+        nativeFallbackTimer = null;
+        if (
+          selectedMint === mint &&
+          socket === liveTradeSocket &&
+          lastLiveTradeAtMs === 0
+        ) {
+          connectNativePumpFunTrades(mint);
+        }
+      },3000);
 
       // History is loaded by selectToken/setTimeframe; do not launch a second request here.
     });
