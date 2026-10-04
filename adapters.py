@@ -421,39 +421,32 @@ class PumpFunAdapter:
             int((time.time() - 90) * 1000),
         )
 
+        # The current API contract requires chainId + program.
         query_variants = (
-            # First ask the current swap API for the newest unfiltered page.
-            # This is important because a migrated token can move from the
-            # bonding curve to PumpSwap and the program selector can otherwise
-            # return a valid 200 with no rows.
-            {},
             {
-                "createdTs": created_ts_ms,
-            },
-            {
+                "chainId": "solana",
                 "program": "pump",
                 "createdTs": created_ts_ms,
             },
             {
+                "chainId": "solana",
                 "program": "pump-amm",
                 "createdTs": created_ts_ms,
             },
             {
+                "chainId": "solana",
                 "program": "pump_amm",
                 "createdTs": created_ts_ms,
             },
             {
+                "chainId": "solana",
                 "program": "pumpswap",
                 "createdTs": created_ts_ms,
             },
             {
+                "chainId": "solana",
                 "program": "pump_swap",
                 "createdTs": created_ts_ms,
-            },
-            {
-                "program": "pump",
-                "createdTs": created_ts_ms,
-                "chainId": "solana",
             },
         )
 
