@@ -245,3 +245,38 @@ def test_recent_trade_snapshot_returns_bounded_clean_rows():
     assert rows[0]["signature"] == "sig-one"
     assert rows[0]["price"] == 0.01
     assert rows[0]["volume_sol"] == 1.5
+
+
+def test_live_trade_hub_rpc_helper_uses_http_client(monkeypatch):
+    import asyncio
+
+    hub = LiveTradeHub("test-key")
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "jsonrpc": "2.0",
+                "result": {"value": 1},
+                "id": "test",
+            }
+
+    calls = []
+
+    async def fake_post(url, json):
+        calls.append((url, json))
+        return FakeResponse()
+
+    monkeypatch.setattr(hub._http, "post", fake_post)
+
+    result, error = asyncio.run(
+        hub._rpc(
+            "getSignaturesForAddress",
+            ["mint", {"limit": 1}],
+        )
+    )
+
+    assert error is None
+    assert result == {"value": 1}
+    assert calls
