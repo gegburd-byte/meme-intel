@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 
 let pumpSocket = null;
+let pumpFunNativeTradeSocket = null;
 let liveTradeSocket = null;
 let fallbackTimer = null;
 let reconnectTimer = null;
@@ -1212,6 +1213,62 @@ function sanitizeChartCandles(candles) {
   return [...byTime.values()]
     .sort((a,b)=>a.time-b.time)
     .slice(-MAX_HISTORY_BARS);
+}
+
+function parseNativePumpFunTrade(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const mint = String(raw.mint || "").trim();
+  const solAmount = Number(raw.sol_amount);
+  const tokenAmount = Number(raw.token_amount);
+  const timestampRaw = Number(raw.timestamp);
+
+  if (
+    !mint ||
+    !Number.isFinite(solAmount) ||
+    solAmount <= 0 ||
+    !Number.isFinite(tokenAmount) ||
+    tokenAmount <= 0 ||
+    !Number.isFinite(timestampRaw)
+  ) {
+    return null;
+  }
+
+  const timestamp = Math.floor(
+    timestampRaw > 2e10
+      ? timestampRaw / 1000
+      : timestampRaw
+  );
+
+  if (timestamp < 1500000000) {
+    return null;
+  }
+
+  const price =
+    (solAmount / 1_000_000_000) /
+    (tokenAmount / 1_000_000);
+
+  if (!Number.isFinite(price) || price <= 0) {
+    return null;
+  }
+
+  return {
+    id:String(
+      raw.signature ||
+      ("pumpfun-native:" +
+        mint + ":" +
+        timestamp + ":" +
+        String(raw.slot || "") + ":" +
+        String(raw.tx_index ?? raw.txIndex ?? ""))
+    ),
+    signature:String(raw.signature || ""),
+    time:timestamp,
+    price,
+    side:raw.is_buy ? "BUY" : "SELL",
+    volumeSol:solAmount / 1_000_000_000,
+    source:"PUMP.FUN",
+    nativePumpFun:true
+  };
 }
 
 function normalizeTrade(raw) {
@@ -2820,6 +2877,71 @@ function startCurrentCandleSync() {
 
   tick();
 }
+function connectNativePumpFunTrades(mint) {
+  if (!mint || typeof window.io !== "function") {
+    return;
+  }
+
+  if (pumpFunNativeTradeSocket) {
+    try {
+      pumpFunNativeTradeSocket.disconnect();
+    } catch {}
+    pumpFunNativeTradeSocket = null;
+  }
+
+  try {
+    const socket = window.io(
+      "https://frontend-api.pump.fun",
+      {
+        transports:["websocket"],
+        reconnection:true,
+        reconnectionAttempts:Infinity,
+        reconnectionDelay:100,
+        reconnectionDelayMax:1500,
+        timeout:5000,
+        path:"/socket.io",
+      }
+    );
+
+    pumpFunNativeTradeSocket = socket;
+
+    socket.on("connect",()=>{
+      if (socket !== pumpFunNativeTradeSocket) return;
+
+      // Pump.fun's native frontend subscription for the live trade event.
+      socket.emit("subscribe","tradeCreated");
+
+      $("chartMode").textContent =
+        "PUMP.FUN NATIVE LIVE · " +
+        timeframeLabel() +
+        " · LIVE";
+    });
+
+    socket.on("tradeCreated",(raw)=>{
+      if (socket !== pumpFunNativeTradeSocket) return;
+      if (!selectedMint || !raw || raw.mint !== selectedMint) return;
+
+      const trade = parseNativePumpFunTrade(raw);
+      if (!trade) return;
+
+      // The native Pump.fun trade is the primary low-latency chart movement.
+      // Existing chart rendering, indicators, controls and appearance are
+      // untouched: only the current OHLC bucket receives the real trade.
+      lastLiveTradeAtMs = Date.now();
+      applyLiveTrade(trade,true);
+    });
+
+    socket.on("disconnect",()=>{
+      if (socket !== pumpFunNativeTradeSocket) return;
+      // The socket.io client handles the reconnect itself.
+    });
+
+    socket.on("connect_error",()=>{
+      // Existing backend/Helius live recovery remains untouched.
+    });
+  } catch {}
+}
+
 function disconnectLiveTrade() {
   if (chartHistoryRetryTimer) {
     clearTimeout(chartHistoryRetryTimer);
@@ -2852,6 +2974,13 @@ function disconnectLiveTrade() {
   }
 
   liveTradeCacheBusy = false;
+
+  if (pumpFunNativeTradeSocket) {
+    try {
+      pumpFunNativeTradeSocket.disconnect();
+    } catch {}
+    pumpFunNativeTradeSocket = null;
+  }
 
   if (currentCandleSyncTimer) {
     clearTimeout(currentCandleSyncTimer);
@@ -3374,6 +3503,7 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
+  connectNativePumpFunTrades(mint);
   startCurrentCandleSync();
   startLivePricePoll();
   startLiveTradeCachePoll();
