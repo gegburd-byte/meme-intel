@@ -2140,6 +2140,43 @@ async function syncCurrentPumpCandle() {
         return;
       }
 
+      const incoming = candles[0];
+      const current =
+        selectedCandles[
+          selectedCandles.length - 1
+        ];
+
+      // During an open candle, the real Pump.fun trade stream is fresher than
+      // an HTTP snapshot of the same bucket. Never overwrite that live bar with
+      // a slightly older native snapshot. Native OHLC can still fill older bars
+      // and can take over when it advances into a new bucket.
+      if (
+        current &&
+        incoming &&
+        incoming.time === current.time &&
+        selectedTrades.some(
+          trade => (
+            Math.floor(
+              Number(trade.time) /
+              (Math.max(60, Number(chartTimeframe || 1) * 60))
+            ) *
+            Math.max(60, Number(chartTimeframe || 1) * 60)
+            === current.time
+          )
+        )
+      ) {
+        return;
+      }
+
+      if (
+        current &&
+        incoming &&
+        incoming.time < current.time
+      ) {
+        mergePage(candles);
+        return;
+      }
+
       mergePage(candles);
 
       const last = selectedCandles[
