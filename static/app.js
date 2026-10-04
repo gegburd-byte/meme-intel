@@ -53,6 +53,9 @@ let historyNextOffset = 0;
 let historyBarsLoaded = 0;
 
 let renderScheduled = false;
+let indicatorRenderScheduled = false;
+let chartInitRetryTimer = null;
+let chartResizeObserver = null;
 let liveTradeBackoff = 500;
 let lastLiveTradeAtMs = 0;
 
@@ -926,128 +929,207 @@ function renderCandidates() {
 }
 
 function initChart() {
-  if (chartInitialized) return true;
-
-  if (!window.LightweightCharts) {
-    $("chartMode").textContent = "Chart library failed to load.";
-    return false;
-  }
+  if (chartInitialized && chart) return true;
 
   const container = $("chart");
 
-  chart = LightweightCharts.createChart(container,{
-    autoSize:true,
+  if (!container) {
+    return false;
+  }
 
-    layout:{
-      background:{type:"solid",color:"#071019"},
-      textColor:"#7f90a5",
-      fontFamily:"Inter,system-ui,-apple-system,Segoe UI,sans-serif"
-    },
+  if (!window.LightweightCharts) {
+    $("chartMode").textContent = "LOADING CHART LIBRARY…";
 
-    grid:{
-      vertLines:{color:"#12212d"},
-      horzLines:{color:"#12212d"}
-    },
-
-    crosshair:{
-      mode:LightweightCharts.CrosshairMode.Normal
-    },
-
-    rightPriceScale:{
-      borderColor:"#203140",
-      scaleMargins:{top:0.06,bottom:0.18},
-      autoScale:true,
-      alignLabels:true,
-      mode: LightweightCharts.PriceScaleMode?.Logarithmic ?? 0
-    },
-
-    timeScale:{
-      borderColor:"#203140",
-      timeVisible:true,
-      secondsVisible:false,
-      rightOffset:4,
-      barSpacing:7,
-      minBarSpacing:1,
-      maxBarSpacing:40,
-      lockVisibleTimeRangeOnResize:true,
-      shiftVisibleRangeOnNewBar:true
-    },
-
-    handleScale:{
-      mouseWheel:true,
-      pinch:true,
-      axisPressedMouseMove:true
-    },
-
-    handleScroll:{
-      mouseWheel:true,
-      pressedMouseMove:true,
-      horzTouchDrag:true,
-      vertTouchDrag:true
-    },
-
-    localization:{
-      priceFormatter:formatChartValue
+    if (!chartInitRetryTimer) {
+      chartInitRetryTimer = setTimeout(() => {
+        chartInitRetryTimer = null;
+        initChart();
+      }, 250);
     }
-  });
 
-  candleSeries = chart.addSeries(
-    LightweightCharts.CandlestickSeries,
-    {
-      upColor:"#39dc89",
-      downColor:"#ff6575",
-      borderUpColor:"#39dc89",
-      borderDownColor:"#ff6575",
-      wickUpColor:"#39dc89",
-      wickDownColor:"#ff6575",
-      priceLineVisible:true,
-      lastValueVisible:true
+    return false;
+  }
+
+  try {
+    const width = Math.max(
+      320,
+      Number(container.clientWidth) ||
+      Number(container.parentElement?.clientWidth) ||
+      800
+    );
+
+    const height = Math.max(
+      330,
+      Number(container.clientHeight) || 500
+    );
+
+    chart = LightweightCharts.createChart(container,{
+      width,
+      height,
+      autoSize:false,
+
+      layout:{
+        background:{type:"solid",color:"#071019"},
+        textColor:"#7f90a5",
+        fontFamily:"Inter,system-ui,-apple-system,Segoe UI,sans-serif"
+      },
+
+      grid:{
+        vertLines:{color:"#12212d"},
+        horzLines:{color:"#12212d"}
+      },
+
+      crosshair:{
+        mode:LightweightCharts.CrosshairMode?.Normal ?? 0
+      },
+
+      rightPriceScale:{
+        borderColor:"#203140",
+        scaleMargins:{top:0.06,bottom:0.18},
+        autoScale:true,
+        alignLabels:true,
+        // Normal mode is the most stable/portable default for tiny Pump.fun
+        // SOL-per-token values. Avoid relying on an optional enum export.
+        mode:0
+      },
+
+      timeScale:{
+        borderColor:"#203140",
+        timeVisible:true,
+        secondsVisible:false,
+        rightOffset:4,
+        barSpacing:7,
+        minBarSpacing:1,
+        maxBarSpacing:40,
+        lockVisibleTimeRangeOnResize:true,
+        shiftVisibleRangeOnNewBar:true
+      },
+
+      handleScale:{
+        mouseWheel:true,
+        pinch:true,
+        axisPressedMouseMove:true
+      },
+
+      handleScroll:{
+        mouseWheel:true,
+        pressedMouseMove:true,
+        horzTouchDrag:true,
+        vertTouchDrag:true
+      },
+
+      localization:{
+        priceFormatter:formatChartValue
+      }
+    });
+
+    candleSeries = chart.addSeries(
+      LightweightCharts.CandlestickSeries,
+      {
+        upColor:"#39dc89",
+        downColor:"#ff6575",
+        borderUpColor:"#39dc89",
+        borderDownColor:"#ff6575",
+        wickUpColor:"#39dc89",
+        wickDownColor:"#ff6575",
+        priceLineVisible:true,
+        lastValueVisible:true
+      }
+    );
+
+    ema9Series = chart.addSeries(
+      LightweightCharts.LineSeries,
+      {
+        color:"#6ee7a5",
+        lineWidth:1,
+        crosshairMarkerVisible:false,
+        lastValueVisible:false,
+        priceLineVisible:false
+      }
+    );
+
+    ema21Series = chart.addSeries(
+      LightweightCharts.LineSeries,
+      {
+        color:"#ffbd54",
+        lineWidth:1,
+        crosshairMarkerVisible:false,
+        lastValueVisible:false,
+        priceLineVisible:false
+      }
+    );
+
+    volumeSeries = chart.addSeries(
+      LightweightCharts.HistogramSeries,
+      {
+        priceFormat:{type:"volume"},
+        priceScaleId:"volume"
+      }
+    );
+
+    chart.priceScale("volume").applyOptions({
+      scaleMargins:{top:0.82,bottom:0},
+      borderVisible:false,
+      visible:false
+    });
+
+    markersApi = LightweightCharts.createSeriesMarkers(
+      candleSeries,
+      []
+    );
+
+    chartInitialized = true;
+
+    // Keep the explicit-height chart reliable on slow/older browsers without
+    // paying for a ResizeObserver-driven autoSize pass on every layout tick.
+    if (chartResizeObserver) {
+      chartResizeObserver.disconnect();
+      chartResizeObserver = null;
     }
-  );
 
-  ema9Series = chart.addSeries(
-    LightweightCharts.LineSeries,
-    {
-      color:"#6ee7a5",
-      lineWidth:1,
-      crosshairMarkerVisible:false,
-      lastValueVisible:false,
-      priceLineVisible:false
+    if (window.ResizeObserver) {
+      chartResizeObserver = new ResizeObserver(() => {
+        if (!chart || !chartInitialized) return;
+
+        const w = Math.max(
+          320,
+          Number(container.clientWidth) ||
+          Number(container.parentElement?.clientWidth) ||
+          800
+        );
+        const h = Math.max(
+          330,
+          Number(container.clientHeight) || 500
+        );
+
+        chart.resize(w,h);
+      });
+
+      chartResizeObserver.observe(container);
     }
-  );
 
-  ema21Series = chart.addSeries(
-    LightweightCharts.LineSeries,
-    {
-      color:"#ffbd54",
-      lineWidth:1,
-      crosshairMarkerVisible:false,
-      lastValueVisible:false,
-      priceLineVisible:false
+    return true;
+  } catch (error) {
+    chartInitialized = false;
+    chart = null;
+    candleSeries = null;
+    volumeSeries = null;
+    ema9Series = null;
+    ema21Series = null;
+    markersApi = null;
+
+    $("chartMode").textContent =
+      "CHART RETRYING…";
+
+    if (!chartInitRetryTimer) {
+      chartInitRetryTimer = setTimeout(() => {
+        chartInitRetryTimer = null;
+        initChart();
+      }, 400);
     }
-  );
 
-  volumeSeries = chart.addSeries(
-    LightweightCharts.HistogramSeries,
-    {
-      priceFormat:{type:"volume"},
-      priceScaleId:"volume"
-    }
-  );
-
-  chart.priceScale("volume").applyOptions({
-    scaleMargins:{top:0.82,bottom:0},
-    borderVisible:false,
-    visible:false
-  });
-
-  markersApi = LightweightCharts.createSeriesMarkers(
-    candleSeries,
-    []
-  );
-
-  chartInitialized = true;
-  return true;
+    return false;
+  }
 }
 
 function normalizeCandle(x) {
@@ -1097,6 +1179,20 @@ function normalizeCandle(x) {
     c,
     v:Math.max(0,v)
   };
+}
+
+function sanitizeChartCandles(candles) {
+  const byTime = new Map();
+
+  for (const raw of candles || []) {
+    const c = normalizeCandle(raw);
+    if (!c) continue;
+    byTime.set(c.time,c);
+  }
+
+  return [...byTime.values()]
+    .sort((a,b)=>a.time-b.time)
+    .slice(-MAX_HISTORY_BARS);
 }
 
 function normalizeTrade(raw) {
@@ -1494,7 +1590,11 @@ function renderSecurity(data) {
 }
 
 function renderChart(candles, fit = false) {
-  if (!initChart() || !candles.length) return;
+  const cleanCandles = sanitizeChartCandles(candles);
+
+  if (!initChart() || !cleanCandles.length) return;
+
+  candles = cleanCandles;
 
   candleSeries.setData(
     candles.map(x=>({
@@ -1580,40 +1680,59 @@ function updateLiveCandleOnSeries(candle) {
   });
 }
 
-function updateRealtimeChart(candle) {
-  if (!candle || !candleSeries) return;
+function renderLiveIndicators() {
+  if (!chartInitialized || !selectedCandles.length) return;
 
-  updateLiveCandleOnSeries(candle);
+  const cleanCandles = sanitizeChartCandles(selectedCandles);
+  if (!cleanCandles.length) return;
 
-  const closes = selectedCandles.map(
-    x => Number(x.c)
+  const ind = indicatorSeries(cleanCandles);
+
+  ema9Series.setData(
+    ind.ema9.map(x=>({
+      time:x.time,
+      value:displayValue(x.value)
+    }))
   );
 
-  const e9 = ema(closes,9);
-  const e21 = ema(closes,21);
+  ema21Series.setData(
+    ind.ema21.map(x=>({
+      time:x.time,
+      value:displayValue(x.value)
+    }))
+  );
 
-  if (e9 != null) {
-    ema9Series.update({
-      time:candle.time,
-      value:displayValue(e9)
-    });
-  }
-
-  if (e21 != null) {
-    ema21Series.update({
-      time:candle.time,
-      value:displayValue(e21)
-    });
-  }
-
-  const signal = signalFromCandles(selectedCandles);
+  const signal = signalFromCandles(cleanCandles);
   renderSignal(signal);
 
   if (markersApi) {
     markersApi.setMarkers(
-      buildMarkers(selectedCandles)
+      buildMarkers(cleanCandles)
     );
   }
+}
+
+function scheduleLiveIndicatorRender() {
+  if (indicatorRenderScheduled) return;
+
+  indicatorRenderScheduled = true;
+
+  requestAnimationFrame(() => {
+    indicatorRenderScheduled = false;
+
+    if (!selectedMint || !chartInitialized) return;
+
+    renderLiveIndicators();
+  });
+}
+
+function updateRealtimeChart(candle) {
+  if (!candle || !candleSeries) return;
+
+  // The price/OHLC path is intentionally synchronous so the visible candle
+  // moves on the same animation frame as the trade. Expensive indicators and
+  // marker generation are coalesced to one pass per browser frame.
+  updateLiveCandleOnSeries(candle);
 
   updateActivePrice(
     candle.c,
@@ -1622,6 +1741,8 @@ function updateRealtimeChart(candle) {
 
   $("historyStatus").textContent =
     historyBarsLoaded.toLocaleString() + " bars";
+
+  scheduleLiveIndicatorRender();
 }
 
 function scheduleLiveRender() {
@@ -1757,10 +1878,7 @@ async function fetchFastHistoricalBackfill(generation) {
     if (!r.ok) return false;
 
     const j = await readJsonResponse(r);
-    const candles = (j.candles || [])
-      .map(normalizeCandle)
-      .filter(Boolean)
-      .sort((a,b)=>a.time-b.time);
+    const candles = sanitizeChartCandles(j.candles || []);
 
     if (
       generation !== historyGeneration ||
@@ -2222,7 +2340,11 @@ function startLiveTradeCachePoll() {
   liveTradeCacheTimer = setInterval(() => {
     if (
       selectedMint &&
-      liveTradeCacheGeneration === historyGeneration
+      liveTradeCacheGeneration === historyGeneration &&
+      (
+        !liveTradeSocket ||
+        liveTradeSocket.readyState !== WebSocket.OPEN
+      )
     ) {
       syncLiveTradeCache();
     }
@@ -2398,7 +2520,7 @@ function startCurrentCandleSync() {
     // immediately without waiting for this HTTP path.
     currentCandleSyncTimer = setTimeout(
       tick,
-      300
+      500
     );
   };
 
