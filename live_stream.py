@@ -415,29 +415,42 @@ class LiveTradeHub:
         self._pending_resolutions.add(key)
 
         try:
+            transaction = None
+
             async with self._resolve_semaphore:
-                response = await self._http.post(
-                    HELIUS_HTTP_RPC.format(key=self.api_key),
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": f"meme-intel-live-{signature[:12]}",
-                        "method": "getTransaction",
-                        "params": [
-                            signature,
-                            {
-                                "encoding": "jsonParsed",
-                                "commitment": "processed",
-                                "maxSupportedTransactionVersion": 1,
-                            },
-                        ],
-                    },
-                )
+                for commitment, delay in (
+                    ("processed", 0.0),
+                    ("confirmed", 0.15),
+                ):
+                    if delay:
+                        await asyncio.sleep(delay)
 
-            if response.status_code >= 400:
-                return
+                    response = await self._http.post(
+                        HELIUS_HTTP_RPC.format(key=self.api_key),
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": f"meme-intel-live-{signature[:12]}-{commitment}",
+                            "method": "getTransaction",
+                            "params": [
+                                signature,
+                                {
+                                    "encoding": "jsonParsed",
+                                    "commitment": commitment,
+                                    "maxSupportedTransactionVersion": 1,
+                                },
+                            ],
+                        },
+                    )
 
-            payload = response.json()
-            transaction = payload.get("result")
+                    if response.status_code >= 400:
+                        continue
+
+                    payload = response.json()
+                    candidate = payload.get("result")
+                    if isinstance(candidate, dict):
+                        transaction = candidate
+                        break
+
             if not isinstance(transaction, dict):
                 return
 
