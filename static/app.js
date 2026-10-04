@@ -2032,7 +2032,7 @@ function applyLiveTrade(rawTrade, record = true) {
   // its decoded payload. Standard PumpSwap logs do not, so treating them as
   // chart-authoritative can attach another token's trade to this chart.
   if (t.source !== "PUMP.FUN") {
-    requestCurrentCandleSync(0);
+    syncCurrentPumpCandle();
     return;
   }
 
@@ -2044,8 +2044,9 @@ function applyLiveTrade(rawTrade, record = true) {
 
   // Do not build/modify OHLC from websocket trades. Pump.fun's native candle
   // endpoint is the only chart authority; this keeps execution/spot-price
-  // differences from becoming fake wicks.
-  requestCurrentCandleSync(90);
+  // differences from becoming fake wicks. Reconcile immediately without
+  // cancelling the periodic sync timer.
+  syncCurrentPumpCandle();
 }
 
 async function pollLivePrice() {
