@@ -2869,6 +2869,7 @@ async function setTimeframe(tf) {
   }
 
   historyGeneration++;
+  liveTradeCacheGeneration = historyGeneration;
   historyBusy = false;
   historyHasMore = true;
   historyNextOffset = 0;
