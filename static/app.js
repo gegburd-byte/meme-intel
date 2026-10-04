@@ -2871,7 +2871,7 @@ function startCurrentCandleSync() {
     // only repairs missed/stalled live updates.
     currentCandleSyncTimer = setTimeout(
       tick,
-      250
+      100
     );
   };
 
@@ -2891,7 +2891,7 @@ function connectNativePumpFunTrades(mint) {
 
   try {
     const socket = window.io(
-      "https://frontend-api.pump.fun",
+      "https://frontend-api-v3.pump.fun",
       {
         transports:["websocket"],
         reconnection:true,
