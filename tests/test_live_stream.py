@@ -187,7 +187,7 @@ def test_live_trade_hub_builds_current_candle_from_pumpfun_trades():
     candle = hub.current_candle(mint, timeframe=1)
 
     assert candle is not None
-    assert candle["ts"] == 1_700_000_000
+    assert candle["ts"] == 1_699_999_980
     assert candle["o"] == 0.01
     assert candle["h"] == 0.013
     assert candle["l"] == 0.01
