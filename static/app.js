@@ -2824,6 +2824,14 @@ function connectLiveTrade(mint) {
     const socket = new WebSocket(url);
     liveTradeSocket = socket;
 
+    // connectLiveTrade() is also used by the watchdog/reconnect path.
+    // disconnectLiveTrade() clears the recovery timers, so restart those
+    // timers here too. Otherwise the first automatic reconnect could
+    // accidentally leave the chart with no live reconciliation lane.
+    startCurrentCandleSync();
+    startLiveTradeCachePoll();
+    startLivePricePoll();
+
     socket.addEventListener("open",()=>{
       if (socket !== liveTradeSocket) return;
 
