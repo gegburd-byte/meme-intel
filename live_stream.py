@@ -697,7 +697,7 @@ class LiveTradeHub:
                     )
 
                 await sio.connect(
-                    "https://frontend-api.pump.fun",
+                    "https://frontend-api-v3.pump.fun",
                     headers={
                         "User-Agent": "Meme-Intel/1.0",
                     },
