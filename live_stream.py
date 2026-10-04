@@ -553,13 +553,48 @@ class LiveTradeHub:
                         "trade": trade,
                     })
 
-                await asyncio.sleep(0.55)
+                await asyncio.sleep(0.40)
 
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.last_error = str(exc)[:300]
                 await asyncio.sleep(0.9)
+
+    async def _rpc(
+        self,
+        method: str,
+        params: list[Any],
+    ) -> tuple[Any | None, str | None]:
+        """Small JSON-RPC helper for the live recovery lane."""
+        if not self.api_key:
+            return None, "HELIUS_API_KEY_MISSING"
+
+        try:
+            response = await self._http.post(
+                HELIUS_HTTP_RPC.format(key=self.api_key),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"meme-intel-recovery-{method}",
+                    "method": method,
+                    "params": params,
+                },
+            )
+
+            if response.status_code >= 400:
+                return None, f"HTTP_{response.status_code}"
+
+            payload = response.json()
+
+            if payload.get("error"):
+                return None, str(payload["error"])[:240]
+
+            return payload.get("result"), None
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return None, str(exc)[:240]
 
     async def _resolve_standard_transaction(
         self,
