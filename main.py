@@ -45,6 +45,7 @@ app = FastAPI(
 RATE_LIMIT_RULES = {
     "/api/chart": (30, 10.0),
     "/api/chart/history": (6, 10.0),
+    "/api/chart/meta": (10, 10.0),
     "/api/chart/current": (20, 10.0),
     "/api/live/price": (20, 10.0),
     "/api/analyze": (4, 30.0),
@@ -316,6 +317,171 @@ def parse_pump_candles(payload):
     candles.sort(key=lambda x: x.ts)
     deduped = {c.ts: c for c in candles}
     return list(sorted(deduped.values(), key=lambda x: x.ts))
+
+def parse_pump_trades(payload):
+    """Normalize Pump.fun trade-history rows into simple price/time/volume trades."""
+    if isinstance(payload, dict):
+        payload = (
+            payload.get("data")
+            or payload.get("trades")
+            or payload.get("results")
+            or []
+        )
+
+    if not isinstance(payload, list):
+        return []
+
+    trades = []
+
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+
+        try:
+            timestamp = (
+                item.get("timestamp")
+                or item.get("time")
+                or item.get("created_timestamp")
+                or item.get("block_time")
+            )
+
+            if timestamp is None:
+                continue
+
+            ts = int(float(timestamp))
+            if ts > 10_000_000_000:
+                ts //= 1000
+
+            if ts < 1_500_000_000:
+                continue
+
+            # Pump.fun trade history normally exposes raw lamport/token units.
+            sol_raw = (
+                item.get("sol_amount")
+                or item.get("solAmount")
+                or item.get("sol_amount_lamports")
+                or item.get("sol")
+                or item.get("amount_sol")
+            )
+
+            token_raw = (
+                item.get("token_amount")
+                or item.get("tokenAmount")
+                or item.get("token_amount_raw")
+                or item.get("tokens")
+            )
+
+            virtual_sol = (
+                item.get("virtual_sol_reserves")
+                or item.get("virtualSolReserves")
+            )
+            virtual_token = (
+                item.get("virtual_token_reserves")
+                or item.get("virtualTokenReserves")
+            )
+
+            price = None
+
+            if virtual_sol is not None and virtual_token is not None:
+                vs = float(virtual_sol)
+                vt = float(virtual_token)
+
+                if vs > 0 and vt > 0:
+                    price = (
+                        (vs / 1_000_000_000) /
+                        (vt / 1_000_000)
+                    )
+
+            if price is None and sol_raw is not None and token_raw is not None:
+                sol_value = float(sol_raw)
+                token_value = float(token_raw)
+
+                if sol_value > 1_000_000:
+                    sol_value /= 1_000_000_000
+
+                if token_value > 1_000_000_000:
+                    token_value /= 1_000_000
+
+                if sol_value > 0 and token_value > 0:
+                    price = sol_value / token_value
+
+            if price is None:
+                raw_price = (
+                    item.get("price")
+                    or item.get("price_sol")
+                    or item.get("priceSol")
+                )
+
+                if raw_price is not None:
+                    price = float(raw_price)
+
+            if price is None or price <= 0:
+                continue
+
+            volume = 0.0
+
+            if sol_raw is not None:
+                volume = float(sol_raw)
+                if volume > 1_000_000:
+                    volume /= 1_000_000_000
+
+            trades.append({
+                "ts": ts,
+                "price": price,
+                "volume": max(0.0, volume),
+            })
+        except (TypeError, ValueError):
+            continue
+
+    trades.sort(key=lambda x: x["ts"])
+    return trades
+
+
+def aggregate_pump_trade_candles(payloads, timeframe=1, limit=120):
+    span = max(60, int(timeframe or 1) * 60)
+    buckets = {}
+
+    for payload in payloads or []:
+        for trade in parse_pump_trades(payload):
+            ts = int(trade["ts"])
+            price = float(trade["price"])
+
+            bucket = (ts // span) * span
+            row = buckets.get(bucket)
+
+            if row is None:
+                buckets[bucket] = {
+                    "ts": bucket,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": float(trade["volume"]),
+                }
+                continue
+
+            row["h"] = max(row["h"], price)
+            row["l"] = min(row["l"], price)
+            row["c"] = price
+            row["v"] += float(trade["volume"])
+
+    rows = sorted(
+        buckets.values(),
+        key=lambda x: x["ts"],
+    )[-int(limit or 120):]
+
+    return [
+        Candle(
+            ts=int(row["ts"]),
+            o=float(row["o"]),
+            h=float(row["h"]),
+            l=float(row["l"]),
+            c=float(row["c"]),
+            v=float(row["v"]),
+        )
+        for row in rows
+    ]
+
 
 def closed_candles(candles, seconds_per_candle):
     now = int(time.time())
@@ -1177,15 +1343,129 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
     }
 
 
+@app.get("/api/chart/meta")
+async def chart_meta(mint: str):
+    """Return Pump.fun's own market-cap/supply metadata."""
+    mint = (mint or "").strip()
+
+    if len(mint) < 32 or len(mint) > 44:
+        raise HTTPException(400, "Invalid mint")
+
+    coin, coin_err = await pf.coin(mint)
+
+    if isinstance(coin, dict):
+        def num_value(*keys):
+            for key in keys:
+                value = coin.get(key)
+                if value is not None:
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        pass
+            return None
+
+        supply_raw = num_value(
+            "total_supply",
+            "totalSupply",
+        )
+
+        market_cap_lamports = num_value(
+            "market_cap",
+            "marketCap",
+        )
+
+        market_cap_usd = num_value(
+            "usd_market_cap",
+            "usdMarketCap",
+        )
+
+        complete = bool(
+            coin.get("complete")
+            or coin.get("is_complete")
+        )
+
+        market_cap_sol = (
+            market_cap_lamports / 1_000_000_000
+            if market_cap_lamports is not None
+            else None
+        )
+
+        price_sol = None
+
+        if (
+            market_cap_sol is not None and
+            supply_raw is not None and
+            supply_raw > 0
+        ):
+            supply_ui = (
+                supply_raw / 1_000_000
+                if supply_raw > 1_000_000_000
+                else supply_raw
+            )
+            if supply_ui > 0:
+                price_sol = market_cap_sol / supply_ui
+
+        return {
+            "state": "READY",
+            "source": "PUMP.FUN",
+            "mint": mint,
+            "symbol": coin.get("symbol"),
+            "name": coin.get("name"),
+            "complete": complete,
+            "market_cap_sol": market_cap_sol,
+            "market_cap_usd": market_cap_usd,
+            "total_supply": supply_raw,
+            "price_sol": price_sol,
+            "pump_swap_pool": coin.get("pump_swap_pool"),
+            "timestamp": int(time.time()),
+        }
+
+    # Fallback only: this keeps the display useful for migrated/legacy tokens
+    # when Pump.fun's own coin endpoint is unavailable.
+    try:
+        overview, overview_err = await ds.overview(mint)
+    except Exception as exc:
+        overview, overview_err = None, str(exc)
+
+    data = overview.get("data") if isinstance(overview, dict) else {}
+    data = data if isinstance(data, dict) else {}
+
+    price = data.get("price")
+    market_cap = data.get("marketCap")
+
+    return {
+        "state": "FALLBACK" if market_cap is not None else "UNAVAILABLE",
+        "source": "DEXSCREENER",
+        "mint": mint,
+        "symbol": data.get("symbol"),
+        "name": data.get("name"),
+        "complete": None,
+        "market_cap_sol": None,
+        "market_cap_usd": (
+            float(market_cap)
+            if market_cap is not None
+            else None
+        ),
+        "total_supply": None,
+        "price_sol": (
+            float(price)
+            if price is not None
+            else None
+        ),
+        "error": coin_err or overview_err,
+        "timestamp": int(time.time()),
+    }
+
+
 @app.get("/api/chart/history")
 async def chart_history(mint: str, timeframe: int = 1, limit: int = 90):
-    """Fast historical fallback used behind the live chart.
+    """Fast historical Pump.fun chart backfill.
 
-    Reconstructs recent OHLC from the same Pump.fun trade events used by the
-    live stream. It never touches the active bar; the browser only merges bars
-    that are older than the currently displayed candle.
+    Native Pump.fun candles are preferred. Pump.fun's own trade history fills
+    missing/older bars, and Helius is only a last-resort fallback.
     """
     mint = (mint or "").strip()
+
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
@@ -1194,51 +1474,156 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 90):
 
     limit = max(30, min(int(limit or 90), 120))
 
+    async def native_history():
+        try:
+            payload, err = await asyncio.wait_for(
+                pf.candles(
+                    mint,
+                    limit=max(limit, 90),
+                    timeframe=timeframe,
+                    offset=0,
+                    fresh=True,
+                ),
+                timeout=3.5,
+            )
+            return payload, err
+        except asyncio.TimeoutError:
+            return None, "PUMPFUN_HISTORY_TIMEOUT"
+        except Exception as exc:
+            return None, str(exc)[:240]
+
+    async def trade_page(offset):
+        try:
+            payload, err = await asyncio.wait_for(
+                pf.trades(
+                    mint,
+                    limit=200,
+                    offset=offset,
+                    minimum_size=0,
+                    fresh=True,
+                ),
+                timeout=3.5,
+            )
+            return payload, err
+        except asyncio.TimeoutError:
+            return None, "PUMPFUN_TRADES_TIMEOUT"
+        except Exception as exc:
+            return None, str(exc)[:240]
+
+    native_task = asyncio.create_task(native_history())
+    trade_tasks = [
+        asyncio.create_task(trade_page(0)),
+        asyncio.create_task(trade_page(200)),
+        asyncio.create_task(trade_page(400)),
+    ]
+
+    native_payload, native_err = await native_task
+
+    native = parse_pump_candles(native_payload)
+
+    trade_results = await asyncio.gather(
+        *trade_tasks,
+        return_exceptions=True,
+    )
+
+    trade_payloads = []
+
+    for result in trade_results:
+        if (
+            isinstance(result, tuple) and
+            len(result) == 2
+        ):
+            payload, err = result
+            if isinstance(payload, list):
+                trade_payloads.append(payload)
+
+    trade_candles = aggregate_pump_trade_candles(
+        trade_payloads,
+        timeframe=timeframe,
+        limit=max(limit, 120),
+    )
+
+    combined = {}
+
+    # Native Pump.fun candles win on matching timestamps.
+    for candle in trade_candles:
+        combined[candle.ts] = candle
+
+    for candle in native:
+        combined[candle.ts] = candle
+
+    rows = sorted(
+        combined.values(),
+        key=lambda x: x.ts,
+    )[-limit:]
+
+    if rows:
+        return {
+            "state": "READY",
+            "source": (
+                "PUMP.FUN"
+                if native
+                else "PUMP.FUN LIVE TRADE HISTORY"
+            ),
+            "candles": [
+                {
+                    "ts": c.ts,
+                    "o": c.o,
+                    "h": c.h,
+                    "l": c.l,
+                    "c": c.c,
+                    "v": c.v,
+                }
+                for c in rows
+            ],
+            "error": None,
+            "timestamp": int(time.time()),
+        }
+
+    # Last resort: existing on-chain reconstruction.
     try:
         candles, err = await asyncio.wait_for(
             he.historical_trade_candles(
                 mint,
                 timeframe=timeframe,
-                lookback_minutes=min(120, max(60, limit * timeframe)),
+                lookback_minutes=min(
+                    120,
+                    max(60, limit * timeframe),
+                ),
                 max_signatures=700,
             ),
             timeout=7.0,
         )
     except asyncio.TimeoutError:
-        return {
-            "state":"TIMEOUT",
-            "source":"HELIUS_ONCHAIN_TRADES",
-            "candles":[],
-            "error":"HISTORY_TIMEOUT",
-            "timestamp":int(time.time()),
-        }
+        candles, err = [], "HISTORY_TIMEOUT"
     except Exception as exc:
-        return {
-            "state":"ERROR",
-            "source":"HELIUS_ONCHAIN_TRADES",
-            "candles":[],
-            "error":str(exc)[:240],
-            "timestamp":int(time.time()),
-        }
+        candles, err = [], str(exc)[:240]
 
-    rows = sorted(candles or [], key=lambda x:x.ts)[-limit:]
+    rows = sorted(
+        candles or [],
+        key=lambda x: x.ts,
+    )[-limit:]
 
     return {
-        "state":"READY" if rows else "NO_CANDLES",
-        "source":"HELIUS_ONCHAIN_TRADES",
-        "candles":[
+        "state": "READY" if rows else "NO_CANDLES",
+        "source": "HELIUS_ONCHAIN_TRADES" if rows else "NONE",
+        "candles": [
             {
-                "ts":c.ts,
-                "o":c.o,
-                "h":c.h,
-                "l":c.l,
-                "c":c.c,
-                "v":c.v,
+                "ts": c.ts,
+                "o": c.o,
+                "h": c.h,
+                "l": c.l,
+                "c": c.c,
+                "v": c.v,
             }
             for c in rows
         ],
-        "error":None if rows else (err or "NO_TRADES_DECODED"),
-        "timestamp":int(time.time()),
+        "error": None if rows else (
+            err or
+            native_err or
+            "NO_TRADES_DECODED"
+        ),
+        "timestamp": int(time.time()),
     }
 
 
