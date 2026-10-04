@@ -1884,25 +1884,36 @@ async function fetchFastHistoricalBackfill(generation) {
   }
 
   try {
-    const r = await fetch(
-      "/api/chart/history?mint=" +
-      encodeURIComponent(selectedMint) +
-      "&timeframe=" + backendTimeframe() +
-      "&interval=" + encodeURIComponent(chartInterval) +
-      "&limit=120&t=" + Date.now(),
-      {cache:"no-store"}
-    );
+    let historyJson = null;
 
-    if (!r.ok) return false;
+    try {
+      const r = await fetch(
+        "/api/chart/history?mint=" +
+        encodeURIComponent(selectedMint) +
+        "&timeframe=" + backendTimeframe() +
+        "&interval=" + encodeURIComponent(chartInterval) +
+        "&limit=120&t=" + Date.now(),
+        {cache:"no-store"}
+      );
 
-    const j = await readJsonResponse(r);
+      if (r.ok) {
+        historyJson = await readJsonResponse(r);
+      }
+    } catch {}
+
+    const j = historyJson || {
+      source:"NONE",
+      candles:[]
+    };
+
     let candles = sanitizeChartCandles(j.candles || []);
+    let usedLiveTradeFallback = false;
+    let fallbackTimestampSec = 0;
 
-    // A true 1-second historical endpoint is not always available upstream.
-    // Before giving up, pull the freshest exact-venue trade snapshot and build
-    // real 1-second buckets from those trades. This keeps the 1s chart visible
-    // instead of leaving an empty TradingView canvas while the live feed warms.
-    if (!candles.length && chartInterval === "1s") {
+    // Never leave the chart blank just because one historical provider timed
+    // out. Exact-venue decoded trades are safe to aggregate at any requested
+    // timeframe, including true 1-second bars.
+    if (!candles.length) {
       try {
         const liveResponse = await fetch(
           "/api/chart/live-trades?mint=" +
@@ -1915,34 +1926,39 @@ async function fetchFastHistoricalBackfill(generation) {
           const liveJson = await readJsonResponse(liveResponse);
           const liveRows = (liveJson.trades || [])
             .map(normalizeTrade)
-            .filter(Boolean)
-            .map(normalizeTradeForChart);
+            .filter(Boolean);
 
           candles = aggregateLiveTrades(
             liveRows,
-            "1s"
+            chartInterval === "1s"
+              ? "1s"
+              : chartTimeframe
           );
 
           if (candles.length) {
-            chartDataSource = "PUMP.FUN LIVE TRADES";
-            livePreviewActive = true;
+            usedLiveTradeFallback = true;
+            fallbackTimestampSec = Number(
+              liveJson.timestamp ||
+              Math.floor(Date.now() / 1000)
+            );
           }
         }
       } catch {}
     }
 
     // A fast live websocket/cache snapshot can arrive while the historical
-    // request is in flight. Use it as the final client-side fallback rather
-    // than allowing a transient empty history response to blank the chart.
-    if (!candles.length && chartInterval === "1s" && selectedTrades.length) {
+    // request is in flight. Use it as the final client-side fallback too.
+    if (!candles.length && selectedTrades.length) {
       candles = aggregateLiveTrades(
-        selectedTrades.map(normalizeTradeForChart),
-        "1s"
+        selectedTrades,
+        chartInterval === "1s"
+          ? "1s"
+          : chartTimeframe
       );
 
       if (candles.length) {
-        chartDataSource = "PUMP.FUN LIVE TRADES";
-        livePreviewActive = true;
+        usedLiveTradeFallback = true;
+        fallbackTimestampSec = Math.floor(Date.now() / 1000);
       }
     }
 
@@ -1963,9 +1979,16 @@ async function fetchFastHistoricalBackfill(generation) {
 
     historyBarsLoaded = selectedCandles.length;
     chartHistoryLoadedAtSec =
-      Number(j.timestamp) > 0
-        ? Number(j.timestamp)
-        : Math.floor(Date.now() / 1000);
+      usedLiveTradeFallback
+        ? (
+            fallbackTimestampSec ||
+            Math.floor(Date.now() / 1000)
+          )
+        : (
+            Number(j.timestamp) > 0
+              ? Number(j.timestamp)
+              : Math.floor(Date.now() / 1000)
+          );
 
     if (chartInterval === "1m") {
       selectedMinuteCandles = candles
@@ -1977,10 +2000,13 @@ async function fetchFastHistoricalBackfill(generation) {
         j.source || "PUMP.FUN";
     }
 
-    chartDataSource =
-      j.source ||
-      "PUMP.FUN";
-    livePreviewActive = false;
+    chartDataSource = usedLiveTradeFallback
+      ? "PUMP.FUN LIVE TRADES"
+      : (
+          j.source ||
+          "PUMP.FUN"
+        );
+    livePreviewActive = usedLiveTradeFallback;
 
     if (chartInitialized) {
       renderChart(selectedCandles,true);
