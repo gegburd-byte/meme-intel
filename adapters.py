@@ -405,15 +405,29 @@ class PumpFunAdapter:
                     last_error = f"HTTP_{r.status_code}"
                     continue
 
-                payload = r.json()
+                def unwrap_trade_payload(value):
+                    if isinstance(value, list):
+                        return value
 
-                if isinstance(payload, dict):
-                    payload = (
-                        payload.get("data")
-                        or payload.get("trades")
-                        or payload.get("results")
-                        or []
-                    )
+                    if isinstance(value, dict):
+                        for field in (
+                            "data",
+                            "trades",
+                            "results",
+                            "items",
+                            "rows",
+                        ):
+                            nested = value.get(field)
+                            if isinstance(nested, list) and nested:
+                                return nested
+                            if isinstance(nested, dict):
+                                rows = unwrap_trade_payload(nested)
+                                if rows:
+                                    return rows
+
+                    return []
+
+                payload = unwrap_trade_payload(r.json())
 
                 if isinstance(payload, list):
                     self._cache[key] = {
