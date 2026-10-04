@@ -1344,7 +1344,7 @@ async def chart_live_trades(mint: str, limit: int = 200):
                     {
                         "id": f"pump-swap-http:{mint}:{int(row['ts'])}:{i}",
                         "signature": "",
-                        "source": "PUMPSWAP_HTTP",
+                        "source": "PUMPSWAP",
                         "side": row.get("side", "BUY"),
                         "price": float(row["price"]),
                         "volume_sol": float(row["volume"]),
@@ -2127,7 +2127,7 @@ async def chart_current(
             }
             return {
                 "state": "READY",
-                "source": "PUMPSWAP HTTP LIVE",
+                "source": "PUMP.FUN LIVE TRADES",
                 "timeframe": chart_interval,
                 "candles": [current],
                 "error": None,
