@@ -383,7 +383,7 @@ class LiveTradeHub:
             "source": "PUMP.FUN LIVE TRADES",
         }
 
-    async def _send(self, payload: dict[str, Any]) -> None,
+    async def _send(self, payload: dict[str, Any]) -> None:
         if self.ws is None:
             return
         async with self._send_lock:
