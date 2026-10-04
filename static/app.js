@@ -107,89 +107,177 @@ function formatChartValue(price) {
   return safe(value,12);
 }
 
+function refreshMarketCapFactor(priceSol = null) {
+  const p =
+    Number(
+      priceSol ??
+      (
+        selectedTrades.length
+          ? selectedTrades[
+              selectedTrades.length - 1
+            ].price
+          : NaN
+      )
+    );
+
+  if (
+    Number.isFinite(p) &&
+    p > 0 &&
+    Number.isFinite(selectedMarketCapUsd) &&
+    selectedMarketCapUsd > 0
+  ) {
+    chartMcFactor =
+      selectedMarketCapUsd / p;
+  } else if (
+    Number.isFinite(selectedSupply) &&
+    selectedSupply > 0 &&
+    Number.isFinite(selectedMarketCapUsd) &&
+    selectedMarketCapUsd > 0
+  ) {
+    // Fallback when the exact Pump.fun price is temporarily unavailable.
+    // This still yields the correct current MC because the factor is tied to
+    // the token's current USD market cap and supply.
+    chartMcFactor =
+      selectedMarketCapUsd /
+      Math.max(selectedSupply,1);
+  }
+
+  const button =
+    $("chartMc");
+
+  if (button) {
+    button.disabled =
+      !(chartMcFactor > 0);
+
+    button.title =
+      chartMcFactor > 0
+        ? "Show Pump.fun market-cap scale"
+        : "Waiting for market-cap data";
+  }
+}
+
 async function loadChartMeta(mint) {
   const mintAtStart = mint;
 
   try {
-    const r = await fetch(
-      "/api/chart/meta?mint=" +
-      encodeURIComponent(mint) +
-      "&t=" + Date.now(),
-      {
-        cache:"no-store"
+    let data = null;
+
+    try {
+      const r = await fetch(
+        "/api/chart/meta?mint=" +
+        encodeURIComponent(mint) +
+        "&t=" + Date.now(),
+        {
+          cache:"no-store"
+        }
+      );
+
+      if (r.ok) {
+        data =
+          await readJsonResponse(r);
       }
-    );
+    } catch {}
 
-    const data = await readJsonResponse(r);
+    // Fallback to the existing fast price endpoint. It includes supply and
+    // market cap even when Pump.fun's coin endpoint is blocked.
+    if (!data) {
+      try {
+        const r = await fetch(
+          "/api/live/price?mint=" +
+          encodeURIComponent(mint) +
+          "&t=" + Date.now(),
+          {
+            cache:"no-store"
+          }
+        );
 
-    if (mintAtStart !== selectedMint) {
+        if (r.ok) {
+          data =
+            await readJsonResponse(r);
+        }
+      } catch {}
+    }
+
+    if (
+      !data ||
+      mintAtStart !== selectedMint
+    ) {
       return;
     }
 
-    const supplyRaw = Number(data.total_supply);
-    const mcUsd = Number(data.market_cap_usd);
-    const mcSol = Number(data.market_cap_sol);
-    const priceSol = Number(data.price_sol);
+    const supplyRaw =
+      Number(
+        data.total_supply ??
+        data.supply
+      );
 
-    let supplyUi = supplyRaw;
+    const supplyUi =
+      Number.isFinite(
+        Number(data.total_supply_ui)
+      )
+        ? Number(data.total_supply_ui)
+        : (
+            Number.isFinite(supplyRaw) &&
+            supplyRaw > 1e9
+              ? supplyRaw / 1e6
+              : supplyRaw
+          );
 
-    if (
-      Number.isFinite(supplyUi) &&
-      supplyUi > 1e9
-    ) {
-      supplyUi /= 1e6;
-    }
+    const mcUsd =
+      Number(
+        data.market_cap_usd ??
+        data.market_cap
+      );
+
+    const priceSol =
+      Number(
+        data.price_sol
+      );
 
     if (
       Number.isFinite(supplyUi) &&
       supplyUi > 0
     ) {
-      selectedSupply = supplyUi;
+      selectedSupply =
+        supplyUi;
     }
 
     if (
       Number.isFinite(mcUsd) &&
       mcUsd > 0
     ) {
-      selectedMarketCapUsd = mcUsd;
-      selectedMarketCap = mcUsd;
+      selectedMarketCapUsd =
+        mcUsd;
+
+      selectedMarketCap =
+        mcUsd;
     }
 
     if (
-      Number.isFinite(mcSol) &&
-      mcSol > 0
-    ) {
-      selectedMarketCapSol = mcSol;
-    }
-
-    // Exact Pump.fun market cap divided by Pump.fun's current SOL price/token
-    // gives the USD multiplier used for every chart candle.
-    if (
-      Number.isFinite(mcUsd) &&
-      mcUsd > 0 &&
       Number.isFinite(priceSol) &&
       priceSol > 0
     ) {
-      chartMcFactor = mcUsd / priceSol;
-    } else if (
-      selectedSupply > 0 &&
-      selectedMarketCapUsd > 0 &&
-      Number.isFinite(Number(window.__memeIntelSolPrice)) &&
-      Number(window.__memeIntelSolPrice) > 0
-    ) {
-      chartMcFactor =
-        selectedSupply *
-        Number(window.__memeIntelSolPrice);
+      selectedMarketCapSol =
+        Number(
+          data.market_cap_sol
+        ) || 0;
     }
 
-    const button = $("chartMc");
+    refreshMarketCapFactor(
+      priceSol
+    );
 
-    if (button) {
-      button.disabled = !(chartMcFactor > 0);
-      button.title =
-        chartMcFactor > 0
-          ? "Show Pump.fun market-cap scale"
-          : "Pump.fun market-cap data unavailable";
+    // If Pump.fun metadata returned the exact current MC, keep that exact
+    // current value visible even when the chart is still loading history.
+    if (
+      chartDisplayMode === "MC" &&
+      selectedMarketCapUsd > 0
+    ) {
+      $("activePrice").textContent =
+        "$" +
+        formatCompactNumber(
+          selectedMarketCapUsd
+        );
     }
 
     if (
@@ -199,7 +287,8 @@ async function loadChartMeta(mint) {
     ) {
       chart.applyOptions({
         localization:{
-          priceFormatter:formatChartValue
+          priceFormatter:
+            formatChartValue
         }
       });
 
@@ -209,13 +298,11 @@ async function loadChartMeta(mint) {
       );
     }
   } catch {
-    const button = $("chartMc");
-
-    if (button) {
-      button.disabled = true;
-    }
+    $("chartMc").disabled =
+      !(chartMcFactor > 0);
   }
 }
+
 
 function setChartDisplayMode(mode) {
   const next =
@@ -1517,68 +1604,6 @@ function mergePage(page) {
 
   historyBarsLoaded = selectedCandles.length;
 }
-async function fetchPage(offset, generation) {
-  if (
-    !selectedMint ||
-    generation !== historyGeneration
-  ) {
-    return {candles:[],hasMore:false};
-  }
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(()=>controller.abort(), 20000);
-
-    const r = await fetch(
-      "/api/chart?mint=" +
-      encodeURIComponent(selectedMint) +
-      "&limit=" + PAGE_SIZE +
-      "&offset=" + offset +
-      "&timeframe=" + chartTimeframe +
-      "&t=" + Date.now(),
-      {
-        cache:"no-store",
-        signal:controller.signal
-      }
-    );
-
-    clearTimeout(timer);
-
-    if (!r.ok) {
-      return {
-        candles:[],
-        hasMore:false,
-        source:"ERROR",
-        error:"HTTP " + r.status
-      };
-    }
-
-    const j = await readJsonResponse(r);
-
-    const candles = (j.candles || [])
-      .map(normalizeCandle)
-      .filter(Boolean);
-
-    return {
-      candles,
-      hasMore:Boolean(j.has_more) && candles.length >= PAGE_SIZE,
-      source:String(j.source || "MARKET DATA"),
-      error:j.error || null,
-      state:String(j.state || ""),
-      diagnostics:j.diagnostics || null
-    };
-  } catch (err) {
-    return {
-      candles:[],
-      hasMore:false,
-      source:"ERROR",
-      error:err?.name === "AbortError"
-        ? "CHART_REQUEST_TIMEOUT"
-        : String(err?.message || err)
-    };
-  }
-}
-
 async function fetchInitialHistory() {
   const generation = historyGeneration;
 
@@ -1594,17 +1619,15 @@ async function fetchInitialHistory() {
 
   try {
     $("chartMode").textContent =
-      "CONNECTING TO REAL MARKET DATA…";
+      "CONNECTING TO PUMP.FUN LIVE…";
 
-    $("historyStatus").textContent = "starting…";
+    $("historyStatus").textContent =
+      selectedCandles.length
+        ? selectedCandles.length.toLocaleString() + " live bars"
+        : "live…";
 
-    // Start the real historical request and the lightweight active-price path
-    // together. The user should see a real current bar before slow history APIs
-    // finish.
-    const historyPromise = fetchPage(0,generation);
-    const seedPromise = syncCurrentPumpCandle();
-
-    await seedPromise;
+    // Never block the first paint on historical HTTP.
+    await syncCurrentPumpCandle();
 
     if (
       generation !== historyGeneration ||
@@ -1615,60 +1638,24 @@ async function fetchInitialHistory() {
 
     if (selectedCandles.length) {
       historyBarsLoaded = selectedCandles.length;
-      renderChart(selectedCandles,true);
 
-      $("chartMode").textContent =
-        chartDataSource === "LIVE_PRICE"
-          ? "LIVE PRICE · " + timeframeLabel() + " · HISTORY LOADING"
-          : chartDataSource + " · " + timeframeLabel() + " · LIVE";
-    }
-
-    const page = await historyPromise;
-
-    if (
-      generation !== historyGeneration ||
-      !selectedMint
-    ) {
-      return Boolean(selectedCandles.length);
-    }
-
-    if (page.candles.length) {
-      chartDataSource = page.source || "MARKET DATA";
-
-      if (selectedCandles.length) {
-        mergePage(page.candles);
-      } else {
-        selectedCandles = page.candles
-          .sort((a,b)=>a.time-b.time)
-          .slice(-MAX_HISTORY_BARS);
+      if (chartInitialized) {
+        renderChart(selectedCandles,true);
       }
 
-      historyBarsLoaded = selectedCandles.length;
-      historyNextOffset = PAGE_SIZE;
-      historyHasMore = page.hasMore;
-
-      renderChart(selectedCandles,true);
-
-
-      return true;
-    }
-
-    if (selectedCandles.length) {
       $("chartMode").textContent =
-        chartDataSource === "LIVE_PRICE"
-          ? "LIVE PRICE · " + timeframeLabel() + " · WAITING FOR HISTORY"
-          : "LIVE · " + timeframeLabel() + " · HISTORY UNAVAILABLE";
-      $("historyStatus").textContent =
-        historyBarsLoaded.toLocaleString() + " live bar";
-      setSource("dotChart","chartState","LIVE",["LIVE","READY"]);
-      return true;
+        "PUMP.FUN LIVE · " +
+        timeframeLabel() +
+        " · LIVE TRADES";
     }
 
-    $("chartMode").textContent =
-      "WAITING FOR REAL LIVE PRICE…";
-    $("historyStatus").textContent = "0 bars";
-    $("chartState").textContent = "WAITING";
-    return false;
+    // Background history only. It may take seconds, but it cannot delay the
+    // active candle or make the chart blank.
+    fetchFastHistoricalBackfill(generation);
+
+    return Boolean(selectedCandles.length);
+  } catch {
+    return Boolean(selectedCandles.length);
   } finally {
     if (initialHistoryGeneration === generation) {
       initialHistoryBusy = false;
@@ -1771,20 +1758,38 @@ function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
 }
 
 function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
-  const span = Math.max(60, Number(tfMinutes || 1) * 60);
+  const span = Math.max(
+    60,
+    Number(tfMinutes || 1) * 60
+  );
+
   const rows = new Map();
 
-  for (const trade of [...(trades || [])].sort((a,b)=>a.time-b.time)) {
+  for (
+    const trade of [...(trades || [])]
+      .sort((a,b)=>a.time-b.time)
+  ) {
     const price = Number(trade.price);
     const ts = Number(trade.time);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts)) {
+
+    if (
+      !Number.isFinite(price) ||
+      price <= 0 ||
+      !Number.isFinite(ts)
+    ) {
       continue;
     }
 
-    const bucket = Math.floor(ts / span) * span;
+    const bucket =
+      Math.floor(ts / span) * span;
+
     const volume = Math.max(
       0,
-      Number(trade.volumeSol ?? trade.volume_sol ?? 0)
+      Number(
+        trade.volumeSol ??
+        trade.volume_sol ??
+        0
+      )
     );
 
     let row = rows.get(bucket);
@@ -1797,19 +1802,44 @@ function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
         h:price,
         l:price,
         c:price,
-        v:volume
+        v:volume,
+        _firstTs:ts,
+        _lastTs:ts
       };
+
       rows.set(bucket,row);
       continue;
     }
 
-    row.h = Math.max(row.h,price);
-    row.l = Math.min(row.l,price);
-    row.c = price;
+    row.h = Math.max(
+      row.h,
+      price
+    );
+
+    row.l = Math.min(
+      row.l,
+      price
+    );
+
     row.v += volume;
+
+    if (ts < row._firstTs) {
+      row._firstTs = ts;
+      row.o = price;
+    }
+
+    if (ts >= row._lastTs) {
+      row._lastTs = ts;
+      row.c = price;
+    }
   }
 
   return [...rows.values()]
+    .map(x=>{
+      delete x._firstTs;
+      delete x._lastTs;
+      return x;
+    })
     .sort((a,b)=>a.time-b.time)
     .slice(-MAX_HISTORY_BARS);
 }
@@ -1820,23 +1850,37 @@ function updateCandleFromLiveTrade(trade) {
   const price = Number(trade.price);
   const ts = Number(trade.time);
 
-  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts)) {
+  if (
+    !Number.isFinite(price) ||
+    price <= 0 ||
+    !Number.isFinite(ts)
+  ) {
     return false;
   }
 
-  const span = Math.max(60, Number(chartTimeframe || 1) * 60);
-  const bucket = Math.floor(ts / span) * span;
+  const span = Math.max(
+    60,
+    Number(chartTimeframe || 1) * 60
+  );
+
+  const bucket =
+    Math.floor(ts / span) * span;
+
   const volume = Math.max(
     0,
-    Number(trade.volumeSol ?? trade.volume_sol ?? 0)
+    Number(
+      trade.volumeSol ??
+      trade.volume_sol ??
+      0
+    )
   );
 
   let bar = selectedCandles.find(
     x => x.time === bucket
   );
 
-  // A synthetic/fallback price bar is not an OHLC candle. The first real
-  // Pump.fun trade in that bucket replaces it completely.
+  // A live price fallback is never an OHLC authority. The first real trade
+  // replaces it completely.
   if (
     chartDataSource === "LIVE_PRICE" &&
     selectedCandles.length === 1 &&
@@ -1849,13 +1893,22 @@ function updateCandleFromLiveTrade(trade) {
       h:price,
       l:price,
       c:price,
-      v:volume
+      v:volume,
+      _firstTs:ts,
+      _lastTs:ts
     };
+
     selectedCandles = [bar];
   } else if (!bar) {
-    const last = selectedCandles[selectedCandles.length - 1];
+    const last =
+      selectedCandles[
+        selectedCandles.length - 1
+      ];
 
-    if (last && bucket < last.time) {
+    if (
+      last &&
+      bucket < last.time
+    ) {
       return false;
     }
 
@@ -1866,7 +1919,9 @@ function updateCandleFromLiveTrade(trade) {
       h:price,
       l:price,
       c:price,
-      v:volume
+      v:volume,
+      _firstTs:ts,
+      _lastTs:ts
     };
 
     selectedCandles = [
@@ -1874,22 +1929,75 @@ function updateCandleFromLiveTrade(trade) {
       bar
     ].slice(-MAX_HISTORY_BARS);
   } else {
-    bar.h = Math.max(bar.h, price);
-    bar.l = Math.min(bar.l, price);
-    bar.c = price;
-    bar.v = Number(bar.v || 0) + volume;
+    bar.h = Math.max(
+      bar.h,
+      price
+    );
+
+    bar.l = Math.min(
+      bar.l,
+      price
+    );
+
+    bar.v =
+      Number(bar.v || 0) +
+      volume;
+
+    const firstTs =
+      Number.isFinite(bar._firstTs)
+        ? bar._firstTs
+        : bar.time;
+
+    const lastTs =
+      Number.isFinite(bar._lastTs)
+        ? bar._lastTs
+        : bar.time;
+
+    if (ts < firstTs) {
+      bar._firstTs = ts;
+      bar.o = price;
+    }
+
+    if (ts >= lastTs) {
+      bar._lastTs = ts;
+      bar.c = price;
+    }
   }
 
-  chartDataSource = "PUMP.FUN LIVE TRADES";
-  historyBarsLoaded = selectedCandles.length;
+  const cleanBar = {
+    time:bar.time,
+    ts:bar.ts,
+    o:bar.o,
+    h:bar.h,
+    l:bar.l,
+    c:bar.c,
+    v:bar.v
+  };
+
+  Object.assign(
+    bar,
+    cleanBar
+  );
+
+  chartDataSource =
+    "PUMP.FUN LIVE TRADES";
+
+  historyBarsLoaded =
+    selectedCandles.length;
 
   updateActivePrice(
     price,
     ts * 1000
   );
 
-  if (chartInitialized && candleSeries) {
-    updateRealtimeChart(bar);
+  if (
+    chartInitialized &&
+    candleSeries
+  ) {
+    updateRealtimeChart(
+      cleanBar
+    );
+
     renderTape();
 
     $("chartMode").textContent =
@@ -1900,6 +2008,7 @@ function updateCandleFromLiveTrade(trade) {
 
   return true;
 }
+
 
 function applyLiveTrade(rawTrade, record = true) {
   const t = normalizeTrade(rawTrade);
@@ -1921,6 +2030,7 @@ function applyLiveTrade(rawTrade, record = true) {
   );
 
   updateCandleFromLiveTrade(t);
+  refreshMarketCapFactor(t.price);
 
   // Reconcile against Pump.fun's native OHLC when available, but never make
   // the live chart wait for this request.
