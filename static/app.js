@@ -440,19 +440,21 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
       pressure:null,
       score:0,
       buyTrigger:null,
-      sellTrigger:null
+      sellTrigger:null,
+      slowReady:false
     };
   }
 
-  const closes = candles
-    .slice(0,endIndex + 1)
+  const visible = candles.slice(0,endIndex + 1);
+
+  const closes = visible
     .map(x=>Number(x.c))
     .filter(Number.isFinite);
 
   if (closes.length < 21) {
     return {
       state:"WAIT",
-      reason:"Building 21 candles for confirmation…",
+      reason:"Building 21 real 1m candles for confirmation…",
       rsi:null,
       ema9:null,
       ema21:null,
@@ -460,7 +462,8 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
       pressure:null,
       score:0,
       buyTrigger:null,
-      sellTrigger:null
+      sellTrigger:null,
+      slowReady:false
     };
   }
 
@@ -493,17 +496,51 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
       ? up / moves
       : 0.5;
 
-  const priorBreakout = closes.slice(
-    Math.max(0,closes.length - 7),
+  // Slow-trader confirmation: derive a 5m structure from the same real candles.
+  // This adds trend confirmation without another network request.
+  const c5 = aggregateCandles(
+    visible,
+    5
+  );
+
+  let e5_9 = null;
+  let e5_21 = null;
+  let slowTrend = "UNKNOWN";
+
+  if (c5.length >= 9) {
+    const c5Closes = c5.map(x=>Number(x.c));
+    e5_9 = ema(c5Closes,9);
+
+    if (c5.length >= 21) {
+      e5_21 = ema(c5Closes,21);
+    }
+
+    if (e5_21 != null) {
+      slowTrend =
+        e5_9 > e5_21
+          ? "BULLISH"
+          : e5_9 < e5_21
+            ? "BEARISH"
+            : "NEUTRAL";
+    } else if (e5_9 != null) {
+      slowTrend =
+        c5[c5.length - 1].c > e5_9
+          ? "BULLISH"
+          : "BEARISH";
+    }
+  }
+
+  const recentStructure = closes.slice(
+    Math.max(0,closes.length - 8),
     closes.length - 1
   );
 
-  const priorHigh = priorBreakout.length
-    ? Math.max(...priorBreakout)
+  const priorHigh = recentStructure.length
+    ? Math.max(...recentStructure)
     : p;
 
-  const priorLow = priorBreakout.length
-    ? Math.min(...priorBreakout)
+  const priorLow = recentStructure.length
+    ? Math.min(...recentStructure)
     : p;
 
   const momentum =
@@ -513,14 +550,8 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
 
   let score = 50;
 
-  if (
-    e9 != null &&
-    e21 != null
-  ) {
-    score +=
-      e9 > e21
-        ? 16
-        : -16;
+  if (e9 != null && e21 != null) {
+    score += e9 > e21 ? 16 : -16;
   }
 
   if (r != null) {
@@ -533,26 +564,16 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
     }
   }
 
-  score +=
-    p >= mean
-      ? 9
-      : -9;
+  score += p >= mean ? 9 : -9;
 
-  if (pressure >= 0.60) {
-    score += 9;
-  }
+  if (pressure >= 0.60) score += 9;
+  if (pressure <= 0.40) score -= 9;
 
-  if (pressure <= 0.40) {
-    score -= 9;
-  }
+  if (momentum > 1) score += 8;
+  if (momentum < -1) score -= 8;
 
-  if (momentum > 1) {
-    score += 8;
-  }
-
-  if (momentum < -1) {
-    score -= 8;
-  }
+  if (slowTrend === "BULLISH") score += 14;
+  if (slowTrend === "BEARISH") score -= 14;
 
   score = Math.round(
     clamp(score,0,100)
@@ -563,20 +584,25 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
       ? priorHigh * 1.002
       : null;
 
+  // Slower exit: use the 5m trend line when available; otherwise use 1m
+  // structure. This is deliberately slower than reacting to every 1m wick.
   const sellTrigger =
-    e21 != null
-      ? Math.max(
-          priorLow,
-          e21
-        )
-      : priorLow;
+    slowTrend === "BEARISH" && e5_21 != null
+      ? Math.max(priorLow,e5_21)
+      : e21 != null
+        ? Math.max(priorLow,e21)
+        : priorLow;
+
+  const slowReady = c5.length >= 9;
 
   let state = "WAIT";
 
   const buyReady =
+    slowReady &&
     e9 != null &&
     e21 != null &&
     r != null &&
+    slowTrend === "BULLISH" &&
     p >= buyTrigger &&
     e9 > e21 &&
     p > mean &&
@@ -585,13 +611,15 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
     pressure >= 0.55;
 
   const sellReady =
+    slowReady &&
     e9 != null &&
     e21 != null &&
-    r != null &&
     (
       p <= sellTrigger &&
-      e9 < e21 &&
-      pressure <= 0.45
+      (
+        slowTrend === "BEARISH" ||
+        e9 < e21
+      )
     );
 
   if (buyReady) {
@@ -601,27 +629,32 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
   }
 
   let reason =
-    "WAIT — no confirmed trigger.";
+    slowReady
+      ? "WAIT — no multi-timeframe confirmation."
+      : "WAIT — building 5m trend history.";
 
   if (state === "BUY") {
     reason =
-      "BUY TRIGGER CONFIRMED — wait for the current 1m candle to close above " +
-      safe(buyTrigger,12) +
-      " with EMA 9 above EMA 21 and positive trade pressure.";
+      "BUY TRIGGER CONFIRMED — 1m momentum + 5m trend agree. " +
+      "Wait for a confirmed close above " +
+      formatChartValue(buyTrigger) +
+      ".";
   } else if (state === "SELL") {
     reason =
-      "SELL / EXIT TRIGGER — price is below the defined trend/structure level " +
-      safe(sellTrigger,12) +
-      " with bearish EMA and trade pressure.";
+      "SELL / EXIT TRIGGER — the slower 5m trend/structure has broken. " +
+      "Defend below " +
+      formatChartValue(sellTrigger) +
+      ".";
   } else if (
+    slowReady &&
     e9 != null &&
     e21 != null
   ) {
     reason =
-      "WAIT — buy only on a confirmed close above " +
-      safe(buyTrigger,12) +
-      "; exit/defend below " +
-      safe(sellTrigger,12) +
+      "WAIT — buy only above " +
+      formatChartValue(buyTrigger) +
+      " with 5m bullish confirmation; exit/defend below " +
+      formatChartValue(sellTrigger) +
       ".";
   }
 
@@ -636,7 +669,11 @@ function signalFromCandles(candles, endIndex = candles.length - 1) {
     momentum,
     score,
     buyTrigger,
-    sellTrigger
+    sellTrigger,
+    slowReady,
+    slowTrend,
+    ema5_9:e5_9,
+    ema5_21:e5_21
   };
 }
 
@@ -1103,6 +1140,14 @@ function updateIndicatorPanel(signal) {
 
   $("metricConfirm").textContent =
     signal.score + "/100";
+  
+  if ($("metricConfirm")) {
+    $("metricConfirm").title =
+      signal.slowReady
+        ? "5m trend: " + (signal.slowTrend || "UNKNOWN")
+        : "Waiting for 5m trend history";
+  }
+
 
   $("buyTrigger").textContent =
     signal.buyTrigger == null
@@ -1572,8 +1617,6 @@ async function fetchInitialHistory() {
       historyBarsLoaded = selectedCandles.length;
       renderChart(selectedCandles,true);
 
-      fetchFastHistoricalBackfill(generation);
-
       $("chartMode").textContent =
         chartDataSource === "LIVE_PRICE"
           ? "LIVE PRICE · " + timeframeLabel() + " · HISTORY LOADING"
@@ -1606,13 +1649,6 @@ async function fetchInitialHistory() {
 
       renderChart(selectedCandles,true);
 
-      fetchFastHistoricalBackfill(generation);
-
-      setTimeout(() => {
-        if (generation === historyGeneration) {
-          loadOlderHistory(generation);
-        }
-      }, 900);
 
       return true;
     }
@@ -1648,7 +1684,7 @@ async function fetchFastHistoricalBackfill(generation) {
       "/api/chart/history?mint=" +
       encodeURIComponent(selectedMint) +
       "&timeframe=" + chartTimeframe +
-      "&limit=90&t=" + Date.now(),
+      "&limit=120&t=" + Date.now(),
       {cache:"no-store"}
     );
 
@@ -1706,62 +1742,6 @@ async function fetchFastHistoricalBackfill(generation) {
   }
 }
 
-async function loadOlderHistory(generation) {
-  const busyForSameGeneration =
-    historyBusy &&
-    historyBusyGeneration === generation;
-
-  if (
-    busyForSameGeneration ||
-    !historyHasMore ||
-    generation !== historyGeneration
-  ) return;
-
-  historyBusy = true;
-  historyBusyGeneration = generation;
-
-  try {
-    while (
-      historyHasMore &&
-      selectedCandles.length < MAX_HISTORY_BARS &&
-      generation === historyGeneration
-    ) {
-      const result = await fetchPage(
-        historyNextOffset,
-        generation
-      );
-
-      if (generation !== historyGeneration) break;
-
-      let received = 0;
-
-      if (result.candles.length) {
-        mergePage(result.candles);
-        received = result.candles.length;
-      }
-
-      historyNextOffset += PAGE_SIZE;
-      historyHasMore = Boolean(result.hasMore) && received > 0;
-
-      $("historyStatus").textContent =
-        historyBarsLoaded.toLocaleString() +
-        (historyHasMore ? "+ bars" : " bars");
-
-      if (received) {
-        renderChart(selectedCandles,false);
-      }
-
-      if (!received) break;
-
-      // Yield to the browser before asking for another background page.
-      await new Promise(resolve => setTimeout(resolve, 250));
-    }
-  } finally {
-    if (historyBusyGeneration === generation) {
-      historyBusy = false;
-    }
-  }
-}
 function applyLivePrice(price, timestampMs = Date.now(), recordTrade = null) {
   price = Number(price);
   if (!Number.isFinite(price) || price <= 0 || !selectedMint) return;
@@ -2337,7 +2317,6 @@ async function setTimeframe(tf) {
   // Ask for authoritative Pump.fun history in the background. It can replace
   // the temporary live-trade history without blocking the already-visible chart.
   fetchInitialHistory().catch(()=>{});
-  fetchFastHistoricalBackfill(historyGeneration);
 }
 
 function showAll() {
