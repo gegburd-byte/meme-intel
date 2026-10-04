@@ -229,7 +229,7 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     html = Path("static/index.html").read_text()
     app = Path("static/app.js").read_text()
 
-    assert "chartfix32" in html
+    assert "chartfix33" in html
     assert "frontend-api-v3.pump.fun/socket.io/" in app
     assert "tradeCreated" in app
     assert "findNativePumpFunTradePayload" in app
