@@ -1136,6 +1136,7 @@ async def attach_live_market_addresses(mint: str) -> None:
     """Attach every exact Pump.fun/PumpSwap market account to the live stream."""
     try:
         addresses: set[str] = set()
+        pool_known = False
 
         try:
             coin, _ = await asyncio.wait_for(
@@ -1148,6 +1149,12 @@ async def attach_live_market_addresses(mint: str) -> None:
                     "bondingCurve",
                     "associated_bonding_curve",
                     "associatedBondingCurve",
+                ):
+                    value = str(coin.get(key) or "").strip()
+                    if value:
+                        addresses.add(value)
+
+                for key in (
                     "pump_swap_pool",
                     "pumpSwapPool",
                     "pumpSwapPoolAddress",
@@ -1159,10 +1166,15 @@ async def attach_live_market_addresses(mint: str) -> None:
                     value = str(coin.get(key) or "").strip()
                     if value:
                         addresses.add(value)
+                        pool_known = True
         except Exception:
             pass
 
-        if not any(addresses):
+        # A migrated coin can still expose its old bonding curve while the
+        # PumpSwap pool field is temporarily absent. Discover the pool
+        # independently instead of skipping the fallback just because the
+        # bonding-curve address exists.
+        if not pool_known:
             try:
                 pairs_payload, _ = await asyncio.wait_for(
                     ds.pairs(mint),
