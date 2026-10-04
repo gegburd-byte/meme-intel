@@ -1937,10 +1937,16 @@ async function fetchFastHistoricalBackfill(generation) {
 
           if (candles.length) {
             usedLiveTradeFallback = true;
-            fallbackTimestampSec = Number(
-              liveJson.timestamp ||
-              Math.floor(Date.now() / 1000)
+            const rawFallbackTimestamp = Number(
+              liveJson.timestamp || 0
             );
+            fallbackTimestampSec =
+              rawFallbackTimestamp > 2e10
+                ? Math.floor(rawFallbackTimestamp / 1000)
+                : (
+                    rawFallbackTimestamp ||
+                    Math.floor(Date.now() / 1000)
+                  );
           }
         }
       } catch {}
