@@ -130,7 +130,15 @@ def test_frontend_timeframes_and_live_cache_are_wired():
     assert 'chartInterval === "1s"' in js
     assert '&interval=' in js
     assert "startLiveTradeCachePoll();" in js
-    assert 'chartInterval === "1s"' not in js.split("async function fetchFastHistoricalBackfill", 1)[1].split("async function applyLivePrice", 1)[0]
+
+    history_fn = js.split(
+        "async function fetchFastHistoricalBackfill",
+        1,
+    )[1].split(
+        "function applyLivePrice",
+        1,
+    )[0]
+    assert '|| chartInterval === "1s"' not in history_fn
 
 
 def test_chart_history_has_no_gecko_source():
