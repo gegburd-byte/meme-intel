@@ -1345,7 +1345,7 @@ async def chart(mint: str, limit: int = 1000, offset: int = 0, timeframe: int = 
 
 @app.get("/api/chart/meta")
 async def chart_meta(mint: str):
-    """Return Pump.fun's own market-cap/supply metadata."""
+    """Return Pump.fun's exact market-cap data and supply."""
     mint = (mint or "").strip()
 
     if len(mint) < 32 or len(mint) > 44:
@@ -1369,7 +1369,8 @@ async def chart_meta(mint: str):
             "totalSupply",
         )
 
-        market_cap_lamports = num_value(
+        market_cap_sol = num_value(
+            # Pump.fun exposes this field in SOL, not lamports.
             "market_cap",
             "marketCap",
         )
@@ -1379,31 +1380,61 @@ async def chart_meta(mint: str):
             "usdMarketCap",
         )
 
+        virtual_sol = num_value(
+            "virtual_sol_reserves",
+            "virtualSolReserves",
+        )
+
+        virtual_token = num_value(
+            "virtual_token_reserves",
+            "virtualTokenReserves",
+        )
+
         complete = bool(
             coin.get("complete")
             or coin.get("is_complete")
         )
 
-        market_cap_sol = (
-            market_cap_lamports / 1_000_000_000
-            if market_cap_lamports is not None
-            else None
-        )
-
-        price_sol = None
+        supply_ui = None
 
         if (
-            market_cap_sol is not None and
             supply_raw is not None and
             supply_raw > 0
         ):
+            # Standard Pump.fun SPL amounts may be returned in atomic units.
             supply_ui = (
                 supply_raw / 1_000_000
                 if supply_raw > 1_000_000_000
                 else supply_raw
             )
-            if supply_ui > 0:
-                price_sol = market_cap_sol / supply_ui
+
+        # If the API doesn't return market_cap, derive it from Pump.fun's
+        # own bonding-curve reserves and total supply.
+        if (
+            market_cap_sol is None and
+            virtual_sol is not None and
+            virtual_token is not None and
+            virtual_sol > 0 and
+            virtual_token > 0 and
+            supply_ui and
+            supply_ui > 0
+        ):
+            price_sol = (
+                virtual_sol / 1_000_000_000
+            ) / (
+                virtual_token / 1_000_000
+            )
+            market_cap_sol = price_sol * supply_ui
+        else:
+            price_sol = None
+
+        if (
+            price_sol is None and
+            market_cap_sol is not None and
+            supply_ui and
+            supply_ui > 0
+        ):
+            price_sol = market_cap_sol / supply_ui
 
         return {
             "state": "READY",
@@ -1415,13 +1446,15 @@ async def chart_meta(mint: str):
             "market_cap_sol": market_cap_sol,
             "market_cap_usd": market_cap_usd,
             "total_supply": supply_raw,
+            "total_supply_ui": supply_ui,
             "price_sol": price_sol,
+            "virtual_sol_reserves": virtual_sol,
+            "virtual_token_reserves": virtual_token,
             "pump_swap_pool": coin.get("pump_swap_pool"),
             "timestamp": int(time.time()),
         }
 
-    # Fallback only: this keeps the display useful for migrated/legacy tokens
-    # when Pump.fun's own coin endpoint is unavailable.
+    # Fallback for migrated/legacy tokens when Pump.fun metadata is unavailable.
     try:
         overview, overview_err = await ds.overview(mint)
     except Exception as exc:
@@ -1447,6 +1480,7 @@ async def chart_meta(mint: str):
             else None
         ),
         "total_supply": None,
+        "total_supply_ui": None,
         "price_sol": (
             float(price)
             if price is not None
@@ -1458,12 +1492,8 @@ async def chart_meta(mint: str):
 
 
 @app.get("/api/chart/history")
-async def chart_history(mint: str, timeframe: int = 1, limit: int = 90):
-    """Fast historical Pump.fun chart backfill.
-
-    Native Pump.fun candles are preferred. Pump.fun's own trade history fills
-    missing/older bars, and Helius is only a last-resort fallback.
-    """
+async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
+    """Fast historical backfill with Pump.fun as the preferred source."""
     mint = (mint or "").strip()
 
     if len(mint) < 32 or len(mint) > 44:
@@ -1472,159 +1502,247 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 90):
     if timeframe not in {1, 5, 15, 60}:
         raise HTTPException(400, "Unsupported timeframe")
 
-    limit = max(30, min(int(limit or 90), 120))
+    limit = max(30, min(int(limit or 120), 120))
+
+    cache_key = (mint, timeframe, limit)
+    cached = getattr(chart_history, "_cache", {}).get(cache_key)
+    now = time.time()
+
+    if cached and now - cached["time"] < 8.0:
+        return cached["payload"]
 
     async def native_history():
         try:
             payload, err = await asyncio.wait_for(
                 pf.candles(
                     mint,
-                    limit=max(limit, 90),
+                    limit=limit,
                     timeframe=timeframe,
                     offset=0,
                     fresh=True,
                 ),
-                timeout=3.5,
+                timeout=3.0,
             )
-            return payload, err
-        except asyncio.TimeoutError:
-            return None, "PUMPFUN_HISTORY_TIMEOUT"
+            rows = parse_pump_candles(payload)
+            return "PUMP.FUN", rows, err
         except Exception as exc:
-            return None, str(exc)[:240]
+            return "PUMP.FUN", [], str(exc)[:240]
 
-    async def trade_page(offset):
+    async def pump_trade_history():
         try:
-            payload, err = await asyncio.wait_for(
+            results = await asyncio.gather(
                 pf.trades(
                     mint,
                     limit=200,
-                    offset=offset,
+                    offset=0,
                     minimum_size=0,
                     fresh=True,
                 ),
-                timeout=3.5,
+                pf.trades(
+                    mint,
+                    limit=200,
+                    offset=200,
+                    minimum_size=0,
+                    fresh=True,
+                ),
+                return_exceptions=True,
             )
-            return payload, err
-        except asyncio.TimeoutError:
-            return None, "PUMPFUN_TRADES_TIMEOUT"
+
+            payloads = [
+                result[0]
+                for result in results
+                if (
+                    isinstance(result, tuple) and
+                    len(result) == 2 and
+                    isinstance(result[0], list)
+                )
+            ]
+
+            rows = aggregate_pump_trade_candles(
+                payloads,
+                timeframe=timeframe,
+                limit=limit,
+            )
+
+            return "PUMP.FUN TRADE HISTORY", rows, (
+                None if rows else "NO_TRADES_DECODED"
+            )
         except Exception as exc:
-            return None, str(exc)[:240]
+            return "PUMP.FUN TRADE HISTORY", [], str(exc)[:240]
+
+    async def helius_history():
+        try:
+            rows, err = await asyncio.wait_for(
+                he.historical_trade_candles(
+                    mint,
+                    timeframe=timeframe,
+                    lookback_minutes=min(
+                        120,
+                        max(60, limit * timeframe),
+                    ),
+                    max_signatures=700,
+                ),
+                timeout=7.0,
+            )
+            return "HELIUS_ONCHAIN_TRADES", rows or [], err
+        except Exception as exc:
+            return "HELIUS_ONCHAIN_TRADES", [], str(exc)[:240]
+
+    async def gecko_history():
+        try:
+            payload, err = await asyncio.wait_for(
+                gt.candles(mint, "1m"),
+                timeout=5.0,
+            )
+            base = parse_candles(payload)
+            rows = aggregate_timeframe_candles(
+                base,
+                timeframe,
+            )[-limit:]
+            return "GECKOTERMINAL", rows, err
+        except Exception as exc:
+            return "GECKOTERMINAL", [], str(exc)[:240]
 
     native_task = asyncio.create_task(native_history())
-    trade_tasks = [
-        asyncio.create_task(trade_page(0)),
-        asyncio.create_task(trade_page(200)),
-        asyncio.create_task(trade_page(400)),
+
+    # Keep the fallbacks working in parallel, but native Pump.fun remains the
+    # preferred source whenever it returns usable history.
+    fallback_tasks = [
+        asyncio.create_task(pump_trade_history()),
+        asyncio.create_task(gecko_history()),
+        asyncio.create_task(helius_history()),
     ]
 
-    native_payload, native_err = await native_task
+    native_source, native_rows, native_err = await native_task
 
-    native = parse_pump_candles(native_payload)
-
-    trade_results = await asyncio.gather(
-        *trade_tasks,
-        return_exceptions=True,
-    )
-
-    trade_payloads = []
-
-    for result in trade_results:
-        if (
-            isinstance(result, tuple) and
-            len(result) == 2
-        ):
-            payload, err = result
-            if isinstance(payload, list):
-                trade_payloads.append(payload)
-
-    trade_candles = aggregate_pump_trade_candles(
-        trade_payloads,
-        timeframe=timeframe,
-        limit=max(limit, 120),
-    )
-
-    combined = {}
-
-    # Native Pump.fun candles win on matching timestamps.
-    for candle in trade_candles:
-        combined[candle.ts] = candle
-
-    for candle in native:
-        combined[candle.ts] = candle
-
-    rows = sorted(
-        combined.values(),
-        key=lambda x: x.ts,
-    )[-limit:]
-
-    if rows:
-        return {
-            "state": "READY",
-            "source": (
-                "PUMP.FUN"
-                if native
-                else "PUMP.FUN LIVE TRADE HISTORY"
-            ),
-            "candles": [
+    if native_rows:
+        payload = {
+            "state":"READY",
+            "source":"PUMP.FUN",
+            "candles":[
                 {
-                    "ts": c.ts,
-                    "o": c.o,
-                    "h": c.h,
-                    "l": c.l,
-                    "c": c.c,
-                    "v": c.v,
+                    "ts":c.ts,
+                    "o":c.o,
+                    "h":c.h,
+                    "l":c.l,
+                    "c":c.c,
+                    "v":c.v,
                 }
-                for c in rows
+                for c in sorted(native_rows,key=lambda x:x.ts)[-limit:]
             ],
-            "error": None,
-            "timestamp": int(time.time()),
+            "error":None,
+            "timestamp":int(time.time()),
         }
 
-    # Last resort: existing on-chain reconstruction.
-    try:
-        candles, err = await asyncio.wait_for(
-            he.historical_trade_candles(
-                mint,
-                timeframe=timeframe,
-                lookback_minutes=min(
-                    120,
-                    max(60, limit * timeframe),
-                ),
-                max_signatures=700,
-            ),
-            timeout=7.0,
+        for task in fallback_tasks:
+            if not task.done():
+                task.cancel()
+
+        await asyncio.gather(
+            *fallback_tasks,
+            return_exceptions=True,
         )
-    except asyncio.TimeoutError:
-        candles, err = [], "HISTORY_TIMEOUT"
-    except Exception as exc:
-        candles, err = [], str(exc)[:240]
 
-    rows = sorted(
-        candles or [],
-        key=lambda x: x.ts,
-    )[-limit:]
+        chart_history._cache = getattr(
+            chart_history,
+            "_cache",
+            {},
+        )
 
-    return {
-        "state": "READY" if rows else "NO_CANDLES",
-        "source": "HELIUS_ONCHAIN_TRADES" if rows else "NONE",
-        "candles": [
-            {
-                "ts": c.ts,
-                "o": c.o,
-                "h": c.h,
-                "l": c.l,
-                "c": c.c,
-                "v": c.v,
+        # Bound cache growth.
+        if len(chart_history._cache) > 64:
+            chart_history._cache.clear()
+
+        chart_history._cache[cache_key] = {
+            "time":time.time(),
+            "payload":payload,
+        }
+
+        return payload
+
+    # No native history: use the first valid fallback to minimize latency.
+    fallback_errors = []
+
+    for task in asyncio.as_completed(fallback_tasks):
+        try:
+            source, rows, err = await task
+        except Exception as exc:
+            fallback_errors.append(str(exc)[:180])
+            continue
+
+        if rows:
+            payload = {
+                "state":"READY",
+                "source":source,
+                "candles":[
+                    {
+                        "ts":c.ts,
+                        "o":c.o,
+                        "h":c.h,
+                        "l":c.l,
+                        "c":c.c,
+                        "v":c.v,
+                    }
+                    for c in sorted(rows,key=lambda x:x.ts)[-limit:]
+                ],
+                "error":None,
+                "timestamp":int(time.time()),
             }
-            for c in rows
-        ],
-        "error": None if rows else (
-            err or
+
+            # Cancel slower providers as soon as we have valid history.
+            for other in fallback_tasks:
+                if not other.done() and other is not task:
+                    other.cancel()
+
+            await asyncio.gather(
+                *fallback_tasks,
+                return_exceptions=True,
+            )
+
+            chart_history._cache = getattr(
+                chart_history,
+                "_cache",
+                {},
+            )
+
+            if len(chart_history._cache) > 64:
+                chart_history._cache.clear()
+
+            chart_history._cache[cache_key] = {
+                "time":time.time(),
+                "payload":payload,
+            }
+
+            return payload
+
+        fallback_errors.append(
+            str(err or source)[:180]
+        )
+
+    payload = {
+        "state":"NO_CANDLES",
+        "source":"NONE",
+        "candles":[],
+        "error":(
             native_err or
-            "NO_TRADES_DECODED"
+            "; ".join(fallback_errors) or
+            "NO_HISTORY"
         ),
-        "timestamp": int(time.time()),
+        "timestamp":int(time.time()),
     }
+
+    chart_history._cache = getattr(
+        chart_history,
+        "_cache",
+        {},
+    )
+
+    chart_history._cache[cache_key] = {
+        "time":time.time(),
+        "payload":payload,
+    }
+
+    return payload
 
 
 @app.get("/api/chart/current")
