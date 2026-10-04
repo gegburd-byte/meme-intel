@@ -2297,10 +2297,17 @@ function updateCandleFromLiveTrade(trade) {
       last &&
       bucket < last.time
     ) {
-      return false;
-    }
-
-    bar = {
+      // Providers can timestamp a processed trade a fraction late while the
+      // history endpoint has already exposed the next bucket. When the gap is
+      // only one candle wide, treat the trade as the current live candle
+      // instead of silently throwing away the real trade.
+      if (last.time - bucket <= span) {
+        bar = last;
+      } else {
+        return false;
+      }
+    } else {
+      bar = {
       time:bucket,
       ts:bucket,
       o:price,
@@ -2312,10 +2319,11 @@ function updateCandleFromLiveTrade(trade) {
       _lastTs:ts
     };
 
-    selectedCandles = [
-      ...selectedCandles,
-      bar
-    ].slice(-MAX_HISTORY_BARS);
+      selectedCandles = [
+        ...selectedCandles,
+        bar
+      ].slice(-MAX_HISTORY_BARS);
+    }
   } else {
     bar.h = Math.max(
       bar.h,
