@@ -2788,7 +2788,9 @@ async function setTimeframe(tf) {
         : "loading…";
 
     fetchInitialHistory().catch(()=>{});
-    syncLiveTradeCache().catch(()=>{});
+    // The normal recovery poll already seeds recent trades when the live
+    // websocket is unavailable. Avoid re-applying the same trades here after
+    // historical 1s bars have just been loaded.
     return;
   }
 
