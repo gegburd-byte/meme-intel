@@ -349,3 +349,25 @@ def test_parse_pump_trade_history_accepts_swap_quote_and_base_aliases():
     assert rows[0]["ts"] == 1_700_000_000
     assert abs(rows[0]["price"] - 0.02) < 1e-12
     assert rows[0]["volume"] == 2.0
+
+
+def test_parse_swap_trade_prefers_executed_amounts_over_virtual_reserves():
+    from main import parse_pump_trades
+
+    payload = [{
+        "id": "swap-trade-executed-price",
+        "createdTs": 1_700_000_000_000,
+        "quoteAmountIn": 7_000_000,
+        "baseAmountOut": 1_000_000,
+        # This stale bonding-curve ratio would be 4.1e-8. It must never
+        # override the actual PumpSwap execution price of 0.007 SOL/token.
+        "virtualSolReserves": 41_088_000,
+        "virtualTokenReserves": 1_000_000_000_000_000,
+        "txType": "buy",
+    }]
+
+    rows = parse_pump_trades(payload)
+
+    assert len(rows) == 1
+    assert abs(rows[0]["price"] - 0.007) < 1e-12
+    assert rows[0]["volume"] == 0.007
