@@ -2112,20 +2112,39 @@ async def chart_current(
         swap_rows = parse_pump_trades(swap_payload)
 
         if swap_rows:
-            latest = swap_rows[-1]
             bucket_span = 1 if chart_interval == "1s" else max(
                 60,
                 int(timeframe_minutes) * 60,
             )
+            latest = swap_rows[-1]
             bucket = (int(latest["ts"]) // bucket_span) * bucket_span
-            current = {
-                "ts": bucket,
-                "o": float(latest["price"]),
-                "h": float(latest["price"]),
-                "l": float(latest["price"]),
-                "c": float(latest["price"]),
-                "v": float(latest.get("volume") or 0),
-            }
+            bucket_rows = [
+                row for row in swap_rows
+                if (int(row["ts"]) // bucket_span) * bucket_span == bucket
+            ]
+
+            if bucket_rows:
+                prices = [float(row["price"]) for row in bucket_rows]
+                current = {
+                    "ts": bucket,
+                    "o": prices[0],
+                    "h": max(prices),
+                    "l": min(prices),
+                    "c": prices[-1],
+                    "v": sum(
+                        max(0.0, float(row.get("volume") or 0))
+                        for row in bucket_rows
+                    ),
+                }
+            else:
+                current = {
+                    "ts": bucket,
+                    "o": float(latest["price"]),
+                    "h": float(latest["price"]),
+                    "l": float(latest["price"]),
+                    "c": float(latest["price"]),
+                    "v": float(latest.get("volume") or 0),
+                }
             return {
                 "state": "READY",
                 "source": "PUMP.FUN LIVE TRADES",
