@@ -1057,6 +1057,24 @@ def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
     )
 
 
+@app.get("/api/chart/live-trades")
+async def chart_live_trades(mint: str, limit: int = 30):
+    """Return the server's bounded recent live trade cache."""
+    mint = (mint or "").strip()
+
+    if len(mint) < 32 or len(mint) > 44:
+        raise HTTPException(400, "Invalid mint")
+
+    limit = max(1, min(int(limit or 30), 50))
+
+    return {
+        "state": "READY" if trade_hub.active() else "UNAVAILABLE",
+        "mint": mint,
+        "trades": trade_hub.recent_trade_snapshot(mint, limit=limit),
+        "timestamp": int(time.time() * 1000),
+    }
+
+
 @app.get("/api/chart")
 async def chart(
     mint: str,
