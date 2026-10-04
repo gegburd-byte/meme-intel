@@ -640,9 +640,12 @@ class HeliusAdapter:
                 )
 
                 if sig_err or not signatures:
-                    if not rows:
-                        return [], sig_err or "NO_SIGNATURES"
-                    break
+                    # One address can legitimately have no history even when
+                    # the associated PumpSwap pool does. Continue to the other
+                    # address before declaring the token history unavailable.
+                    if rows:
+                        break
+                    continue
 
                 page = [
                     item
