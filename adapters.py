@@ -299,6 +299,133 @@ class PumpFunAdapter:
             },
         )
 
+    async def coin(self, mint, fresh=False):
+        """Fetch Pump.fun's current coin record for exact market-cap metadata."""
+        mint = (mint or "").strip()
+        if not mint:
+            return None, "INVALID_MINT"
+
+        cache_key = ("coin", mint)
+        now = time.time()
+        cached = self._cache.get(cache_key)
+
+        if (
+            not fresh and
+            cached and
+            now - cached["time"] < 0.75
+        ):
+            return cached["payload"], None
+
+        last_error = None
+
+        urls = (
+            f"{self.base_urls[0]}/coins-v2/{mint}",
+            f"{self.base_urls[0]}/coins/{mint}?sync=true",
+            f"{self.base_urls[1]}/coins/{mint}",
+        )
+
+        for url in urls:
+            try:
+                r = await self._client.get(url)
+
+                if r.status_code >= 400:
+                    last_error = f"HTTP_{r.status_code}"
+                    continue
+
+                payload = r.json()
+
+                if isinstance(payload, dict):
+                    self._cache[cache_key] = {
+                        "time": time.time(),
+                        "payload": payload,
+                    }
+                    return payload, None
+
+                last_error = "INVALID_COIN_RESPONSE"
+            except Exception as exc:
+                last_error = str(exc)
+
+        if last_error in {"HTTP_401", "HTTP_403"} and not os.getenv("PUMP_FUN_JWT"):
+            return None, "PUMPFUN_COIN_AUTH_REQUIRED"
+
+        return None, last_error or "PUMPFUN_COIN_UNAVAILABLE"
+
+    async def trades(
+        self,
+        mint,
+        limit=200,
+        offset=0,
+        minimum_size=0,
+        fresh=False,
+    ):
+        """Fetch Pump.fun's own trade history for fast historical reconstruction."""
+        mint = (mint or "").strip()
+        limit = max(25, min(int(limit or 200), 200))
+        offset = max(0, int(offset or 0))
+        minimum_size = max(0, int(minimum_size or 0))
+
+        key = (
+            "trades",
+            mint,
+            limit,
+            offset,
+            minimum_size,
+        )
+        now = time.time()
+
+        cached = self._cache.get(key)
+        if (
+            not fresh and
+            cached and
+            now - cached["time"] < 1.0
+        ):
+            return cached["payload"], None
+
+        params = {
+            "limit": limit,
+            "offset": offset,
+            "minimumSize": minimum_size,
+        }
+
+        last_error = None
+
+        for base in self.base_urls:
+            try:
+                r = await self._client.get(
+                    f"{base}/trades/all/{mint}",
+                    params=params,
+                )
+
+                if r.status_code >= 400:
+                    last_error = f"HTTP_{r.status_code}"
+                    continue
+
+                payload = r.json()
+
+                if isinstance(payload, dict):
+                    payload = (
+                        payload.get("data")
+                        or payload.get("trades")
+                        or payload.get("results")
+                        or []
+                    )
+
+                if isinstance(payload, list):
+                    self._cache[key] = {
+                        "time": time.time(),
+                        "payload": payload,
+                    }
+                    return payload, None
+
+                last_error = "INVALID_TRADE_RESPONSE"
+            except Exception as exc:
+                last_error = str(exc)
+
+        if last_error in {"HTTP_401", "HTTP_403"} and not os.getenv("PUMP_FUN_JWT"):
+            return None, "PUMPFUN_TRADE_HISTORY_AUTH_REQUIRED"
+
+        return None, last_error or "PUMPFUN_TRADE_HISTORY_UNAVAILABLE"
+
     async def candles(self, mint, limit=1000, timeframe=1, offset=0, fresh=False):
         mint = (mint or "").strip()
         limit = max(25, min(int(limit or 1000), 1000))
