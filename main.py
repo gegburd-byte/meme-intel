@@ -1309,6 +1309,52 @@ async def chart_live_trades(mint: str, limit: int = 200):
     # exist in memory.
     rows = trade_hub.recent_trade_snapshot(mint, limit=limit)
 
+    # Exact-venue HTTP recovery lane. The current Pump.fun swap API is fast
+    # enough to sample only when the live in-memory lane has stopped advancing;
+    # it covers both bonding-curve and migrated PumpSwap activity.
+    latest_server_trade = max(
+        (
+            int(row.get("timestamp") or 0)
+            for row in rows
+            if isinstance(row, dict)
+        ),
+        default=0,
+    )
+    now_sec = int(time.time())
+    live_lane_stale = (
+        latest_server_trade <= 0
+        or now_sec - latest_server_trade >= 2
+    )
+
+    if live_lane_stale:
+        try:
+            swap_payload, swap_err = await asyncio.wait_for(
+                pf.swap_trades(
+                    mint,
+                    limit=min(25, limit),
+                    cursor=0,
+                    fresh=False,
+                ),
+                timeout=0.45,
+            )
+            swap_rows = parse_pump_trades(swap_payload)
+
+            if swap_rows:
+                rows = [
+                    {
+                        "id": f"pump-swap-http:{mint}:{int(row['ts'])}:{i}",
+                        "signature": "",
+                        "source": "PUMPSWAP_HTTP",
+                        "side": row.get("side", "BUY"),
+                        "price": float(row["price"]),
+                        "volume_sol": float(row["volume"]),
+                        "timestamp": int(row["ts"]),
+                    }
+                    for i, row in enumerate(swap_rows[-limit:])
+                ]
+        except Exception:
+            pass
+
     # Use Pump.fun's authenticated trade endpoint only when the in-memory
     # on-chain lane is empty or has gone stale. This gives us an independent
     # exact-venue recovery path without adding a network request to every hot
@@ -1327,7 +1373,7 @@ async def chart_live_trades(mint: str, limit: int = 200):
         or now_sec - latest_server_trade >= 2
     )
 
-    if live_lane_stale and os.getenv("PUMP_FUN_JWT"):
+    if live_lane_stale and not rows and os.getenv("PUMP_FUN_JWT"):
         native_cache = getattr(
             chart_live_trades,
             "_native_cache",
@@ -2048,6 +2094,47 @@ async def chart_current(
             "error": None,
             "timestamp": int(time.time()),
         }
+
+    # When the in-memory stream has not received a trade yet,
+    # ask Pump.fun's own swap API for the latest exact-venue trade. This is
+    # only a fallback; the websocket/on-chain path remains the primary source.
+    try:
+        swap_payload, swap_err = await asyncio.wait_for(
+            pf.swap_trades(
+                mint,
+                limit=5,
+                cursor=0,
+                fresh=False,
+            ),
+            timeout=0.45,
+        )
+        swap_rows = parse_pump_trades(swap_payload)
+
+        if swap_rows:
+            latest = swap_rows[-1]
+            bucket_span = 1 if chart_interval == "1s" else max(
+                60,
+                int(timeframe_minutes) * 60,
+            )
+            bucket = (int(latest["ts"]) // bucket_span) * bucket_span
+            current = {
+                "ts": bucket,
+                "o": float(latest["price"]),
+                "h": float(latest["price"]),
+                "l": float(latest["price"]),
+                "c": float(latest["price"]),
+                "v": float(latest.get("volume") or 0),
+            }
+            return {
+                "state": "READY",
+                "source": "PUMPSWAP HTTP LIVE",
+                "timeframe": chart_interval,
+                "candles": [current],
+                "error": None,
+                "timestamp": int(time.time()),
+            }
+    except Exception:
+        pass
 
     if chart_interval == "1s":
         return {
