@@ -15,7 +15,12 @@ let marketCandidates = [];
 let selectedMint = "";
 let selectedInfo = {};
 let selectedCandles = [];
+let selectedMinuteCandles = [];
+let selectedMinuteSource = "UNKNOWN";
 let selectedTrades = [];
+let selectedLiveUsdPrice = 0;
+let selectedLiveUsdAt = 0;
+let livePreviewActive = false;
 let analysisBusy = false;
 
 let chart = null;
@@ -1088,6 +1093,52 @@ function normalizeTrade(raw) {
   };
 }
 
+function normalizeTradeForChart(trade) {
+  const t = {...trade};
+  const source = String(chartDataSource || "").toUpperCase();
+
+  // GeckoTerminal's fallback chart is USD-denominated, while the Pump.fun
+  // bonding-curve event decoder produces SOL/token. Convert the live event
+  // into the exact unit the already-visible chart is using. The latest USD
+  // token price comes from the existing /api/live/price poll, so no extra
+  // request is created per trade.
+  if (
+    source.includes("GECKOTERMINAL") &&
+    Number(t.price) > 0
+  ) {
+    let solUsd = 0;
+
+    if (
+      Number.isFinite(selectedLiveUsdPrice) &&
+      selectedLiveUsdPrice > 0 &&
+      Date.now() - selectedLiveUsdAt < 5000
+    ) {
+      solUsd = selectedLiveUsdPrice / Number(t.price);
+    }
+
+    if (
+      !(solUsd > 0) &&
+      selectedCandles.length
+    ) {
+      const lastClose = Number(
+        selectedCandles[selectedCandles.length - 1].c
+      );
+
+      if (Number.isFinite(lastClose) && lastClose > 0) {
+        solUsd = lastClose / Number(t.price);
+      }
+    }
+
+    if (solUsd > 0) {
+      t.price = Number(t.price) * solUsd;
+      t.volume_sol =
+        Number(t.volume_sol || 0) * solUsd;
+    }
+  }
+
+  return t;
+}
+
 function aggregateCandles(source, tfMinutes) {
   if (tfMinutes === 1) {
     return source.map(x=>({...x}));
@@ -1321,7 +1372,10 @@ function renderTape() {
       '<span>' +
         new Date(x.time * 1000).toLocaleTimeString() +
       '</span>' +
-      '<b>' + safe(x.price,12) + '</b>' +
+      '<b>' + safe(
+        Number(x.chartPrice ?? x.price),
+        12
+      ) + '</b>' +
       '<i>' + (
         x.side === "BUY" ? "BUY" : "SELL"
       ) + '</i>' +
@@ -1484,7 +1538,8 @@ function renderChart(candles, fit = false) {
   updateActivePrice(last.c);
   $("chartMode").textContent =
     chartDataSource + " · " + timeframeLabel() +
-    " CANDLES · " + candles.length + " BARS";
+    (livePreviewActive ? " · LIVE" : " CANDLES") +
+    " · " + candles.length + " BARS";
 
   $("chartState").textContent = "LIVE";
   setSource("dotChart","chartState","LIVE",["LIVE","READY"]);
@@ -1543,6 +1598,12 @@ function updateRealtimeChart(candle) {
 
   const signal = signalFromCandles(selectedCandles);
   renderSignal(signal);
+
+  if (markersApi) {
+    markersApi.setMarkers(
+      buildMarkers(selectedCandles)
+    );
+  }
 
   updateActivePrice(
     candle.c,
@@ -1710,9 +1771,21 @@ async function fetchFastHistoricalBackfill(generation) {
       .slice(-MAX_HISTORY_BARS);
 
     historyBarsLoaded = selectedCandles.length;
+
+    if (chartTimeframe === 1) {
+      selectedMinuteCandles = candles
+        .map(x => ({...x}))
+        .sort((a,b) => a.time - b.time)
+        .slice(-MAX_HISTORY_BARS);
+
+      selectedMinuteSource =
+        j.source || "PUMP.FUN";
+    }
+
     chartDataSource =
       j.source ||
       "PUMP.FUN";
+    livePreviewActive = false;
 
     if (chartInitialized) {
       renderChart(selectedCandles,true);
@@ -1767,7 +1840,9 @@ function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
     const trade of [...(trades || [])]
       .sort((a,b)=>a.time-b.time)
   ) {
-    const price = Number(trade.price);
+    const price = Number(
+      trade.chartPrice ?? trade.price
+    );
     const ts = Number(trade.time);
 
     if (
@@ -1784,6 +1859,7 @@ function aggregateLiveTrades(trades, tfMinutes = chartTimeframe) {
     const volume = Math.max(
       0,
       Number(
+        trade.chartVolume ??
         trade.volumeSol ??
         trade.volume_sol ??
         0
@@ -1984,8 +2060,7 @@ function updateCandleFromLiveTrade(trade) {
     v:bar.v
   };
 
-  chartDataSource =
-    "PUMP.FUN LIVE TRADES";
+  livePreviewActive = true;
 
   historyBarsLoaded =
     selectedCandles.length;
@@ -2034,18 +2109,24 @@ function applyLiveTrade(rawTrade, record = true) {
     return;
   }
 
+  const chartTrade = normalizeTradeForChart(t);
+  const recordedTrade = record
+    ? {
+        ...t,
+        chartPrice: chartTrade.price,
+        chartVolume: chartTrade.volume_sol,
+      }
+    : null;
+
   applyLivePrice(
-    t.price,
-    t.time * 1000,
-    record ? t : null
+    chartTrade.price,
+    chartTrade.time * 1000,
+    recordedTrade
   );
 
-  // Keep the active Pump.fun candle, EMA values, RSI, and signal genuinely
-  // live between HTTP candle reconciliations. This ONLY uses decoded Pump.fun
-  // trades and only touches the current timeframe bucket. Historical candles
-  // are left alone, and the next native Pump.fun snapshot can replace the
-  // preview whenever the authoritative endpoint is available.
-  updateCandleFromLiveTrade(t);
+  // Update the current OHLC bucket and every dependent indicator immediately
+  // on the trade event. No polling delay and no historical redraw.
+  updateCandleFromLiveTrade(chartTrade);
 }
 
 async function pollLivePrice() {
@@ -2063,6 +2144,8 @@ async function pollLivePrice() {
     const price = Number(data.price);
 
     if (Number.isFinite(price) && price > 0) {
+      selectedLiveUsdPrice = price;
+      selectedLiveUsdAt = Date.now();
       const now = Date.now();
 
       // HTTP asset price is only a backup display value. Never let it
@@ -2174,7 +2257,12 @@ async function syncCurrentPumpCandle() {
         selectedCandles.length - 1
       ];
       
-      chartDataSource = incomingSource;
+      if (liveTradeSnapshot) {
+        livePreviewActive = true;
+      } else {
+        chartDataSource = incomingSource;
+        livePreviewActive = false;
+      }
 
       updateRealtimeChart(last);
 
@@ -2420,22 +2508,40 @@ async function setTimeframe(tf) {
     );
   });
 
-  // Rebuild immediately from real Pump.fun trade events already received.
-  // This makes timeframe switching instant instead of blanking the chart.
-  if (selectedTrades.length) {
-    selectedCandles = aggregateLiveTrades(
-      selectedTrades,
+  // Keep the chart populated immediately on every timeframe switch. The
+  // canonical 1m history is already in memory, so 5m/15m/1h are deterministic
+  // resamples rather than a blank screen waiting for another provider.
+  if (selectedMinuteCandles.length) {
+    selectedCandles = aggregateCandles(
+      selectedMinuteCandles,
       chartTimeframe
-    );
+    )
+      .sort((a,b)=>a.time-b.time)
+      .slice(-MAX_HISTORY_BARS);
 
-    chartDataSource = "PUMP.FUN LIVE TRADES";
+    chartDataSource =
+      selectedMinuteSource || chartDataSource;
+    livePreviewActive = false;
     historyBarsLoaded = selectedCandles.length;
 
     if (selectedCandles.length) {
       renderChart(selectedCandles,true);
     }
-  } else {
-    selectedCandles = [];
+  } else if (selectedTrades.length) {
+    selectedCandles = aggregateLiveTrades(
+      selectedTrades,
+      chartTimeframe
+    );
+
+    chartDataSource =
+      chartDataSource || "PUMP.FUN";
+    livePreviewActive = true;
+    historyBarsLoaded = selectedCandles.length;
+
+    if (selectedCandles.length) {
+      renderChart(selectedCandles,true);
+    }
+  } else if (!selectedCandles.length) {
     if (chartInitialized) {
       candleSeries.setData([]);
       volumeSeries.setData([]);
@@ -2447,16 +2553,17 @@ async function setTimeframe(tf) {
 
   $("chartMode").textContent =
     selectedCandles.length
-      ? "PUMP.FUN LIVE · " + timeframeLabel() + " · LIVE TRADES"
+      ? chartDataSource + " · " + timeframeLabel() + " · " +
+        (livePreviewActive ? "LIVE" : "READY")
       : "LOADING " + timeframeLabel() + " HISTORY…";
 
   $("historyStatus").textContent =
     selectedCandles.length
-      ? selectedCandles.length.toLocaleString() + " live bars"
+      ? selectedCandles.length.toLocaleString() + " bars"
       : "loading…";
 
-  // Ask for authoritative Pump.fun history in the background. It can replace
-  // the temporary live-trade history without blocking the already-visible chart.
+  // Refresh from the authoritative backend in the background. The local
+  // resample remains visible if a provider is slow or unavailable.
   fetchInitialHistory().catch(()=>{});
 }
 
@@ -2621,7 +2728,12 @@ async function selectToken(mint) {
 
   selectedMint = mint;
   selectedCandles = [];
+  selectedMinuteCandles = [];
+  selectedMinuteSource = "UNKNOWN";
   selectedTrades = [];
+  selectedLiveUsdPrice = 0;
+  selectedLiveUsdAt = 0;
+  livePreviewActive = false;
   selectedSupply = 0;
   selectedMarketCap = 0;
   selectedMarketCapUsd = 0;
