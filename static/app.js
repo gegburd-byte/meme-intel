@@ -63,6 +63,7 @@ let chartHistoryRetryGeneration = 0;
 let liveTradeBackoff = 500;
 let liveTradeWatchdogTimer = null;
 let lastLiveTradeAtMs = 0;
+let lastRenderedCandleTime = 0;
 
 const PAGE_SIZE = 30;
 const MAX_HISTORY_BARS = 120;
@@ -1663,6 +1664,9 @@ function renderChart(candles, fit = false) {
 
   const last = candles[candles.length - 1];
 
+  lastRenderedCandleTime =
+    Number(last.time || 0);
+
   updateActivePrice(last.c);
   $("chartMode").textContent =
     chartDataSource + " · " + timeframeLabel() +
@@ -1750,7 +1754,23 @@ function updateRealtimeChart(candle) {
   // The price/OHLC path is intentionally synchronous so the visible candle
   // moves on the same animation frame as the trade. Expensive indicators and
   // marker generation are coalesced to one pass per browser frame.
+  const previousRenderedTime =
+    lastRenderedCandleTime;
+
   updateLiveCandleOnSeries(candle);
+
+  // Pump.fun keeps the viewport pinned to the right edge while the live
+  // stream advances. Do the same only when a genuinely new candle appears;
+  // normal intra-candle wick updates do not disturb the user's current view.
+  if (
+    chart &&
+    Number(candle.time || 0) > previousRenderedTime
+  ) {
+    lastRenderedCandleTime =
+      Number(candle.time || 0);
+
+    chart.timeScale().scrollToRealTime();
+  }
 
   updateActivePrice(
     candle.c,
@@ -3169,6 +3189,7 @@ async function selectToken(mint) {
   selectedMint = mint;
   chartHistoryLoadedAtSec = 0;
   selectedCandles = [];
+  lastRenderedCandleTime = 0;
   selectedMinuteCandles = [];
   selectedMinuteSource = "UNKNOWN";
   selectedTrades = [];
