@@ -480,25 +480,29 @@ class LiveTradeHub:
             pending.add(address)
             await self._subscribe(mint, address)
 
-    def remember_trade(self, mint: str, trade: dict[str, Any]) -> None:
-        """Keep a bounded in-memory window of decoded Pump.fun trades for the active candle."""
+    def remember_trade(self, mint: str, trade: dict[str, Any]) -> bool:
+        """Remember one real trade while deduplicating by ID and signature."""
         if not mint or not isinstance(trade, dict):
-            return
+            return False
         if trade.get("source") not in {"PUMP.FUN", "PUMPSWAP"}:
-            return
+            return False
 
         rows = self.recent_trades[mint]
-        trade_id = str(trade.get("id") or trade.get("signature") or "")
-        if trade_id and any(
-            str(item.get("id") or item.get("signature") or "") == trade_id
-            for item in reversed(rows)
-        ):
-            return
-        rows.append(dict(trade))
+        trade_id = str(trade.get("id") or "").strip()
+        signature = str(trade.get("signature") or "").strip()
 
-        signature = str(trade.get("signature") or "")
+        for item in reversed(rows):
+            item_id = str(item.get("id") or "").strip()
+            item_signature = str(item.get("signature") or "").strip()
+            if trade_id and item_id == trade_id:
+                return False
+            if signature and item_signature == signature:
+                return False
+
+        rows.append(dict(trade))
         if signature:
             self._seen_signatures[mint].append(signature)
+        return True
 
     def current_candle(
         self,
@@ -592,7 +596,8 @@ class LiveTradeHub:
             "timestamp": timestamp,
             "source": "PUMPSWAP" if source == "PUMPSWAP" else "PUMP.FUN",
         }
-        self.remember_trade(mint, row)
+        if not self.remember_trade(mint, row):
+            return
         await self._broadcast(mint, {
             "type": "trade",
             "trade": row,
