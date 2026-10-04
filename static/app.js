@@ -2622,17 +2622,6 @@ async function syncCurrentPumpCandle() {
         return;
       }
 
-      // Once a true native Pump.fun candle has been received, never let a
-      // degraded live-trade snapshot overwrite that exact OHLC definition.
-      // When native history is unavailable, the live-trade snapshot keeps the
-      // active bar moving until native data becomes available again.
-      if (
-        liveTradeSnapshot &&
-        chartDataSource === "PUMP.FUN"
-      ) {
-        return;
-      }
-
       const incoming = candles[0];
       const current =
         selectedCandles[
