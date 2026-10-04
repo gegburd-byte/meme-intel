@@ -371,16 +371,20 @@ class LiveTradeHub:
             self._seen_signatures[mint].append(signature)
 
     def current_candle(self, mint: str, timeframe: int = 1) -> dict[str, Any] | None:
-        """Build a bounded current Pump.fun candle from the already-decoded live feed.
+        """Build a bounded current Pump.fun/PumpSwap candle from decoded live trades.
 
-        This is a degraded-mode fallback only. Native Pump.fun OHLC always wins
-        when it is available; this method prevents the chart from freezing when
-        the native HTTP candle endpoint is unavailable/auth-protected.
+        This is a degraded-mode fallback only. Native Pump.fun OHLC wins whenever
+        it exists; the 1s mode is intentionally trade-driven because Pump.fun's
+        native OHLC endpoint is minute-based rather than a historical 1-second feed.
         """
-        try:
-            span = max(60, int(timeframe or 1) * 60)
-        except (TypeError, ValueError):
-            span = 60
+        raw_timeframe = str(timeframe or "1").strip().lower()
+        if raw_timeframe in {"1s", "1sec", "1second"}:
+            span = 1
+        else:
+            try:
+                span = max(60, int(float(raw_timeframe)) * 60)
+            except (TypeError, ValueError):
+                span = 60
 
         rows = list(self.recent_trades.get(mint, ()))
         rows = [
