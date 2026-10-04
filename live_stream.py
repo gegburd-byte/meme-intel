@@ -477,6 +477,40 @@ class LiveTradeHub:
             "source": "PUMP.FUN LIVE TRADES",
         }
 
+    async def publish_external_trade(
+        self,
+        mint: str,
+        trade: dict[str, Any],
+    ) -> None:
+        """Publish a decoded exact-venue trade to the same live chart channel."""
+        if not mint or not isinstance(trade, dict):
+            return
+
+        source = str(trade.get("source") or "").upper()
+        if source not in {"PUMP.FUN", "PUMPSWAP"}:
+            return
+
+        try:
+            price = float(trade.get("price") or 0)
+            timestamp = int(trade.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return
+
+        if price <= 0 or timestamp <= 0:
+            return
+
+        row = {
+            **trade,
+            "price": price,
+            "timestamp": timestamp,
+            "source": "PUMPSWAP" if source == "PUMPSWAP" else "PUMP.FUN",
+        }
+        self.remember_trade(mint, row)
+        await self._broadcast(mint, {
+            "type": "trade",
+            "trade": row,
+        })
+
     def recent_trade_snapshot(
         self,
         mint: str,
