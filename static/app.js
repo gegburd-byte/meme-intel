@@ -3257,7 +3257,7 @@ function startLiveTradeCachePoll() {
     ) {
       syncLiveTradeCache();
     }
-  },250);
+  },750);
 
   liveTradeWatchdogTimer = setInterval(() => {
     if (
@@ -3275,9 +3275,9 @@ function startLiveTradeCachePoll() {
       lastLiveTradeAtMs > 0 &&
       now - lastLiveTradeAtMs > 4500
     ) {
-      // Reset only the backend websocket; never tear down the direct native
-      // Pump.fun websocket from this recovery path.
-      connectLiveTrade(selectedMint);
+      // The socket is already OPEN. Reconcile missed trades instead of
+      // tearing down a healthy connection just because the token went quiet.
+      syncLiveTradeCache();
     }
   },1500);
 
@@ -3434,7 +3434,7 @@ function startCurrentCandleSync() {
     // only repairs missed/stalled live updates.
     currentCandleSyncTimer = setTimeout(
       tick,
-      250
+      500
     );
   };
 
@@ -3704,6 +3704,10 @@ function connectLiveTrade(mint) {
       if (socket !== liveTradeSocket) return;
 
       liveTradeBackoff = 500;
+      // A newly-open socket is healthy even if the token has simply had no
+      // trade for a few seconds. Do not let an old trade timestamp trigger
+      // an unnecessary reconnect loop.
+      lastLiveTradeAtMs = 0;
 
       if (fallbackTimer) {
         clearInterval(fallbackTimer);
