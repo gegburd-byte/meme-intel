@@ -648,6 +648,9 @@ class LiveTradeHub:
                 reconnection=False,
                 logger=False,
                 engineio_logger=False,
+                websocket_extra_options={
+                    "origin": "https://pump.fun",
+                },
             )
 
             try:
@@ -696,7 +699,6 @@ class LiveTradeHub:
                 await sio.connect(
                     "https://frontend-api.pump.fun",
                     headers={
-                        "Origin": "https://pump.fun",
                         "User-Agent": "Meme-Intel/1.0",
                     },
                     transports=["websocket"],
