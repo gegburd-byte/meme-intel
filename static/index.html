@@ -73,7 +73,7 @@
           <span id="chartMode" class="muted">Waiting for data</span>
         </div>
         <div class="activePriceBox">
-          <span>ACTIVE PRICE</span>
+          <span id="activePriceLabel">ACTIVE PRICE</span>
           <b id="activePrice">—</b>
           <small id="activeAge">—</small>
         </div>
@@ -88,6 +88,8 @@
         <div class="chartActions">
           <button id="chartAll" class="chartBtn">ALL</button>
           <button id="chartLive" class="chartBtn active">LIVE</button>
+          <button id="chartPrice" class="chartBtn active">PRICE</button>
+          <button id="chartMc" class="chartBtn" disabled>MC</button>
           <span id="historyStatus" class="historyStatus">0 bars</span>
         </div>
       </div>
@@ -174,6 +176,6 @@
   </section>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=20261003-perf8"></script>
+<script src="/static/app.js?v=20261003-perf9"></script>
 </body>
 </html>
