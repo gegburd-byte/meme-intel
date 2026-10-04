@@ -75,3 +75,17 @@ def test_parse_pump_trade_history_uses_virtual_reserve_price():
 
     assert len(candles) == 1
     assert candles[0].h == candles[0].c
+
+
+def test_frontend_timeframes_and_live_cache_are_wired():
+    from pathlib import Path
+
+    html = Path("static/index.html").read_text()
+    js = Path("static/app.js").read_text()
+
+    for value in ("1s", "1m", "5m", "15m", "1h"):
+        assert f'data-tf="{value}"' in html
+
+    assert "async function syncLiveTradeCache()" in js
+    assert "/api/chart/live-trades?mint=" in js
+    assert "startLiveTradeCachePoll();" in js
