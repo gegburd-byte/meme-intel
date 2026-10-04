@@ -2566,8 +2566,6 @@ function startLiveTradeCachePoll() {
 async function syncCurrentPumpCandle() {
   if (!selectedMint) return;
 
-  if (chartInterval === "1s") return;
-
   if (currentCandleSyncInFlight) {
     currentCandleSyncQueued = true;
     // Callers only wait on the in-flight request. The periodic loop owns
@@ -2720,17 +2718,16 @@ function startCurrentCandleSync() {
   const tick = async () => {
     if (!selectedMint) return;
 
-    if (chartInterval !== "1s") {
-      await syncCurrentPumpCandle();
-    }
+    await syncCurrentPumpCandle();
 
     if (!selectedMint) return;
 
-    // Fast native reconciliation lane; actual websocket trades still update
-    // immediately without waiting for this HTTP path.
+    // A 250 ms reconciliation lane is still well below the server's current
+    // chart/current rate limit. The websocket remains the primary path; this
+    // only repairs missed/stalled live updates.
     currentCandleSyncTimer = setTimeout(
       tick,
-      500
+      250
     );
   };
 
