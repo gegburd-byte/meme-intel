@@ -1769,25 +1769,16 @@ async function fetchFastHistoricalBackfill(generation) {
       return false;
     }
 
-    // The history endpoint is Pump.fun-authoritative. Merge every returned
-    // candle instead of discarding the current bucket first. The previous
-    // filter could leave the chart stuck at only the one/few bars returned by
-    // /api/chart/current.
-    const byTime = new Map(
-      selectedCandles.map(x=>[x.time,x])
-    );
-
-    for (const candle of candles) {
-      byTime.set(candle.time,{...candle});
-    }
-
-    selectedCandles = [...byTime.values()]
+    // A timeframe switch must not mix old-timeframe bars with the new
+    // series. Replace the displayed series atomically with the real response.
+    selectedCandles = candles
+      .map(x=>({...x}))
       .sort((a,b)=>a.time-b.time)
       .slice(-MAX_HISTORY_BARS);
 
     historyBarsLoaded = selectedCandles.length;
 
-    if (chartTimeframe === 1) {
+    if (chartInterval === "1m") {
       selectedMinuteCandles = candles
         .map(x => ({...x}))
         .sort((a,b) => a.time - b.time)
@@ -2586,7 +2577,7 @@ async function setTimeframe(tf) {
     return;
   }
 
-  if (requested === chartInterval && selectedCandles.length) {
+  if (requested === chartInterval) {
     return;
   }
 
@@ -2612,11 +2603,8 @@ async function setTimeframe(tf) {
     );
   });
 
-  // 1-second mode is live-only. It is built from actual trade events, never
-  // by pretending that a 1m OHLC candle contains second-by-second prices.
   if (chartInterval === "1s") {
-    syncLiveTradeCache().catch(()=>{});
-
+    // 1s is trade-driven only. Seed from the actual server cache immediately.
     selectedCandles = aggregateLiveTrades(
       selectedTrades,
       "1s"
@@ -2638,62 +2626,24 @@ async function setTimeframe(tf) {
     $("chartMode").textContent =
       selectedCandles.length
         ? "LIVE PUMP.FUN · 1s · " + selectedCandles.length + " BARS"
-        : "WAITING FOR REAL 1s TRADES…";
+        : "WAITING FOR REAL PUMP.FUN TRADES…";
 
     $("historyStatus").textContent =
       selectedCandles.length
         ? selectedCandles.length.toLocaleString() + " bars"
-        : "live…";
-
+        : "LIVE";
+        
+    syncLiveTradeCache().catch(()=>{});
     return;
   }
 
-  if (selectedMinuteCandles.length) {
-    selectedCandles = aggregateCandles(
-      selectedMinuteCandles,
-      chartTimeframe
-    )
-      .sort((a,b)=>a.time-b.time)
-      .slice(-MAX_HISTORY_BARS);
-
-    chartDataSource =
-      selectedMinuteSource || chartDataSource;
-    livePreviewActive = false;
-    historyBarsLoaded = selectedCandles.length;
-
-    if (selectedCandles.length) {
-      renderChart(selectedCandles,true);
-    }
-  } else if (selectedTrades.length) {
-    selectedCandles = aggregateLiveTrades(
-      selectedTrades,
-      chartTimeframe
-    );
-
-    livePreviewActive = true;
-    historyBarsLoaded = selectedCandles.length;
-
-    if (selectedCandles.length) {
-      renderChart(selectedCandles,true);
-    }
-  } else if (chartInitialized) {
-    candleSeries.setData([]);
-    volumeSeries.setData([]);
-    ema9Series.setData([]);
-    ema21Series.setData([]);
-    markersApi.setMarkers([]);
-  }
-
+  // Do not clear the current chart here. The prior timeframe remains visible
+  // while the requested timeframe loads. fetchFastHistoricalBackfill replaces
+  // selectedCandles atomically when the correct real series arrives.
   $("chartMode").textContent =
-    selectedCandles.length
-      ? chartDataSource + " · " + timeframeLabel() + " · " +
-        (livePreviewActive ? "LIVE" : "READY")
-      : "LOADING " + timeframeLabel() + " HISTORY…";
+    "LOADING PUMP.FUN " + timeframeLabel() + " HISTORY…";
 
-  $("historyStatus").textContent =
-    selectedCandles.length
-      ? selectedCandles.length.toLocaleString() + " bars"
-      : "loading…";
+  $("historyStatus").textContent = "loading…";
 
   fetchInitialHistory().catch(()=>{});
 }
