@@ -224,7 +224,43 @@ class GeckoTerminalAdapter:
             except Exception:
                 return 0.0
 
-        pools.sort(key=reserve, reverse=True)
+        def volume(pool):
+            try:
+                return float(
+                    ((pool.get("attributes") or {}).get("volume_usd") or {}).get("h24")
+                    or 0
+                )
+            except Exception:
+                return 0.0
+
+        def is_pumpswap(pool):
+            attrs = pool.get("attributes") or {}
+            relationships = pool.get("relationships") or {}
+            exchange = relationships.get("exchange") or {}
+            exchange_data = exchange.get("data") or {}
+            exchange_id = str(
+                exchange_data.get("id")
+                or attrs.get("dex_id")
+                or attrs.get("exchange_id")
+                or attrs.get("name")
+                or ""
+            ).lower().replace("-", "_").replace(" ", "_")
+            return (
+                "pumpswap" in exchange_id
+                or exchange_id in {"pump_swap", "pump.fun", "pumpfun"}
+            )
+
+        # For Pump.fun tokens that migrated, prefer the PumpSwap pool even if
+        # another DEX has slightly more liquidity. This keeps the fallback chart
+        # on the token's native Pump.fun trading venue.
+        pools.sort(
+            key=lambda p: (
+                1 if is_pumpswap(p) else 0,
+                reserve(p),
+                volume(p),
+            ),
+            reverse=True,
+        )
 
         pool = (pools[0].get("attributes") or {}).get("address")
 
