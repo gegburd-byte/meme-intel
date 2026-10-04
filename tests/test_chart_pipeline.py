@@ -89,3 +89,16 @@ def test_frontend_timeframes_and_live_cache_are_wired():
     assert "async function syncLiveTradeCache()" in js
     assert "/api/chart/live-trades?mint=" in js
     assert "startLiveTradeCachePoll();" in js
+
+
+def test_chart_history_has_no_gecko_source():
+    from pathlib import Path
+
+    source = Path("main.py").read_text()
+    history_start = source.index('@app.get("/api/chart/history")')
+    history_end = source.index('@app.get("/api/chart/current")', history_start)
+    history = source[history_start:history_end]
+
+    assert "GECKOTERMINAL" not in history
+    assert "PUMP.FUN TRADE HISTORY" in history
+    assert "HELIUS_ONCHAIN_TRADES" in history
