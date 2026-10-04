@@ -115,3 +115,21 @@ def test_live_trade_endpoint_uses_pumpfun_semantic_units():
     assert "pf.trades(" in endpoint
     assert "parse_pump_trades" in endpoint
     assert "GECKO" not in endpoint
+
+
+def test_parse_pump_trade_history_preserves_side():
+    from main import parse_pump_trades
+
+    rows = parse_pump_trades([
+        {
+            "timestamp": 1_700_000_000,
+            "sol_amount": 1_000_000_000,
+            "token_amount": 1_000_000,
+            "virtual_sol_reserves": 30_000_000_000,
+            "virtual_token_reserves": 1_000_000_000_000_000,
+            "is_buy": False,
+        }
+    ])
+
+    assert rows
+    assert rows[0]["side"] == "SELL"
