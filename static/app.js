@@ -2826,34 +2826,17 @@ function updateIndicatorMinuteCandle(trade) {
   const price = Number(trade.price);
   const ts = Number(trade.time);
 
-  if (
-    !Number.isFinite(price) ||
-    price <= 0 ||
-    !Number.isFinite(ts)
-  ) {
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts)) {
     return;
   }
 
-  const bucket =
-    Math.floor(ts / 60) * 60;
-
-  let bar =
-    selectedMinuteCandles.find(
-      x => x.time === bucket
-    );
+  const bucket = Math.floor(ts / 60) * 60;
+  let bar = selectedMinuteCandles.find(x => x.time === bucket);
 
   if (!bar) {
-    const last =
-      selectedMinuteCandles[
-        selectedMinuteCandles.length - 1
-      ];
+    const last = selectedMinuteCandles[selectedMinuteCandles.length - 1];
 
-    if (
-      last &&
-      bucket < last.time
-    ) {
-      return;
-    }
+    if (last && bucket < last.time) return;
 
     bar = {
       time:bucket,
@@ -2862,75 +2845,33 @@ function updateIndicatorMinuteCandle(trade) {
       h:price,
       l:price,
       c:price,
-      v:Math.max(
-        0,
-        Number(
-          trade.volumeSol ??
-          trade.volume_sol ??
-          0
-        )
-      ),
+      v:Math.max(0,Number(trade.volumeSol ?? trade.volume_sol ?? 0)),
       _firstTs:ts,
       _lastTs:ts
     };
 
-    selectedMinuteCandles = [
-      ...selectedMinuteCandles,
-      bar
-    ].slice(-MAX_HISTORY_BARS);
+    selectedMinuteCandles.push(bar);
+    if (selectedMinuteCandles.length > MAX_HISTORY_BARS) {
+      selectedMinuteCandles.shift();
+    }
   } else {
-    bar.h =
-      Math.max(
-        Number(bar.h),
-        price
-      );
+    bar.h = Math.max(Number(bar.h), price);
+    bar.l = Math.min(Number(bar.l), price);
 
-    bar.l =
-      Math.min(
-        Number(bar.l),
-        price
-      );
-
-    const lastTs =
-      Number.isFinite(bar._lastTs)
-        ? bar._lastTs
-        : bar.time;
-
+    const lastTs = Number.isFinite(bar._lastTs) ? bar._lastTs : bar.time;
     if (ts >= lastTs) {
       bar._lastTs = ts;
       bar.c = price;
     }
 
-    if (
-      !Number.isFinite(bar._firstTs) ||
-      ts < bar._firstTs
-    ) {
+    if (!Number.isFinite(bar._firstTs) || ts < bar._firstTs) {
       bar._firstTs = ts;
       bar.o = price;
     }
   }
 
-  selectedMinuteSource =
-    "PUMP.FUN LIVE TRADES";
-
-  selectedMinuteCandles =
-    selectedMinuteCandles.map(x =>
-      x.time !== bar.time
-        ? x
-        : {
-            time:x.time,
-            ts:x.ts,
-            o:x.o,
-            h:x.h,
-            l:x.l,
-            c:x.c,
-            v:Number(x.v || 0),
-            _firstTs:x._firstTs,
-            _lastTs:x._lastTs
-          }
-    );
+  selectedMinuteSource = "PUMP.FUN LIVE TRADES";
 }
-
 function updateCandleFromLiveTrade(trade) {
   if (!trade || !selectedMint) return false;
 
@@ -3117,11 +3058,6 @@ function updateCandleFromLiveTrade(trade) {
   historyBarsLoaded =
     selectedCandles.length;
 
-  updateActivePrice(
-    price,
-    ts * 1000
-  );
-
   if (
     chartInitialized &&
     candleSeries
@@ -3129,8 +3065,6 @@ function updateCandleFromLiveTrade(trade) {
     updateRealtimeChart(
       cleanBar
     );
-
-    renderTape();
 
     $("chartMode").textContent =
       "PUMP.FUN LIVE · " +
@@ -3171,13 +3105,6 @@ function liveTradePriceIsPlausible(price) {
 function applyLiveTrade(rawTrade, record = true) {
   const t = normalizeTrade(rawTrade);
   if (!t || !selectedMint) return;
-
-  if (
-    record &&
-    selectedTrades.some(x => x.id === t.id)
-  ) {
-    return;
-  }
 
   // Accept both sides of Pump.fun's lifecycle: bonding-curve trades and
   // PumpSwap AMM trades after migration.
@@ -4223,7 +4150,8 @@ async function selectToken(mint) {
   // Open the live stream first so a trade cannot happen while history is
   // loading without being captured.
   connectLiveTrade(mint);
-  connectNativePumpFunTrades(mint);
+  // The browser does NOT subscribe to Pump.fun's global firehose by default.
+  // The backend relay is mint-filtered and avoids flooding the browser event loop.
   startCurrentCandleSync();
   startLivePricePoll();
   startLiveTradeCachePoll();
