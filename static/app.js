@@ -1427,10 +1427,20 @@ function initChart() {
       visible:false
     });
 
-    markersApi = LightweightCharts.createSeriesMarkers(
-      candleSeries,
-      []
-    );
+    // Markers are optional presentation. Never let a marker-plugin/API
+    // mismatch prevent the actual candle chart from initializing.
+    if (
+      typeof LightweightCharts.createSeriesMarkers === "function"
+    ) {
+      markersApi = LightweightCharts.createSeriesMarkers(
+        candleSeries,
+        []
+      );
+    } else {
+      markersApi = {
+        setMarkers() {}
+      };
+    }
 
     chartInitialized = true;
 
@@ -2059,7 +2069,9 @@ function renderChart(candles, fit = false) {
       value:displayValue(x.value / 1)
     }))
   );
-  markersApi.setMarkers(buildMarkers(candles));
+  if (markersApi?.setMarkers) {
+    markersApi.setMarkers(buildMarkers(candles));
+  }
 
   const signal = signalFromCandles(candles);
   renderSignal(signal);
