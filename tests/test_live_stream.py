@@ -2,6 +2,7 @@ import base64
 import struct
 
 from live_stream import (
+    LiveTradeHub,
     PUMP_AMM_BUY_DISC,
     PUMP_TRADE_DISC,
     parse_live_trade,
@@ -156,3 +157,40 @@ def test_parse_pump_trade_from_top_level_instruction_data():
     assert row["source"] == "PUMP.FUN"
     assert row["signature"] == "top-level-sig"
     assert row["timestamp"] == ts
+
+
+def test_live_trade_hub_builds_current_candle_from_pumpfun_trades():
+    hub = LiveTradeHub("test-key")
+    mint = "So11111111111111111111111111111111111111112"
+    hub.remember_trade(mint, {
+        "id": "a",
+        "source": "PUMP.FUN",
+        "timestamp": 1_700_000_001,
+        "price": 0.01,
+        "volume_sol": 1.0,
+    })
+    hub.remember_trade(mint, {
+        "id": "b",
+        "source": "PUMP.FUN",
+        "timestamp": 1_700_000_030,
+        "price": 0.013,
+        "volume_sol": 2.0,
+    })
+    hub.remember_trade(mint, {
+        "id": "ignored",
+        "source": "PUMPSWAP",
+        "timestamp": 1_700_000_040,
+        "price": 9.0,
+        "volume_sol": 9.0,
+    })
+
+    candle = hub.current_candle(mint, timeframe=1)
+
+    assert candle is not None
+    assert candle["ts"] == 1_700_000_000
+    assert candle["o"] == 0.01
+    assert candle["h"] == 0.013
+    assert candle["l"] == 0.01
+    assert candle["c"] == 0.013
+    assert candle["v"] == 3.0
+    assert candle["source"] == "PUMP.FUN LIVE TRADES"

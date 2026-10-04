@@ -13,6 +13,8 @@ services:
         sync: false
       - key: HELIUS_API_KEY
         sync: false
+      - key: PUMP_FUN_JWT
+        sync: false
       - key: DATABASE_PATH
         value: ./data/meme_intel.db
       - key: PAPER_START_USD

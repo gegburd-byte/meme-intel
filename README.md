@@ -41,6 +41,7 @@ Set these secrets in the deployment environment:
 
 - X_BEARER_TOKEN
 - HELIUS_API_KEY
+- PUMP_FUN_JWT (optional; enables native Pump.fun candlestick/coin/trade endpoints when the current API requires JWT authentication)
 
 Optional persistent storage settings are documented in .env.example.
 

@@ -1561,12 +1561,10 @@ function scheduleLiveRender() {
   requestAnimationFrame(()=>{
     renderScheduled = false;
 
-    if (!selectedCandles.length || !candleSeries) return;
-
-    const last =
-      selectedCandles[selectedCandles.length - 1];
-
-    updateRealtimeChart(last);
+    // Websocket trades update the low-latency tape/active price immediately.
+    // OHLC/EMA/markers stay under periodic Pump.fun candle reconciliation so
+    // execution-price differences can never create fake wicks.
+    if (!selectedMint) return;
     renderTape();
   });
 }
@@ -2042,11 +2040,9 @@ function applyLiveTrade(rawTrade, record = true) {
     record ? t : null
   );
 
-  // Do not build/modify OHLC from websocket trades. Pump.fun's native candle
-  // endpoint is the only chart authority; this keeps execution/spot-price
-  // differences from becoming fake wicks. Reconcile immediately without
-  // cancelling the periodic sync timer.
-  syncCurrentPumpCandle();
+  // Do not build/modify OHLC here. The single 850ms reconciliation loop reads
+  // native Pump.fun OHLC first and the backend's live-trade cache second. That
+  // avoids one HTTP request per websocket trade and prevents timer collisions.
 }
 
 async function pollLivePrice() {
@@ -2076,7 +2072,7 @@ async function pollLivePrice() {
       }
 
       if (!selectedCandles.length) {
-        requestCurrentCandleSync(75);
+        requestCurrentCandleSync();
       }
     }
   } catch {}
@@ -2087,8 +2083,8 @@ async function syncCurrentPumpCandle() {
 
   if (currentCandleSyncInFlight) {
     currentCandleSyncQueued = true;
-    // Callers that need a seeded active candle wait for the in-flight
-    // authoritative Pump.fun snapshot instead of returning immediately.
+    // Callers only wait on the in-flight request. The periodic loop owns
+    // scheduling so a queued call can never cancel its timer.
     if (currentCandleSyncPromise) {
       await currentCandleSyncPromise;
     }
@@ -2132,15 +2128,22 @@ async function syncCurrentPumpCandle() {
         j.source || chartDataSource
       );
 
+      const liveTradeSnapshot = incomingSource === "PUMP.FUN LIVE TRADES";
+
       if (
-        (
-          incomingSource === "LIVE_PRICE" &&
-          selectedCandles.length
-        ) ||
-        (
-          chartDataSource === "PUMP.FUN LIVE TRADES" &&
-          incomingSource !== "PUMP.FUN"
-        )
+        incomingSource === "LIVE_PRICE" &&
+        selectedCandles.length
+      ) {
+        return;
+      }
+
+      // Once a true native Pump.fun candle has been received, never let a
+      // degraded live-trade snapshot overwrite that exact OHLC definition.
+      // When native history is unavailable, the live-trade snapshot keeps the
+      // active bar moving until native data becomes available again.
+      if (
+        liveTradeSnapshot &&
+        chartDataSource === "PUMP.FUN"
       ) {
         return;
       }
@@ -2186,24 +2189,15 @@ async function syncCurrentPumpCandle() {
     currentCandleSyncPromise = null;
     currentCandleSyncInFlight = false;
 
-    if (currentCandleSyncQueued) {
-      currentCandleSyncQueued = false;
-      requestCurrentCandleSync(0);
-    }
+    // The periodic loop schedules the next pass. Never replace its timer
+    // from the in-flight completion path.
+    currentCandleSyncQueued = false;
   }
 }
 
-function requestCurrentCandleSync(delay = 75) {
+function requestCurrentCandleSync() {
   if (!selectedMint) return;
-
-  if (currentCandleSyncTimer) {
-    clearTimeout(currentCandleSyncTimer);
-  }
-
-  currentCandleSyncTimer = setTimeout(() => {
-    currentCandleSyncTimer = null;
-    syncCurrentPumpCandle();
-  }, Math.max(0,delay));
+  syncCurrentPumpCandle();
 }
 
 function startLivePricePoll() {
@@ -2217,10 +2211,15 @@ function startCurrentCandleSync() {
     clearTimeout(currentCandleSyncTimer);
   }
 
-  const tick = () => {
+  const tick = async () => {
     if (!selectedMint) return;
 
-    syncCurrentPumpCandle();
+    // Wait for each pass before scheduling the next one. This prevents
+    // overlapping HTTP calls on slow connections and keeps the cadence
+    // predictable on low-power devices.
+    await syncCurrentPumpCandle();
+
+    if (!selectedMint) return;
 
     currentCandleSyncTimer = setTimeout(
       tick,

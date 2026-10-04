@@ -6,7 +6,7 @@ import json
 import os
 import struct
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any
 
 import websockets
@@ -290,6 +290,9 @@ class LiveTradeHub:
         self._send_lock = asyncio.Lock()
         self.enhanced_state: bool | None = None
         self.stream_mode = "STANDARD"
+        self.recent_trades: dict[str, deque[dict[str, Any]]] = defaultdict(
+            lambda: deque(maxlen=500)
+        )
 
     def active(self) -> bool:
         return bool(self.api_key)
@@ -307,6 +310,7 @@ class LiveTradeHub:
             rows.discard(websocket)
             if not rows:
                 self.clients.pop(mint, None)
+                self.recent_trades.pop(mint, None)
                 await self._unsubscribe(mint)
 
     async def _subscribe_when_ready(self, mint: str) -> None:
@@ -317,7 +321,69 @@ class LiveTradeHub:
         if not subscribed and not pending:
             await self._subscribe(mint)
 
-    async def _send(self, payload: dict[str, Any]) -> None:
+    def remember_trade(self, mint: str, trade: dict[str, Any]) -> None:
+        """Keep a bounded in-memory window of decoded Pump.fun trades for the active candle."""
+        if not mint or not isinstance(trade, dict):
+            return
+        if trade.get("source") != "PUMP.FUN":
+            return
+
+        rows = self.recent_trades[mint]
+        trade_id = str(trade.get("id") or trade.get("signature") or "")
+        if trade_id and any(
+            str(item.get("id") or item.get("signature") or "") == trade_id
+            for item in reversed(rows)
+        ):
+            return
+        rows.append(dict(trade))
+
+    def current_candle(self, mint: str, timeframe: int = 1) -> dict[str, Any] | None:
+        """Build a bounded current Pump.fun candle from the already-decoded live feed.
+
+        This is a degraded-mode fallback only. Native Pump.fun OHLC always wins
+        when it is available; this method prevents the chart from freezing when
+        the native HTTP candle endpoint is unavailable/auth-protected.
+        """
+        try:
+            span = max(60, int(timeframe or 1) * 60)
+        except (TypeError, ValueError):
+            span = 60
+
+        rows = list(self.recent_trades.get(mint, ()))
+        rows = [
+            row for row in rows
+            if row.get("source") == "PUMP.FUN"
+            and isinstance(row.get("timestamp"), (int, float))
+            and isinstance(row.get("price"), (int, float))
+            and float(row.get("price") or 0) > 0
+        ]
+        if not rows:
+            return None
+
+        rows.sort(key=lambda row: (int(row["timestamp"]), str(row.get("id") or "")))
+        latest_ts = int(rows[-1]["timestamp"])
+        bucket = (latest_ts // span) * span
+        rows = [
+            row for row in rows
+            if (int(row["timestamp"]) // span) * span == bucket
+        ]
+        if not rows:
+            return None
+
+        prices = [float(row["price"]) for row in rows]
+        volume = sum(max(0.0, float(row.get("volume_sol") or 0.0)) for row in rows)
+
+        return {
+            "ts": bucket,
+            "o": prices[0],
+            "h": max(prices),
+            "l": min(prices),
+            "c": prices[-1],
+            "v": volume,
+            "source": "PUMP.FUN LIVE TRADES",
+        }
+
+    async def _send(self, payload: dict[str, Any]) -> None,
         if self.ws is None:
             return
         async with self._send_lock:
@@ -515,6 +581,7 @@ class LiveTradeHub:
                             continue
 
                         if trade:
+                            self.remember_trade(mint, trade)
                             await self._broadcast(mint, {
                                 "type": "trade",
                                 "trade": trade,

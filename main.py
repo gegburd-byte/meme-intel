@@ -1431,9 +1431,12 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
 
     # Keep the fallbacks working in parallel, but native Pump.fun remains the
     # preferred source whenever it returns usable history.
-    fallback_tasks = [
+    # Fidelity-first fallbacks: Pump.fun trade history and Helius on-chain
+    # reconstruction both use Pump.fun trade semantics. GeckoTerminal is kept
+    # as a last-resort compatibility source because its quote/venue history can
+    # use different units than Pump.fun.
+    primary_fallback_tasks = [
         asyncio.create_task(pump_trade_history()),
-        asyncio.create_task(gecko_history()),
         asyncio.create_task(helius_history()),
     ]
 
@@ -1484,10 +1487,10 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
 
         return payload
 
-    # No native history: use the first valid fallback to minimize latency.
+    # No native history: use the first valid Pump.fun-semantic source.
     fallback_errors = []
 
-    for task in asyncio.as_completed(fallback_tasks):
+    for task in asyncio.as_completed(primary_fallback_tasks):
         try:
             source, rows, err = await task
         except Exception as exc:
@@ -1513,13 +1516,12 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
                 "timestamp":int(time.time()),
             }
 
-            # Cancel slower providers as soon as we have valid history.
-            for other in fallback_tasks:
-                if not other.done() and other is not task:
+            for other in primary_fallback_tasks:
+                if not other.done():
                     other.cancel()
 
             await asyncio.gather(
-                *fallback_tasks,
+                *primary_fallback_tasks,
                 return_exceptions=True,
             )
 
@@ -1542,6 +1544,51 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
         fallback_errors.append(
             str(err or source)[:180]
         )
+
+    await asyncio.gather(
+        *primary_fallback_tasks,
+        return_exceptions=True,
+    )
+
+    # Last resort only: GeckoTerminal is useful for showing something when no
+    # Pump.fun-semantic history can be reconstructed, but it is explicitly not
+    # treated as exact Pump.fun chart data.
+    gecko_source, gecko_rows, gecko_err = await gecko_history()
+    if gecko_rows:
+        payload = {
+            "state":"READY",
+            "source":gecko_source,
+            "candles":[
+                {
+                    "ts":c.ts,
+                    "o":c.o,
+                    "h":c.h,
+                    "l":c.l,
+                    "c":c.c,
+                    "v":c.v,
+                }
+                for c in sorted(gecko_rows,key=lambda x:x.ts)[-limit:]
+            ],
+            "error":"LAST_RESORT_NON_PUMPFUN_SOURCE",
+            "timestamp":int(time.time()),
+        }
+
+        chart_history._cache = getattr(
+            chart_history,
+            "_cache",
+            {},
+        )
+        if len(chart_history._cache) > 64:
+            chart_history._cache.clear()
+        chart_history._cache[cache_key] = {
+            "time":time.time(),
+            "payload":payload,
+        }
+        return payload
+
+    fallback_errors.append(
+        str(gecko_err or gecko_source)[:180]
+    )
 
     payload = {
         "state":"NO_CANDLES",
@@ -1617,6 +1664,28 @@ async def chart_current(mint: str, timeframe: int = 1):
                 "v": current.v,
             }],
             "error": None,
+            "timestamp": int(time.time()),
+        }
+
+    # Native Pump.fun OHLC is authoritative. If the native HTTP endpoint is
+    # unavailable (including JWT-protected deployments), fall back to the
+    # already-decoded Pump.fun websocket trades in memory. This keeps the active
+    # candle moving without substituting DexScreener/Helius asset prices into OHLC.
+    live = trade_hub.current_candle(mint, timeframe=timeframe)
+    if live:
+        return {
+            "state": "READY",
+            "source": live.get("source", "PUMP.FUN LIVE TRADES"),
+            "timeframe": timeframe,
+            "candles": [{
+                "ts": int(live["ts"]),
+                "o": float(live["o"]),
+                "h": float(live["h"]),
+                "l": float(live["l"]),
+                "c": float(live["c"]),
+                "v": float(live.get("v") or 0),
+            }],
+            "error": err or "PUMPFUN_NATIVE_CANDLE_UNAVAILABLE",
             "timestamp": int(time.time()),
         }
 
