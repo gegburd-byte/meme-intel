@@ -1407,7 +1407,7 @@ async def live_rest_trade_loop(mint: str) -> None:
                                         "side": "BUY",
                                         "price": price_sol,
                                         "volume_sol": 0.0,
-                                        "timestamp": now_ms,
+                                        "timestamp": int(time.time()),
                                         "synthetic": True,
                                     },
                                 )
