@@ -825,11 +825,11 @@ class LiveTradeHub:
                         str(x.get("id") or ""),
                     ),
                 ):
-                    self.remember_trade(mint, trade)
-                    await self._broadcast(mint, {
-                        "type": "trade",
-                        "trade": trade,
-                    })
+                    if self.remember_trade(mint, trade):
+                        await self._broadcast(mint, {
+                            "type": "trade",
+                            "trade": trade,
+                        })
 
                 await asyncio.sleep(0.18)
 
@@ -958,11 +958,11 @@ class LiveTradeHub:
                     continue
 
                 self._seen_signatures[mint].append(signature)
-                self.remember_trade(mint, trade)
-                await self._broadcast(mint, {
-                    "type": "trade",
-                    "trade": trade,
-                })
+                if self.remember_trade(mint, trade):
+                    await self._broadcast(mint, {
+                        "type": "trade",
+                        "trade": trade,
+                    })
                 return
         except asyncio.CancelledError:
             raise
@@ -1335,11 +1335,11 @@ class LiveTradeHub:
                             continue
 
                         if trade:
-                            self.remember_trade(mint, trade)
-                            await self._broadcast(mint, {
-                                "type": "trade",
-                                "trade": trade,
-                            })
+                            if self.remember_trade(mint, trade):
+                                await self._broadcast(mint, {
+                                    "type": "trade",
+                                    "trade": trade,
+                                })
 
                 self.ws = None
                 self.subscription_to_mint.clear()
