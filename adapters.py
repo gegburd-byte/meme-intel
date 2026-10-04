@@ -873,11 +873,10 @@ class HeliusAdapter:
 
                 if sig_err or not signatures:
                     # One address can legitimately have no history even when
-                    # the associated PumpSwap pool does. Continue to the other
-                    # address before declaring the token history unavailable.
-                    if rows:
-                        break
-                    continue
+                    # the associated PumpSwap pool does. Never spin on a failed
+                    # RPC call: move to the next address and let the caller use
+                    # another history provider.
+                    break
 
                 page = [
                     item
