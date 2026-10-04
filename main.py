@@ -1446,14 +1446,15 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
             return "GECKOTERMINAL", [], str(exc)[:240]
 
     native_task = asyncio.create_task(native_history())
-    gecko_task = asyncio.create_task(gecko_history())
 
-    # Keep all sources running in parallel. Native Pump.fun remains preferred,
-    # while Gecko provides a fast visible fallback if native HTTP is unavailable.
-    # Fidelity-first fallbacks: Pump.fun trade history and Helius on-chain
-    # reconstruction both use Pump.fun trade semantics. GeckoTerminal is kept
-    # as a last-resort compatibility source because its quote/venue history can
-    # use different units than Pump.fun.
+    # Accuracy-first fallback chain:
+    # 1. Pump.fun native OHLC when authenticated/available.
+    # 2. Pump.fun's own trade history when authenticated/available.
+    # 3. Helius on-chain Pump.fun TradeEvent reconstruction.
+    #
+    # GeckoTerminal is deliberately NOT a chart fallback because its venue/
+    # quote units can differ from Pump.fun. A chart that is empty is preferable
+    # to a visually convincing but wrong price series.
     primary_fallback_tasks = [
         asyncio.create_task(pump_trade_history()),
         asyncio.create_task(helius_history()),
@@ -1483,22 +1484,14 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
         for task in primary_fallback_tasks:
             if not task.done():
                 task.cancel()
-        if not gecko_task.done():
-            gecko_task.cancel()
 
         await asyncio.gather(
             *primary_fallback_tasks,
-            gecko_task,
             return_exceptions=True,
         )
 
-        chart_history._cache = getattr(
-            chart_history,
-            "_cache",
-            {},
-        )
+        chart_history._cache = getattr(chart_history, "_cache", {})
 
-        # Bound cache growth.
         if len(chart_history._cache) > 64:
             chart_history._cache.clear()
 
@@ -1509,52 +1502,7 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
 
         return payload
 
-    # No native history: use fast Gecko data immediately when it is already
-    # available; otherwise use Pump.fun trade history or Helius reconstruction.
     fallback_errors = []
-
-    if gecko_task.done():
-        try:
-            gecko_source, gecko_rows, gecko_err = await gecko_task
-        except Exception as exc:
-            gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], str(exc)[:180]
-    else:
-        gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], "PENDING"
-
-    if gecko_rows:
-        payload = {
-            "state":"READY",
-            "source":gecko_source,
-            "candles":[
-                {
-                    "ts":c.ts,
-                    "o":c.o,
-                    "h":c.h,
-                    "l":c.l,
-                    "c":c.c,
-                    "v":c.v,
-                }
-                for c in sorted(gecko_rows,key=lambda x:x.ts)[-limit:]
-            ],
-            "error":"FAST_FALLBACK_NON_NATIVE",
-            "timestamp":int(time.time()),
-        }
-
-        for other in primary_fallback_tasks:
-            if not other.done():
-                other.cancel()
-
-        await asyncio.gather(
-            *primary_fallback_tasks,
-            return_exceptions=True,
-        )
-
-        chart_history._cache = getattr(chart_history, "_cache", {})
-        chart_history._cache[cache_key] = {
-            "time":time.time(),
-            "payload":payload,
-        }
-        return payload
 
     for task in asyncio.as_completed(primary_fallback_tasks):
         try:
@@ -1591,11 +1539,7 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
                 return_exceptions=True,
             )
 
-            chart_history._cache = getattr(
-                chart_history,
-                "_cache",
-                {},
-            )
+            chart_history._cache = getattr(chart_history, "_cache", {})
 
             if len(chart_history._cache) > 64:
                 chart_history._cache.clear()
@@ -1607,85 +1551,21 @@ async def chart_history(mint: str, timeframe: int = 1, limit: int = 120):
 
             return payload
 
-        fallback_errors.append(
-            str(err or source)[:180]
-        )
-
-    await asyncio.gather(
-        *primary_fallback_tasks,
-        return_exceptions=True,
-    )
-
-    # Last resort: wait briefly for the already-running Gecko request rather
-    # than starting a duplicate HTTP request.
-    if not gecko_rows:
-        try:
-            gecko_source, gecko_rows, gecko_err = await asyncio.wait_for(
-                gecko_task,
-                timeout=0.75,
-            )
-        except asyncio.TimeoutError:
-            gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], "GECKO_TIMEOUT"
-        except Exception as exc:
-            gecko_source, gecko_rows, gecko_err = "GECKOTERMINAL", [], str(exc)[:180]
-
-    # Last resort only: GeckoTerminal is useful for showing something when no
-    # Pump.fun-semantic history can be reconstructed, but it is explicitly not
-    # treated as exact Pump.fun chart data.
-    if gecko_rows:
-        payload = {
-            "state":"READY",
-            "source":gecko_source,
-            "candles":[
-                {
-                    "ts":c.ts,
-                    "o":c.o,
-                    "h":c.h,
-                    "l":c.l,
-                    "c":c.c,
-                    "v":c.v,
-                }
-                for c in sorted(gecko_rows,key=lambda x:x.ts)[-limit:]
-            ],
-            "error":"LAST_RESORT_NON_PUMPFUN_SOURCE",
-            "timestamp":int(time.time()),
-        }
-
-        chart_history._cache = getattr(
-            chart_history,
-            "_cache",
-            {},
-        )
-        if len(chart_history._cache) > 64:
-            chart_history._cache.clear()
-        chart_history._cache[cache_key] = {
-            "time":time.time(),
-            "payload":payload,
-        }
-        return payload
-
-    fallback_errors.append(
-        str(gecko_err or gecko_source)[:180]
-    )
+        fallback_errors.append(str(err or source)[:180])
 
     payload = {
         "state":"NO_CANDLES",
         "source":"NONE",
         "candles":[],
         "error":(
-            native_err or
-            "; ".join(fallback_errors) or
-            "NO_HISTORY"
+            native_err
+            or "; ".join(fallback_errors)
+            or "NO_PUMPFUN_HISTORY"
         ),
         "timestamp":int(time.time()),
     }
 
-    chart_history._cache = getattr(
-        chart_history,
-        "_cache",
-        {},
-    )
-
+    chart_history._cache = getattr(chart_history, "_cache", {})
     chart_history._cache[cache_key] = {
         "time":time.time(),
         "payload":payload,
