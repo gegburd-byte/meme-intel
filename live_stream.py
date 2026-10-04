@@ -412,7 +412,12 @@ class LiveTradeHub:
         if signature:
             self._seen_signatures[mint].append(signature)
 
-    def current_candle(self, mint: str, timeframe: int = 1) -> dict[str, Any] | None:
+    def current_candle(
+        self,
+        mint: str,
+        timeframe: int = 1,
+        max_age_seconds: int | float | None = None,
+    ) -> dict[str, Any] | None:
         """Build a bounded current Pump.fun/PumpSwap candle from decoded live trades.
 
         This is a degraded-mode fallback only. Native Pump.fun OHLC wins whenever
@@ -441,6 +446,15 @@ class LiveTradeHub:
 
         rows.sort(key=lambda row: (int(row["timestamp"]), str(row.get("id") or "")))
         latest_ts = int(rows[-1]["timestamp"])
+
+        if (
+            max_age_seconds is not None
+            and (
+                latest_ts <= 0
+                or time.time() - latest_ts > float(max_age_seconds)
+            )
+        ):
+            return None
         bucket = (latest_ts // span) * span
         rows = [
             row for row in rows
