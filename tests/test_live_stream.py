@@ -450,3 +450,26 @@ def test_parse_pumpfun_socket_trade_supports_camel_case_fields():
     assert row["source"] == "PUMP.FUN"
     assert row["side"] == "BUY"
     assert row["price"] == 0.02
+
+def test_parse_pumpfun_socket_trade_unwraps_nested_socketio_envelope():
+    import json
+
+    payload = {
+        "signature": "wrapped-sig",
+        "solAmount": 2_000_000_000,
+        "tokenAmount": 100_000_000,
+        "isBuy": True,
+        "timestamp": 1_700_000_000,
+        "mint": "So11111111111111111111111111111111111111112",
+        "slot": 456,
+    }
+    envelope = {"data": {"subscribe": {"data": json.dumps({"payload": payload})}}}
+    raw = "42" + json.dumps(["tradeCreated", envelope])
+
+    trade = parse_pumpfun_socket_trade(raw)
+
+    assert trade is not None
+    assert trade["signature"] == "wrapped-sig"
+    assert trade["side"] == "BUY"
+    assert trade["price"] == 0.02
+    assert trade["timestamp"] == 1_700_000_000
