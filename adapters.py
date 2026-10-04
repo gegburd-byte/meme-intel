@@ -558,6 +558,130 @@ class HeliusAdapter:
 
         return None, last_error or "HELIUS_RPC_FAILED"
 
+    async def _transactions_for_address(
+        self,
+        address: str,
+        cutoff: int,
+        limit: int = 100,
+        max_pages: int = 2,
+        rpc_base: str | None = None,
+    ):
+        """Fast Helius archival backfill using getTransactionsForAddress when available."""
+        if not address:
+            return [], "INVALID_ADDRESS"
+
+        rows = []
+        pagination = None
+        last_error = None
+
+        for _ in range(max(1, int(max_pages or 1))):
+            params = {
+                "transactionDetails": "full",
+                "sortOrder": "desc",
+                "limit": min(100, max(1, int(limit or 100) - len(rows))),
+                "filters": {
+                    "status": "succeeded",
+                    "blockTime": {
+                        "gte": int(cutoff),
+                        "lte": int(time.time()) + 2,
+                    },
+                },
+            }
+
+            if pagination:
+                params["paginationToken"] = pagination
+
+            result, err = await self._rpc(
+                "getTransactionsForAddress",
+                [address, params],
+                rpc_base=rpc_base,
+            )
+
+            if err:
+                last_error = err
+                break
+
+            data = result.get("data") if isinstance(result, dict) else None
+            if not isinstance(data, list) or not data:
+                break
+
+            rows.extend(
+                item for item in data
+                if isinstance(item, dict)
+            )
+
+            pagination = (
+                result.get("paginationToken")
+                if isinstance(result, dict)
+                else None
+            )
+
+            if not pagination or len(rows) >= int(limit or 100):
+                break
+
+        return rows, last_error
+
+    def _aggregate_decoded_trade_candles(
+        self,
+        trades: list[dict[str, Any]],
+        span: int,
+        cutoff: int,
+    ):
+        buckets = {}
+
+        for trade in trades:
+            ts = int(trade.get("timestamp") or 0)
+            price = float(trade.get("price") or 0)
+
+            if (
+                ts <= 0
+                or price <= 0
+                or ts < cutoff
+            ):
+                continue
+
+            bucket = (ts // span) * span
+            row = buckets.get(bucket)
+
+            if row is None:
+                buckets[bucket] = {
+                    "ts": bucket,
+                    "o": price,
+                    "h": price,
+                    "l": price,
+                    "c": price,
+                    "v": float(trade.get("volume_sol") or 0),
+                    "_first_ts": ts,
+                    "_last_ts": ts,
+                }
+                continue
+
+            row["h"] = max(row["h"], price)
+            row["l"] = min(row["l"], price)
+            row["v"] += float(trade.get("volume_sol") or 0)
+
+            if ts < row["_first_ts"]:
+                row["_first_ts"] = ts
+                row["o"] = price
+
+            if ts >= row["_last_ts"]:
+                row["_last_ts"] = ts
+                row["c"] = price
+
+        candles = [
+            Candle(
+                ts=int(row["ts"]),
+                o=float(row["o"]),
+                h=float(row["h"]),
+                l=float(row["l"]),
+                c=float(row["c"]),
+                v=float(row["v"]),
+            )
+            for row in buckets.values()
+        ]
+        candles.sort(key=lambda x: x.ts)
+        return candles
+
     async def historical_trade_candles(
         self,
         mint: str,
@@ -618,6 +742,65 @@ class HeliusAdapter:
             return cached["candles"], cached["error"]
 
         cutoff = int(time.time()) - lookback_minutes * 60
+
+        # Helius' archival transaction endpoint is dramatically cheaper/faster
+        # than resolving hundreds of individual signatures. Use it first for
+        # 1-second history when the normal Helius key is available, then fall
+        # back to the older signature/getTransaction path for free/public RPCs.
+        if self.key and not rpc_base and timeframe_key == "1s":
+            archival_rows = []
+            per_address_limit = min(
+                200,
+                max(100, (max_signatures + len(addresses) - 1) // len(addresses)),
+            )
+
+            for address in addresses:
+                page_rows, _ = await self._transactions_for_address(
+                    address,
+                    cutoff,
+                    limit=per_address_limit,
+                    max_pages=2,
+                    rpc_base=None,
+                )
+                archival_rows.extend(page_rows)
+
+            if archival_rows:
+                seen_tx = set()
+                archival_trades = []
+
+                for transaction in archival_rows:
+                    signature = str(transaction.get("signature") or "")
+                    if signature and signature in seen_tx:
+                        continue
+                    if signature:
+                        seen_tx.add(signature)
+
+                    block_time = transaction.get("blockTime")
+                    trade = parse_live_trade_from_transaction(
+                        transaction,
+                        mint,
+                        signature=signature,
+                        slot=transaction.get("slot"),
+                        block_time=block_time,
+                    )
+                    if trade:
+                        archival_trades.append(trade)
+
+                archival_candles = self._aggregate_decoded_trade_candles(
+                    archival_trades,
+                    span,
+                    cutoff,
+                )
+
+                if archival_candles:
+                    self._chart_cache[cache_key] = {
+                        "time": time.time(),
+                        "candles": archival_candles,
+                        "error": None,
+                    }
+                    return archival_candles, None
+
+        rows = []
         rows = []
         seen = set()
 
@@ -742,59 +925,11 @@ class HeliusAdapter:
             )
         )
 
-        buckets = {}
-
-        for trade in trades:
-            ts = int(trade.get("timestamp") or 0)
-            price = float(trade.get("price") or 0)
-
-            if (
-                ts <= 0
-                or price <= 0
-                or ts < cutoff
-            ):
-                continue
-
-            bucket = (ts // span) * span
-            row = buckets.get(bucket)
-
-            if row is None:
-                buckets[bucket] = {
-                    "ts": bucket,
-                    "o": price,
-                    "h": price,
-                    "l": price,
-                    "c": price,
-                    "v": float(trade.get("volume_sol") or 0),
-                    "_first_ts": ts,
-                    "_last_ts": ts,
-                }
-            else:
-                row["h"] = max(row["h"], price)
-                row["l"] = min(row["l"], price)
-                row["v"] += float(trade.get("volume_sol") or 0)
-
-                if ts < row["_first_ts"]:
-                    row["_first_ts"] = ts
-                    row["o"] = price
-
-                if ts >= row["_last_ts"]:
-                    row["_last_ts"] = ts
-                    row["c"] = price
-
-        candles = [
-            Candle(
-                ts=int(row["ts"]),
-                o=float(row["o"]),
-                h=float(row["h"]),
-                l=float(row["l"]),
-                c=float(row["c"]),
-                v=float(row["v"]),
-            )
-            for row in buckets.values()
-        ]
-
-        candles.sort(key=lambda x: x.ts)
+        candles = self._aggregate_decoded_trade_candles(
+            trades,
+            span,
+            cutoff,
+        )
 
         error = None if candles else "NO_TRADES_DECODED"
         self._chart_cache[cache_key] = {
