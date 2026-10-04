@@ -9,6 +9,9 @@ let currentCandleSyncTimer = null;
 let currentCandleSyncInFlight = false;
 let currentCandleSyncPromise = null;
 let currentCandleSyncQueued = false;
+let liveTradeCacheTimer = null;
+let liveTradeCacheBusy = false;
+let liveTradeCacheGeneration = 0;
 
 let pumpEvents = [];
 let marketCandidates = [];
@@ -2209,6 +2212,62 @@ async function pollLivePrice() {
   } catch {}
 }
 
+async function syncLiveTradeCache() {
+  if (!selectedMint || liveTradeCacheBusy) return;
+
+  liveTradeCacheBusy = true;
+
+  try {
+    const generation = historyGeneration;
+
+    const r = await fetch(
+      "/api/chart/live-trades?mint=" +
+      encodeURIComponent(selectedMint) +
+      "&limit=50&t=" + Date.now(),
+      {cache:"no-store"}
+    );
+
+    if (!r.ok) return;
+
+    const j = await readJsonResponse(r);
+    const rows = Array.isArray(j.trades) ? j.trades : [];
+
+    if (
+      generation !== historyGeneration ||
+      !selectedMint
+    ) {
+      return;
+    }
+
+    for (const row of rows) {
+      applyLiveTrade(row, true);
+    }
+  } catch {
+    // WSS remains primary; this is the low-latency recovery lane.
+  } finally {
+    liveTradeCacheBusy = false;
+  }
+}
+
+function startLiveTradeCachePoll() {
+  if (liveTradeCacheTimer) {
+    clearInterval(liveTradeCacheTimer);
+  }
+
+  liveTradeCacheGeneration = historyGeneration;
+
+  liveTradeCacheTimer = setInterval(() => {
+    if (
+      selectedMint &&
+      liveTradeCacheGeneration === historyGeneration
+    ) {
+      syncLiveTradeCache();
+    }
+  }, 300);
+
+  syncLiveTradeCache();
+}
+
 async function syncCurrentPumpCandle() {
   if (!selectedMint) return;
 
@@ -2383,6 +2442,13 @@ function disconnectLiveTrade() {
     clearInterval(pricePollTimer);
     pricePollTimer = null;
   }
+
+  if (liveTradeCacheTimer) {
+    clearInterval(liveTradeCacheTimer);
+    liveTradeCacheTimer = null;
+  }
+
+  liveTradeCacheBusy = false;
 
   if (currentCandleSyncTimer) {
     clearTimeout(currentCandleSyncTimer);
@@ -2580,6 +2646,8 @@ async function setTimeframe(tf) {
   // 1-second mode is live-only. It is built from actual trade events, never
   // by pretending that a 1m OHLC candle contains second-by-second prices.
   if (chartInterval === "1s") {
+    syncLiveTradeCache().catch(()=>{});
+
     selectedCandles = aggregateLiveTrades(
       selectedTrades,
       "1s"
@@ -2921,6 +2989,7 @@ async function selectToken(mint) {
   connectLiveTrade(mint);
   startCurrentCandleSync();
   startLivePricePoll();
+  startLiveTradeCachePoll();
   loadChartMeta(mint);
   setTimeout(() => {
     if (
