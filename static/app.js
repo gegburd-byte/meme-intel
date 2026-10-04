@@ -3543,6 +3543,15 @@ function scheduleNativePumpFunReconnect(mint) {
   },wait);
 }
 
+const PUMP_FUN_SUBSCRIBE_FRAMES = [
+  "42[\"subscribe\",\"tradeCreated\"]",
+  "42[\"subscribe\",{\"event\":\"tradeCreated\"}]",
+  "42[\"subscribe\",{\"type\":\"tradeCreated\"}]",
+  "42[\"join\",\"tradeCreated\"]",
+  "42[\"join\",\"trades\"]",
+  "42[\"subscribe\",\"all\"]"
+];
+
 function connectNativePumpFunTrades(mint) {
   if (!mint) return;
 
@@ -3584,13 +3593,13 @@ function connectNativePumpFunTrades(mint) {
     });
 
     socket.addEventListener("message",(ev) => {
-      if (socket !== pumpFunNativeTradeSocket) {
-        return;
-      }
-
-      const data = String(ev.data || "");
-
-      // Engine.IO open -> Socket.IO namespace open.
+      if (sock      if (data.startsWith("40")) {
+        for (const frame of PUMP_FUN_SUBSCRIBE_FRAMES) {
+          try {
+            socket.send(frame);
+          } catch {}
+        }
+open.
       if (data.startsWith("0")) {
         try {
           socket.send("40");
