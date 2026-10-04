@@ -1661,10 +1661,31 @@ async def chart_history(
                     pool_address = (
                         coin.get("pump_swap_pool")
                         or coin.get("pumpSwapPool")
+                        or coin.get("pumpSwapPoolAddress")
                         or coin.get("pool")
+                        or coin.get("poolAddress")
+                        or coin.get("amm")
+                        or coin.get("ammPool")
                     )
             except Exception:
                 pool_address = None
+
+            # Pump.fun's coin endpoint is not always available for migrated
+            # tokens. DexScreener is used only to discover the PumpSwap pool
+            # address here; candle prices still come exclusively from Pump.fun
+            # trade events / on-chain PumpSwap trades.
+            if not pool_address:
+                try:
+                    pair, _ = await asyncio.wait_for(
+                        ds.best_pair(mint),
+                        timeout=1.25,
+                    )
+                    if isinstance(pair, dict):
+                        dex_id = str(pair.get("dexId") or "").lower()
+                        if dex_id in {"pumpswap", "pump-swap", "pump_swap"}:
+                            pool_address = pair.get("pairAddress")
+                except Exception:
+                    pool_address = None
 
             lookback_minutes = (
                 max(10, int((limit + 59) // 60) + 2)
