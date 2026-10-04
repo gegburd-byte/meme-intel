@@ -236,19 +236,32 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     assert "refreshIndicatorHistory" in app
     assert "VWAP / ATR" in html
 
-def test_live_frontend_uses_direct_pumpfun_lane_with_deduped_updates():
+def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
     from pathlib import Path
 
     app = Path("static/app.js").read_text()
     html = Path("static/index.html").read_text()
 
     select_block = app[app.index("connectLiveTrade(mint);"):app.index("loadChartMeta(mint);")]
-    assert "connectNativePumpFunTrades(mint);" in select_block
-    assert "selectedTradeKeys.has(key)" in app
+    assert "connectNativePumpFunTrades(mint);" not in select_block
+    assert "selectedTrades.some(x => x.id === t.id)" not in app
     assert "renderTape();" not in app[app.index("function updateCandleFromLiveTrade"):app.index("function liveTradePriceIsPlausible")]
     assert "selectedMinuteCandles = selectedMinuteCandles.map" not in app
     assert "chartfix33" in html
 
+
+def test_swap_trade_feed_does_not_use_a_fake_recent_creation_timestamp():
+    from pathlib import Path
+
+    adapters = Path("adapters.py").read_text()
+
+    swap_start = adapters.index("async def swap_trades")
+    swap_end = adapters.index("    async def trades", swap_start)
+    swap_block = adapters[swap_start:swap_end]
+
+    assert "time.time() - 90" not in swap_block
+    assert "created_timestamp" in swap_block
+    assert 'variant("pump")' in swap_block
 
 def test_swap_trade_feed_does_not_use_a_fake_recent_creation_timestamp():
     from pathlib import Path
