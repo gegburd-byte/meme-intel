@@ -256,6 +256,20 @@ def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
     assert "chartfix37" in html
 
 
+def test_swap_trade_feed_prefers_pumpamm_after_graduation():
+    from pathlib import Path
+
+    adapters = Path("adapters.py").read_text()
+    swap_start = adapters.index("async def swap_trades")
+    swap_end = adapters.index("    async def trades", swap_start)
+    swap_block = adapters[swap_start:swap_end]
+
+    assert '"pump-amm"' in swap_block
+    assert "is_graduated" in swap_block
+    assert "graduated token" in swap_block
+    assert 'program_order = (' in swap_block
+
+
 def test_swap_trade_feed_does_not_use_a_fake_recent_creation_timestamp():
     from pathlib import Path
 
