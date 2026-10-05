@@ -1792,7 +1792,8 @@ function scheduleVolumeProfileRender() {
     renderVolumeProfile();
   });
 }
-\nfunction normalizeCandle(x) {
+
+function normalizeCandle(x) {
   if (!x) return null;
 
   const ts = Number(x.ts ?? x.timestamp ?? x.time);
