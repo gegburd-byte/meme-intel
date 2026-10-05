@@ -4017,12 +4017,27 @@ async function syncCurrentPumpCandle() {
           selectedCandles.length - 1
         ];
 
-      if (
-        livePreviewActive &&
+      const sameBar = Boolean(
         current &&
         incoming &&
         incoming.time === current.time
-      ) {
+      );
+
+      // Never discard a same-bucket HTTP recovery update just because the
+      // browser previously painted a live preview. If the websocket missed a
+      // trade, /api/chart/current is the recovery lane that must move the
+      // candle forward. Only skip the update when every OHLCV field is truly
+      // unchanged, which keeps the 200ms reconciliation loop cheap.
+      const sameValues = Boolean(
+        sameBar &&
+        Number(current.o) === Number(incoming.o) &&
+        Number(current.h) === Number(incoming.h) &&
+        Number(current.l) === Number(incoming.l) &&
+        Number(current.c) === Number(incoming.c) &&
+        Number(current.v || 0) === Number(incoming.v || 0)
+      );
+
+      if (sameValues) {
         return;
       }
 
