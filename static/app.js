@@ -3639,7 +3639,8 @@ function applyLiveMarketTick(
   price,
   timestampSec,
   source = "MARKET QUOTE",
-  timestampMs = null
+  timestampMs = null,
+  isTrade = false
 ) {
   if (!selectedMint || !chartInitialized) return;
 
@@ -3660,6 +3661,15 @@ function applyLiveMarketTick(
     Number.isFinite(timestampMs) && timestampMs > 0
       ? timestampMs
       : timestampSec * 1000;
+
+  // Quote-only observations can keep the displayed live price responsive,
+  // but they are NOT executed trades and therefore must never create or
+  // modify an OHLC candle. Pump.fun's candle history is trade-based.
+  if (!isTrade) {
+    lastLiveTickerAtMs = Date.now();
+    updateActivePrice(price, effectiveTimestampMs);
+    return;
+  }
 
   // Real decoded trades remain authoritative for a short window. The ticker
   // only fills the gap when the event transport is silent.
@@ -3813,7 +3823,8 @@ async function pollLiveTicker() {
         String(data.source || "LIVE MARKET"),
         Number.isFinite(timestampMs) && timestampMs > 0
           ? timestampMs
-          : timestamp * 1000
+          : timestamp * 1000,
+        Boolean(data.trade)
       );
     }
   } catch {
