@@ -4204,9 +4204,12 @@ async function selectToken(mint) {
   // loading without being captured.
   connectLiveTrade(mint);
 
-  // The backend owns the Pump.fun/Helius live feeds so the browser only
-  // receives trades for the selected mint. This avoids a platform-wide
-  // Socket.IO firehose competing with chart rendering.
+  // Direct selected-token Pump.fun fallback. The backend/Helius stream
+  // remains primary, but this bypasses a silently stale Render backend and
+  // feeds the chart directly from Pump.fun's Socket.IO tradeCreated stream.
+  // Incoming firehose frames are filtered by the selected mint before parse.
+  connectNativePumpFunTrades(mint);
+
   loadChartMeta(mint);
   setTimeout(() => {
     if (
