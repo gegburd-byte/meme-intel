@@ -1572,10 +1572,10 @@ def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
 
 
 @app.get("/api/chart/live-trades")
-async def chart_live_trades(mint:     await ensure_live_feed(mint)
-
-str, limit: int = 200):
+async def chart_live_trades(mint: str, limit: int = 200):
     """Return the newest trade stream data without changing chart price units."""
+    await ensure_live_feed(mint)
+
     mint = (mint or "").strip()
 
     if len(mint) < 32 or len(mint) > 44:
@@ -2425,6 +2425,8 @@ str,
     interval: str | None = None,
 ):
     """Return the current real Pump.fun/PumpSwap bar for the requested interval."""
+    await ensure_live_feed(mint)
+
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
