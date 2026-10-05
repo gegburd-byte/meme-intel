@@ -1413,19 +1413,37 @@ function initChart() {
       }
     );
 
-    volumeSeries = chart.addSeries(
-      LightweightCharts.HistogramSeries,
-      {
-        priceFormat:{type:"volume"},
-        priceScaleId:"volume"
-      }
-    );
+    // Lightweight Charts 5 supports real panes. Keep volume in its own
+    // pane so SOL/token prices are never auto-scaled against SOL volume.
+    // The old hidden "volume" price scale lived in the main pane and could
+    // stretch a micro-price chart from ~0.000003 to ~0.6, making candles
+    // effectively invisible.
+    try {
+      volumeSeries = chart.addSeries(
+        LightweightCharts.HistogramSeries,
+        {
+          priceFormat:{type:"volume"},
+          priceScaleId:"right",
+          lastValueVisible:false,
+          priceLineVisible:false
+        },
+        1
+      );
 
-    chart.priceScale("volume").applyOptions({
-      scaleMargins:{top:0.82,bottom:0},
-      borderVisible:false,
-      visible:false
-    });
+      const panes = typeof chart.panes === "function"
+        ? chart.panes()
+        : [];
+
+      if (panes[1]?.setHeight) {
+        panes[1].setHeight(
+          Math.max(72, Math.min(92, Math.round(height * 0.17)))
+        );
+      }
+    } catch {
+      // Volume is optional presentation. Never let it prevent the price
+      // chart from initializing on an older/incompatible LWC build.
+      volumeSeries = null;
+    }
 
     // Markers are optional presentation. Never let a marker-plugin/API
     // mismatch prevent the actual candle chart from initializing.
@@ -2045,15 +2063,17 @@ function renderChart(candles, fit = false) {
     }))
   );
 
-  volumeSeries.setData(
-    candles.map(x=>({
-      time:x.time,
-      value:Math.max(0,Number(x.v) || 0),
-      color:x.c >= x.o
-        ? "rgba(57,220,137,.22)"
-        : "rgba(255,101,117,.22)"
-    }))
-  );
+  if (volumeSeries) {
+    volumeSeries.setData(
+      candles.map(x=>({
+        time:x.time,
+        value:Math.max(0,Number(x.v) || 0),
+        color:x.c >= x.o
+          ? "rgba(57,220,137,.22)"
+          : "rgba(255,101,117,.22)"
+      }))
+    );
+  }
 
   const ind = indicatorSeries(candles);
 
@@ -2115,13 +2135,15 @@ function updateLiveCandleOnSeries(candle) {
     close:displayValue(candle.c)
   });
 
-  volumeSeries.update({
-    time:candle.time,
-    value:Math.max(0,candle.v || 0),
-    color:candle.c >= candle.o
-      ? "rgba(57,220,137,.22)"
-      : "rgba(255,101,117,.22)"
-  });
+  if (volumeSeries) {
+    volumeSeries.update({
+      time:candle.time,
+      value:Math.max(0,candle.v || 0),
+      color:candle.c >= candle.o
+        ? "rgba(57,220,137,.22)"
+        : "rgba(255,101,117,.22)"
+    });
+  }
 }
 
 function renderLiveIndicators() {
@@ -4116,10 +4138,10 @@ async function selectToken(mint) {
   // the newly selected token while its history is loading.
   if (chartInitialized) {
     candleSeries.setData([]);
-    volumeSeries.setData([]);
+    if (volumeSeries) volumeSeries.setData([]);
     ema9Series.setData([]);
     ema21Series.setData([]);
-    markersApi.setMarkers([]);
+    if (markersApi?.setMarkers) markersApi.setMarkers([]);
   }
   chartDataSource = "LOADING";
 
@@ -4281,6 +4303,16 @@ async function refreshMarketCandidates() {
 
 document.addEventListener("DOMContentLoaded",()=>{
   initChart();
+
+  // Some deployments/layouts finish loading the CDN or applying responsive
+  // CSS after DOMContentLoaded. Retry once at window load so a slow library or
+  // zero-width first layout cannot leave a permanently blank chart.
+  window.addEventListener("load",()=>{
+    initChart();
+    if (chartInitialized && selectedCandles.length) {
+      renderChart(selectedCandles,false);
+    }
+  });
 
   $("openMint").addEventListener("click",()=>{
     const mint =
