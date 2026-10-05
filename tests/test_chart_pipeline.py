@@ -229,7 +229,7 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     html = Path("static/index.html").read_text()
     app = Path("static/app.js").read_text()
 
-    assert "chartfix44" in html
+    assert "chartfix45" in html
     assert "frontend-api-v3.pump.fun/socket.io/" in app
     assert "tradeCreated" in app
     assert "findNativePumpFunTradePayload" in app
@@ -255,6 +255,8 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     assert "LIVE MARKET TICK" in app
     assert 'priceScaleId:"volume"' in app
     assert 'chart.priceScale("volume")' in app
+    assert "swap_candles" in Path("adapters.py").read_text()
+    assert "PUMPSWAP DIRECT CANDLES" in Path("main.py").read_text()
 
 def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
     from pathlib import Path
@@ -267,7 +269,7 @@ def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
     assert "selectedTrades.some(x => x.id === t.id)" not in app
     assert "renderTape();" not in app[app.index("function updateCandleFromLiveTrade"):app.index("function liveTradePriceIsPlausible")]
     assert "selectedMinuteCandles = selectedMinuteCandles.map" not in app
-    assert "chartfix44" in html
+    assert "chartfix45" in html
 
 
 def test_swap_trade_feed_prefers_pumpamm_after_graduation():
