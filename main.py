@@ -1184,6 +1184,7 @@ async def api_exception_handler(request, exc):
 
 
 PRICE_CACHE = {}
+LIVE_TICKER_CACHE = {}
 
 
 
@@ -2673,6 +2674,73 @@ async def live_price(mint: str):
         "data": payload,
     }
     return payload
+
+
+@app.get("/api/chart/ticker")
+async def chart_ticker(mint: str):
+    """Low-latency real market price for the selected chart."""
+    mint = (mint or "").strip()
+    if len(mint) < 32 or len(mint) > 44:
+        raise HTTPException(400, "Invalid mint")
+
+    now = time.time()
+    cached = LIVE_TICKER_CACHE.get(mint)
+    if cached and now - cached["time"] < 0.35:
+        return cached["data"]
+
+    try:
+        payload, _ = await asyncio.wait_for(
+            pf.swap_trades(
+                mint,
+                limit=3,
+                cursor=0,
+                fresh=True,
+            ),
+            timeout=0.75,
+        )
+        rows = parse_pump_trades(payload)
+        if rows:
+            latest = max(rows, key=lambda row: int(row.get("ts") or 0))
+            data = {
+                "state": "READY",
+                "mint": mint,
+                "price": float(latest["price"]),
+                "timestamp": int(latest["ts"]),
+                "source": "PUMP.FUN TRADE / PUMPSWAP",
+                "trade": True,
+            }
+            LIVE_TICKER_CACHE[mint] = {"time": now, "data": data}
+            return data
+    except Exception:
+        pass
+
+    try:
+        live = await live_price(mint)
+        price = float(live.get("price") or 0)
+        if price > 0:
+            data = {
+                "state": "READY",
+                "mint": mint,
+                "price": price,
+                "timestamp": int(live.get("timestamp") or now),
+                "source": str(live.get("source") or "MARKET QUOTE"),
+                "trade": False,
+            }
+            LIVE_TICKER_CACHE[mint] = {"time": now, "data": data}
+            return data
+    except Exception:
+        pass
+
+    data = {
+        "state": "NO_PRICE",
+        "mint": mint,
+        "price": None,
+        "timestamp": int(now),
+        "source": "UNAVAILABLE",
+        "trade": False,
+    }
+    LIVE_TICKER_CACHE[mint] = {"time": now, "data": data}
+    return data
 
 
 TOP_CACHE = {"time": 0, "data": None}
