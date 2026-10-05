@@ -2715,6 +2715,7 @@ async def chart_ticker(mint: str):
                         "mint": mint,
                         "price": price,
                         "timestamp": timestamp,
+                        "timestamp_ms": int(time.time() * 1000),
                         "source": "PUMP.FUN TRADE / PUMPSWAP",
                         "trade": True,
                     }
@@ -2734,6 +2735,7 @@ async def chart_ticker(mint: str):
                     "mint": mint,
                     "price": native,
                     "timestamp": int(time.time()),
+                    "timestamp_ms": int(time.time() * 1000),
                     "source": (
                         "LIVE PUMPSWAP QUOTE"
                         if str(
@@ -2786,6 +2788,7 @@ async def chart_ticker(mint: str):
             "mint": mint,
             "price": None,
             "timestamp": int(now),
+            "timestamp_ms": int(now * 1000),
             "source": "UNAVAILABLE",
             "trade": False,
         }
