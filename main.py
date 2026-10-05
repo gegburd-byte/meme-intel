@@ -2748,8 +2748,33 @@ async def chart_ticker(mint: str):
 
     now = time.time()
     cached = LIVE_TICKER_CACHE.get(mint)
-    if cached and now - cached["time"] < 0.18:
+    if cached and now - cached["time"] < 0.08:
         return cached["data"]
+
+    # Fastest lane: use the already-decoded in-memory trade stream first.
+    try:
+        recent = trade_hub.recent_trade_snapshot(mint, limit=1)
+        if recent:
+            latest = recent[-1]
+            price = float(latest.get("price") or 0)
+            timestamp = int(latest.get("timestamp") or 0)
+            if price > 0 and timestamp > 0:
+                data = {
+                    "state": "READY",
+                    "mint": mint,
+                    "price": price,
+                    "timestamp": timestamp,
+                    "timestamp_ms": int(time.time() * 1000),
+                    "source": "LIVE ON-CHAIN TRADE",
+                    "trade": True,
+                }
+                LIVE_TICKER_CACHE[mint] = {
+                    "time": time.time(),
+                    "data": data,
+                }
+                return data
+    except Exception:
+        pass
 
     async def pump_probe():
         try:
