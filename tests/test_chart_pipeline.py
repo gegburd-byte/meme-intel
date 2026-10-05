@@ -229,7 +229,7 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     html = Path("static/index.html").read_text()
     app = Path("static/app.js").read_text()
 
-    assert "chartfix37" in html
+    assert "chartfix38" in html
     assert "frontend-api-v3.pump.fun/socket.io/" in app
     assert "tradeCreated" in app
     assert "findNativePumpFunTradePayload" in app
@@ -238,6 +238,8 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     assert "python-socketio" in Path("requirements.txt").read_text()
     assert "socketio.AsyncClient" in Path("live_stream.py").read_text()
     assert "ensure_live_feed" in Path("main.py").read_text()
+    assert "lastLiveTradeReceivedAtMs" in app
+    assert "WAITING FOR TRADES" in app
     assert "HistogramSeries" in app
     assert "chart.addSeries(" in app
     assert "strong_min_bars = min(limit, 12)" in Path("main.py").read_text()
@@ -253,7 +255,7 @@ def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
     assert "selectedTrades.some(x => x.id === t.id)" not in app
     assert "renderTape();" not in app[app.index("function updateCandleFromLiveTrade"):app.index("function liveTradePriceIsPlausible")]
     assert "selectedMinuteCandles = selectedMinuteCandles.map" not in app
-    assert "chartfix37" in html
+    assert "chartfix38" in html
 
 
 def test_swap_trade_feed_prefers_pumpamm_after_graduation():
