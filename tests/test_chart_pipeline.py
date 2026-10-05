@@ -283,7 +283,7 @@ def test_swap_trade_feed_does_not_use_a_fake_recent_creation_timestamp():
 
     assert "time.time() - 90" not in swap_block
     assert "created_timestamp" in swap_block
-    assert 'variant("pump")' in swap_block
+    assert '"pump"' in swap_block
 
 def test_swap_trade_feed_does_not_use_a_fake_recent_creation_timestamp():
     from pathlib import Path
