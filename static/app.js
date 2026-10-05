@@ -3399,26 +3399,15 @@ async function pollLiveTicker() {
     ) {
       lastLiveTickerAtMs = Date.now();
 
-      // If the endpoint gave us an actual executed trade, route it through
-      // the normal trade engine. Otherwise use the real market quote as a
-      // live chart/indicator tick.
-      if (data.trade === true) {
-        applyLiveTrade({
-          id:"ticker:" + selectedMint + ":" + timestamp + ":" + price,
-          source:String(data.source || "PUMP.FUN"),
-          side:"BUY",
-          price,
-          timestamp,
-          volume_sol:0,
-          synthetic:true
-        }, false);
-      } else {
-        applyLiveMarketTick(
-          price,
-          timestamp,
-          String(data.source || "MARKET QUOTE")
-        );
-      }
+      // The ticker is deliberately funneled through the same market-tick
+      // path whether the newest value came from an executed trade or a
+      // native SOL quote. This makes the visible chart resilient to a dead
+      // WebSocket while keeping the event tape reserved for decoded trades.
+      applyLiveMarketTick(
+        price,
+        timestamp,
+        String(data.source || "LIVE MARKET")
+      );
     }
   } catch {
     // The independent live websocket/recovery lanes remain active.
