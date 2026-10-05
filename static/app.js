@@ -1390,6 +1390,11 @@ function initChart() {
         borderDownColor:"#ff6575",
         wickUpColor:"#39dc89",
         wickDownColor:"#ff6575",
+        priceFormat:{
+          type:"price",
+          precision:12,
+          minMove:1e-12
+        },
         priceLineVisible:true,
         lastValueVisible:true
       }
@@ -1400,6 +1405,11 @@ function initChart() {
       {
         color:"#6ee7a5",
         lineWidth:1,
+        priceFormat:{
+          type:"price",
+          precision:12,
+          minMove:1e-12
+        },
         crosshairMarkerVisible:false,
         lastValueVisible:false,
         priceLineVisible:false
@@ -1411,6 +1421,11 @@ function initChart() {
       {
         color:"#ffbd54",
         lineWidth:1,
+        priceFormat:{
+          type:"price",
+          precision:12,
+          minMove:1e-12
+        },
         crosshairMarkerVisible:false,
         lastValueVisible:false,
         priceLineVisible:false
@@ -2794,6 +2809,51 @@ async function fetchFastHistoricalBackfill(generation) {
     let usedLiveTradeFallback = false;
     let fallbackTimestampSec = 0;
 
+    // A provider can legitimately answer with a single current candle while
+    // its historical page is still incomplete. For 1m+ charts, repair that
+    // response from the exact-venue live trade tape immediately. Prefer the
+    // richer real dataset; never fabricate candles.
+    if (
+      candles.length < 12 &&
+      chartInterval !== "1s"
+    ) {
+      try {
+        const liveResponse = await fetch(
+          "/api/chart/live-trades?mint=" +
+          encodeURIComponent(selectedMint) +
+          "&limit=200&t=" + Date.now(),
+          {cache:"no-store"}
+        );
+
+        if (liveResponse.ok) {
+          const liveJson = await readJsonResponse(liveResponse);
+          const liveRows = (liveJson.trades || [])
+            .map(normalizeTrade)
+            .filter(Boolean);
+
+          const liveCandles = aggregateLiveTrades(
+            liveRows,
+            chartTimeframe
+          );
+
+          if (liveCandles.length > candles.length) {
+            candles = liveCandles;
+            usedLiveTradeFallback = true;
+            const rawFallbackTimestamp = Number(
+              liveJson.timestamp || 0
+            );
+            fallbackTimestampSec =
+              rawFallbackTimestamp > 2e10
+                ? Math.floor(rawFallbackTimestamp / 1000)
+                : (
+                    rawFallbackTimestamp ||
+                    Math.floor(Date.now() / 1000)
+                  );
+          }
+        }
+      } catch {}
+    }
+
     // Never leave the chart blank just because one historical provider timed
     // out. Exact-venue decoded trades are safe to aggregate at any requested
     // timeframe, including true 1-second bars.
@@ -3519,6 +3579,16 @@ function applyLiveTrade(rawTrade, record = true) {
         chartVolume: chartTrade.volume_sol,
       }
     : null;
+
+  // The HTTP recovery endpoint returns the newest few trades repeatedly.
+  // Skip an already-seen trade entirely so the same execution cannot keep
+  // adding volume or repainting the candle every polling cycle.
+  if (recordedTrade) {
+    const key = liveTradeKey(recordedTrade);
+    if (key && selectedTradeKeys.has(key)) {
+      return;
+    }
+  }
 
   applyLivePrice(
     chartTrade.price,
