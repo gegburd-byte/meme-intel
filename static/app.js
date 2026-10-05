@@ -1427,12 +1427,26 @@ function initChart() {
         LightweightCharts.HistogramSeries,
         {
           priceFormat:{type:"volume"},
-          priceScaleId:"right",
+          // Keep volume completely off the token-price scale. A volume bar
+          // like 0.05 SOL must never stretch a micro-price such as
+          // 0.0000048 SOL/token into a flat line.
+          priceScaleId:"volume",
           lastValueVisible:false,
           priceLineVisible:false
         },
         1
       );
+
+      try {
+        chart.priceScale("volume").applyOptions({
+          visible:true,
+          borderVisible:false,
+          scaleMargins:{
+            top:0.72,
+            bottom:0.02
+          }
+        });
+      } catch {}
 
       const panes = typeof chart.panes === "function"
         ? chart.panes()
