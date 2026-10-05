@@ -2587,9 +2587,18 @@ async def chart_current(
     # HTTP OHLC endpoint. Pump.fun's native candle endpoint can lag the trade
     # stream, which previously allowed a stale candle to keep repainting over
     # the moving chart.
+    # Pass the normalized numeric minute interval to the live candle
+    # builder. It only accepts the literal "1s" for second candles; passing
+    # "5m"/"15m"/"1h" makes it fall back to 1-minute buckets and the frontend
+    # then receives a candle that does not belong to the selected timeframe.
+    live_timeframe = (
+        chart_interval
+        if chart_interval == "1s"
+        else timeframe_minutes
+    )
     live = trade_hub.current_candle(
         mint,
-        timeframe=chart_interval,
+        timeframe=live_timeframe,
         max_age_seconds=2,
     )
     if live:
