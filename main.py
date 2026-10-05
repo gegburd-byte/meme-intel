@@ -2715,15 +2715,24 @@ async def chart_ticker(mint: str):
         pass
 
     try:
-        live = await live_price(mint)
-        price = float(live.get("price") or 0)
-        if price > 0:
+        # DexScreener exposes priceNative for the selected Solana pair. Unlike
+        # the generic /api/live/price endpoint, this is already denominated in
+        # the chart's native SOL/token unit.
+        pair, _ = await ds.best_pair(mint)
+        native = float(
+            (pair or {}).get("priceNative") or 0
+        )
+        if native > 0:
             data = {
                 "state": "READY",
                 "mint": mint,
-                "price": price,
-                "timestamp": int(live.get("timestamp") or now),
-                "source": str(live.get("source") or "MARKET QUOTE"),
+                "price": native,
+                "timestamp": int(now),
+                "source": (
+                    "LIVE PUMPSWAP QUOTE"
+                    if str((pair or {}).get("dexId") or "").lower() == "pumpswap"
+                    else "LIVE MARKET QUOTE"
+                ),
                 "trade": False,
             }
             LIVE_TICKER_CACHE[mint] = {"time": now, "data": data}
