@@ -2763,7 +2763,7 @@ async def chart_ticker(mint: str):
             # If the trade is stale, fall through to Pump.fun/PumpSwap quote
             # recovery so the chart can still move with the current market.
             if (
-                price > 0 &&
+                price > 0 and
                 timestamp > 0
             ):
                 data = {
