@@ -2085,6 +2085,62 @@ async def chart_history(
         except Exception as exc:
             return "PUMP.FUN", [], str(exc)[:240]
 
+    async def pump_swap_history():
+        if chart_interval == "1s":
+            return (
+                "PUMPSWAP DIRECT CANDLES",
+                [],
+                "PUMPSWAP_1S_UNSUPPORTED",
+            )
+
+        try:
+            source_interval = (
+                "1m"
+                if chart_interval == "1m"
+                else "5m"
+            )
+
+            payload, err = await asyncio.wait_for(
+                pf.swap_candles(
+                    mint,
+                    interval=source_interval,
+                    fresh=True,
+                ),
+                timeout=1.25,
+            )
+
+            rows = parse_pump_candles(payload)
+
+            if chart_interval in {"15m", "1h"}:
+                rows = aggregate_timeframe_candles(
+                    rows,
+                    timeframe_minutes,
+                )
+
+            rows = rows[-limit:]
+
+            if rows and chart_data_quality(
+                rows,
+                minimum_bars=1,
+            ) > 0:
+                return (
+                    "PUMPSWAP DIRECT CANDLES",
+                    rows,
+                    None,
+                )
+
+            return (
+                "PUMPSWAP DIRECT CANDLES",
+                [],
+                err or "NO_PUMPSWAP_CANDLES",
+            )
+        except Exception as exc:
+            return (
+                "PUMPSWAP DIRECT CANDLES",
+                [],
+                str(exc)[:240],
+            )
+
     async def pump_trade_history():
         try:
             page_count = 6 if chart_interval == "1s" else 3
@@ -2242,6 +2298,7 @@ async def chart_history(
             return "HELIUS_ONCHAIN_TRADES", [], str(exc)[:240]
 
     tasks = [
+        asyncio.create_task(pump_swap_history()),
         asyncio.create_task(pump_trade_history()),
         asyncio.create_task(gecko_history()),
         asyncio.create_task(helius_history()),
@@ -2320,7 +2377,8 @@ async def chart_history(
 
             if rows and chart_data_quality(rows, minimum_bars=1) > 0:
                 priority = {
-                    "PUMP.FUN TRADE HISTORY": 3,
+                    "PUMPSWAP DIRECT CANDLES": 5,
+                    "PUMP.FUN TRADE HISTORY": 4,
                     "PUMPSWAP ONSHAIN": 2,
                     "HELIUS_ONCHAIN_TRADES": 1,
                 }.get(source, 0)
