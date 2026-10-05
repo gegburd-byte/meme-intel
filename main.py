@@ -2678,78 +2678,126 @@ async def live_price(mint: str):
 
 @app.get("/api/chart/ticker")
 async def chart_ticker(mint: str):
-    """Low-latency real market price for the selected chart."""
+    """Low-latency real market price for the selected chart.
+
+    Pump/PumpAMM trade recovery and the native SOL market quote race in
+    parallel. The first valid fresh market observation wins, keeping the
+    visible candle responsive even when one upstream provider is slow.
+    """
     mint = (mint or "").strip()
     if len(mint) < 32 or len(mint) > 44:
         raise HTTPException(400, "Invalid mint")
 
     now = time.time()
     cached = LIVE_TICKER_CACHE.get(mint)
-    if cached and now - cached["time"] < 0.35:
+    if cached and now - cached["time"] < 0.18:
         return cached["data"]
 
-    try:
-        payload, _ = await asyncio.wait_for(
-            pf.swap_trades(
+    async def pump_probe():
+        try:
+            payload, _ = await pf.swap_trades(
                 mint,
                 limit=3,
                 cursor=0,
                 fresh=True,
-            ),
-            timeout=0.75,
-        )
-        rows = parse_pump_trades(payload)
-        if rows:
-            latest = max(rows, key=lambda row: int(row.get("ts") or 0))
-            data = {
-                "state": "READY",
-                "mint": mint,
-                "price": float(latest["price"]),
-                "timestamp": int(latest["ts"]),
-                "source": "PUMP.FUN TRADE / PUMPSWAP",
-                "trade": True,
-            }
-            LIVE_TICKER_CACHE[mint] = {"time": now, "data": data}
-            return data
-    except Exception:
-        pass
+            )
+            rows = parse_pump_trades(payload)
+            if rows:
+                latest = max(
+                    rows,
+                    key=lambda row: int(row.get("ts") or 0),
+                )
+                price = float(latest.get("price") or 0)
+                timestamp = int(latest.get("ts") or 0)
+                if price > 0 and timestamp > 0:
+                    return {
+                        "state": "READY",
+                        "mint": mint,
+                        "price": price,
+                        "timestamp": timestamp,
+                        "source": "PUMP.FUN TRADE / PUMPSWAP",
+                        "trade": True,
+                    }
+        except Exception:
+            pass
+        return None
+
+    async def quote_probe():
+        try:
+            pair, _ = await ds.best_pair(mint)
+            native = float(
+                (pair or {}).get("priceNative") or 0
+            )
+            if native > 0:
+                return {
+                    "state": "READY",
+                    "mint": mint,
+                    "price": native,
+                    "timestamp": int(time.time()),
+                    "source": (
+                        "LIVE PUMPSWAP QUOTE"
+                        if str(
+                            (pair or {}).get("dexId") or ""
+                        ).lower() == "pumpswap"
+                        else "LIVE MARKET QUOTE"
+                    ),
+                    "trade": False,
+                }
+        except Exception:
+            pass
+        return None
+
+    pump_task = asyncio.create_task(pump_probe())
+    quote_task = asyncio.create_task(quote_probe())
+    tasks = {pump_task, quote_task}
 
     try:
-        # DexScreener exposes priceNative for the selected Solana pair. Unlike
-        # the generic /api/live/price endpoint, this is already denominated in
-        # the chart's native SOL/token unit.
-        pair, _ = await ds.best_pair(mint)
-        native = float(
-            (pair or {}).get("priceNative") or 0
-        )
-        if native > 0:
-            data = {
-                "state": "READY",
-                "mint": mint,
-                "price": native,
-                "timestamp": int(now),
-                "source": (
-                    "LIVE PUMPSWAP QUOTE"
-                    if str((pair or {}).get("dexId") or "").lower() == "pumpswap"
-                    else "LIVE MARKET QUOTE"
-                ),
-                "trade": False,
-            }
-            LIVE_TICKER_CACHE[mint] = {"time": now, "data": data}
-            return data
-    except Exception:
-        pass
+        while tasks:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=0.60,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-    data = {
-        "state": "NO_PRICE",
-        "mint": mint,
-        "price": None,
-        "timestamp": int(now),
-        "source": "UNAVAILABLE",
-        "trade": False,
-    }
-    LIVE_TICKER_CACHE[mint] = {"time": now, "data": data}
-    return data
+            if not done:
+                break
+
+            tasks = pending
+
+            for task in done:
+                try:
+                    data = task.result()
+                except Exception:
+                    data = None
+
+                if data:
+                    LIVE_TICKER_CACHE[mint] = {
+                        "time": time.time(),
+                        "data": data,
+                    }
+
+                    for other in tasks:
+                        other.cancel()
+
+                    return data
+
+        return {
+            "state": "NO_PRICE",
+            "mint": mint,
+            "price": None,
+            "timestamp": int(now),
+            "source": "UNAVAILABLE",
+            "trade": False,
+        }
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(
+            pump_task,
+            quote_task,
+            return_exceptions=True,
+        )
+
 
 
 TOP_CACHE = {"time": 0, "data": None}
