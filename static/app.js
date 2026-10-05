@@ -1532,7 +1532,267 @@ function initChart() {
   }
 }
 
-function normalizeCandle(x) {
+
+let volumeProfileRoot = null;
+let volumeProfileLast = null;
+let volumeProfileRenderScheduled = false;
+const VOLUME_PROFILE_BINS = 36;
+const VALUE_AREA_PERCENT = 0.70;
+
+function ensureVolumeProfileOverlay() {
+  const container = $("chart");
+  if (!container) return null;
+
+  if (getComputedStyle(container).position === "static") {
+    container.style.position = "relative";
+  }
+
+  let root = $("volumeProfile");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "volumeProfile";
+    root.className = "volumeProfile";
+    root.setAttribute("aria-hidden","true");
+    root.innerHTML =
+      '<div class="vpHeader">70% VALUE AREA</div>' +
+      '<div class="vpRows"></div>' +
+      '<div class="vpLine vpValueArea"></div>' +
+      '<div class="vpLine vpPoc"></div>' +
+      '<div class="vpLabel vpPocLabel">POC</div>' +
+      '<div class="vpLabel vpVahLabel">VAH</div>' +
+      '<div class="vpLabel vpValLabel">VAL</div>' +
+      '<div class="vpStats"></div>';
+    container.appendChild(root);
+  }
+
+  volumeProfileRoot = root;
+  return root;
+}
+
+function calculateVolumeProfile(trades = selectedTrades) {
+  const rows = (trades || [])
+    .map(trade => ({
+      price: Number(trade.chartPrice ?? trade.price),
+      volume: Math.max(
+        0,
+        Number(
+          trade.chartVolume ??
+          trade.volumeSol ??
+          trade.volume_sol ??
+          trade.volume ??
+          0
+        )
+      )
+    }))
+    .filter(x =>
+      Number.isFinite(x.price) &&
+      x.price > 0 &&
+      Number.isFinite(x.volume) &&
+      x.volume > 0
+    );
+
+  if (rows.length < 2) return null;
+
+  let low = Math.min(...rows.map(x => x.price));
+  let high = Math.max(...rows.map(x => x.price));
+
+  if (!(high > low)) return null;
+
+  const pad = (high - low) * 0.015;
+  low -= pad;
+  high += pad;
+
+  const step = (high - low) / VOLUME_PROFILE_BINS;
+  const bins = Array.from(
+    {length: VOLUME_PROFILE_BINS},
+    (_, index) => ({
+      index,
+      low: low + index * step,
+      high: low + (index + 1) * step,
+      center: low + (index + 0.5) * step,
+      volume: 0
+    })
+  );
+
+  for (const row of rows) {
+    let index = Math.floor((row.price - low) / step);
+    index = Math.max(0, Math.min(VOLUME_PROFILE_BINS - 1, index));
+    bins[index].volume += row.volume;
+  }
+
+  const total = bins.reduce((sum, bin) => sum + bin.volume, 0);
+  if (!(total > 0)) return null;
+
+  const pocIndex = bins.reduce(
+    (best, bin, index) =>
+      bin.volume > bins[best].volume ? index : best,
+    0
+  );
+
+  const target = total * VALUE_AREA_PERCENT;
+  let included = bins[pocIndex].volume;
+  let left = pocIndex;
+  let right = pocIndex;
+
+  while (included < target && (left > 0 || right < bins.length - 1)) {
+    const leftVolume = left > 0 ? bins[left - 1].volume : -1;
+    const rightVolume = right < bins.length - 1 ? bins[right + 1].volume : -1;
+
+    if (rightVolume >= leftVolume) {
+      if (right < bins.length - 1) {
+        right++;
+        included += bins[right].volume;
+      } else if (left > 0) {
+        left--;
+        included += bins[left].volume;
+      }
+    } else {
+      if (left > 0) {
+        left--;
+        included += bins[left].volume;
+      } else if (right < bins.length - 1) {
+        right++;
+        included += bins[right].volume;
+      }
+    }
+  }
+
+  return {
+    bins,
+    poc: bins[pocIndex].center,
+    vah: bins[right].high,
+    val: bins[left].low,
+    pocIndex,
+    valueVolume: included,
+    totalVolume: total,
+    coveredPercent: included / total,
+    tradeCount: rows.length
+  };
+}
+
+function formatProfilePrice(price) {
+  if (!Number.isFinite(Number(price))) return "—";
+  return formatChartValue(Number(price));
+}
+
+function renderVolumeProfile() {
+  if (!chartInitialized || !candleSeries || !selectedMint) return;
+
+  const root = ensureVolumeProfileOverlay();
+  if (!root) return;
+
+  const profile = calculateVolumeProfile();
+  const rowsEl = root.querySelector(".vpRows");
+  const statsEl = root.querySelector(".vpStats");
+
+  if (!profile || !rowsEl) {
+    root.classList.remove("visible");
+    volumeProfileLast = null;
+    return;
+  }
+
+  root.classList.add("visible");
+
+  const maxVolume = Math.max(
+    ...profile.bins.map(bin => bin.volume),
+    0
+  );
+
+  rowsEl.innerHTML = profile.bins.map(bin => {
+    const y = candleSeries.priceToCoordinate(bin.center);
+    const bottom = candleSeries.priceToCoordinate(bin.low);
+    const top = candleSeries.priceToCoordinate(bin.high);
+
+    if (
+      !Number.isFinite(Number(y)) ||
+      !Number.isFinite(Number(bottom)) ||
+      !Number.isFinite(Number(top))
+    ) {
+      return "";
+    }
+
+    const height = Math.max(
+      2,
+      Math.abs(Number(bottom) - Number(top)) - 1
+    );
+    const width = maxVolume > 0
+      ? Math.max(2, (bin.volume / maxVolume) * 132)
+      : 2;
+
+    const inValueArea =
+      bin.low >= profile.val &&
+      bin.high <= profile.vah;
+
+    return (
+      '<div class="vpBar ' +
+      (inValueArea ? "vpBarValue" : "") +
+      '" style="' +
+      'top:' + (Number(y) - height / 2) + 'px;' +
+      'height:' + height + 'px;' +
+      'width:' + width + 'px;' +
+      '"></div>'
+    );
+  }).join("");
+
+  const placeLine = (selector, price) => {
+    const el = root.querySelector(selector);
+    if (!el) return;
+    const y = candleSeries.priceToCoordinate(price);
+    if (!Number.isFinite(Number(y))) {
+      el.style.display = "none";
+      return;
+    }
+    el.style.display = "block";
+    el.style.top = Number(y) + "px";
+  };
+
+  placeLine(".vpValueArea", profile.vah);
+  placeLine(".vpPoc", profile.poc);
+
+  const vahLabel = root.querySelector(".vpVahLabel");
+  const valLabel = root.querySelector(".vpValLabel");
+  const pocLabel = root.querySelector(".vpPocLabel");
+
+  if (vahLabel) {
+    const y = candleSeries.priceToCoordinate(profile.vah);
+    vahLabel.style.top = Number(y) + "px";
+    vahLabel.textContent = "VAH " + formatProfilePrice(profile.vah);
+  }
+
+  if (valLabel) {
+    const y = candleSeries.priceToCoordinate(profile.val);
+    valLabel.style.top = Number(y) + "px";
+    valLabel.textContent = "VAL " + formatProfilePrice(profile.val);
+  }
+
+  if (pocLabel) {
+    const y = candleSeries.priceToCoordinate(profile.poc);
+    pocLabel.style.top = Number(y) + "px";
+    pocLabel.textContent = "POC " + formatProfilePrice(profile.poc);
+  }
+
+  if (statsEl) {
+    statsEl.textContent =
+      "POC " + formatProfilePrice(profile.poc) +
+      " · VA " + formatProfilePrice(profile.val) +
+      "–" + formatProfilePrice(profile.vah) +
+      " · " + Math.round(profile.coveredPercent * 100) +
+      "% · " + profile.tradeCount.toLocaleString() + " trades";
+  }
+
+  volumeProfileLast = profile;
+}
+
+function scheduleVolumeProfileRender() {
+  if (volumeProfileRenderScheduled) return;
+  volumeProfileRenderScheduled = true;
+
+  requestAnimationFrame(() => {
+    volumeProfileRenderScheduled = false;
+    renderVolumeProfile();
+  });
+}
+\nfunction normalizeCandle(x) {
   if (!x) return null;
 
   const ts = Number(x.ts ?? x.timestamp ?? x.time);
