@@ -392,6 +392,49 @@ class PumpFunAdapter:
 
         return None, last_error or "PUMPFUN_COIN_UNAVAILABLE"
 
+    async def swap_candles(
+        self,
+        mint,
+        interval="5m",
+        fresh=False,
+    ):
+        """Fetch exact PumpSwap candles used by the current Pump.fun market."""
+        mint = (mint or "").strip()
+        interval = (
+            "1m"
+            if str(interval).lower() in {"1m", "1min", "1"}
+            else "5m"
+        )
+
+        key = ("swap_candles", mint, interval)
+        now = time.time()
+        cached = self._cache.get(key)
+
+        if (
+            not fresh
+            and cached
+            and now - cached["time"] < 0.75
+        ):
+            return cached["payload"], None
+
+        try:
+            response = await self._client.get(
+                f"{PUMP_SWAP_API}/v2/coins/{mint}/candles",
+                params={"interval": interval},
+            )
+
+            if response.status_code >= 400:
+                return None, f"HTTP_{response.status_code}"
+
+            payload = response.json()
+            self._cache[key] = {
+                "time": time.time(),
+                "payload": payload,
+            }
+            return payload, None
+        except Exception as exc:
+            return None, str(exc)[:240]
+
     async def swap_trades(
         self,
         mint,
