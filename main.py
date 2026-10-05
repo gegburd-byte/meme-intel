@@ -2758,7 +2758,17 @@ async def chart_ticker(mint: str):
             latest = recent[-1]
             price = float(latest.get("price") or 0)
             timestamp = int(latest.get("timestamp") or 0)
-            if price > 0 and timestamp > 0:
+
+            // Never let an old cached execution masquerade as a live tick.
+            // If the trade is stale, fall through to Pump.fun/PumpSwap quote
+            // recovery so the chart can still move with the current market.
+            trade_age = time.time() - timestamp if timestamp > 0 else float("inf")
+
+            if (
+                price > 0 &&
+                timestamp > 0 &&
+                trade_age <= 2.0
+            ):
                 data = {
                     "state": "READY",
                     "mint": mint,
@@ -2792,7 +2802,14 @@ async def chart_ticker(mint: str):
                 )
                 price = float(latest.get("price") or 0)
                 timestamp = int(latest.get("ts") or 0)
-                if price > 0 and timestamp > 0:
+                # The trade endpoint can return the last execution even
+                # when the market has been quiet. Do not turn that historical
+                # execution into a fake "live" chart tick.
+                if (
+                    price > 0 and
+                    timestamp > 0 and
+                    time.time() - timestamp <= 5.0
+                ):
                     return {
                         "state": "READY",
                         "mint": mint,
