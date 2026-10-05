@@ -12,6 +12,11 @@ from typing import Any
 import httpx
 import websockets
 
+try:
+    import socketio
+except ImportError:  # pragma: no cover
+    socketio = None
+
 
 HELIUS_WS = "wss://mainnet.helius-rpc.com/?api-key={key}"
 HELIUS_HTTP_RPC = "https://mainnet.helius-rpc.com/?api-key={key}"
@@ -709,8 +714,106 @@ class LiveTradeHub:
         ]
 
     async def _run_pumpfun_socket(self) -> None:
-        """Primary Pump.fun trade feed using raw Engine.IO/Socket.IO frames."""
-        backoff = 0.25
+        """Primary Pump.fun trade feed using a real Socket.IO client."""
+        if socketio is None:
+            await self._run_pumpfun_socket_raw()
+            return
+
+        backoff = 0.5
+
+        while self.clients:
+            sio = socketio.AsyncClient(
+                reconnection=False,
+                logger=False,
+                engineio_logger=False,
+            )
+
+            @sio.event
+            async def connect():
+                self.pumpfun_live = True
+                self.state = "LIVE"
+                self.last_error = ""
+                await self._status_all(
+                    "LIVE",
+                    "PUMP.FUN Socket.IO tradeCreated stream",
+                )
+
+                for event_name, payload in (
+                    ("subscribe", "tradeCreated"),
+                    ("subscribe", {"event": "tradeCreated"}),
+                    ("subscribe", {"type": "tradeCreated"}),
+                    ("join", "tradeCreated"),
+                    ("join", "trades"),
+                    ("subscribe", "all"),
+                ):
+                    try:
+                        await sio.emit(event_name, payload)
+                    except Exception:
+                        continue
+
+            @sio.event
+            async def disconnect():
+                self.pumpfun_live = False
+
+            @sio.on("tradeCreated")
+            async def trade_created(data):
+                try:
+                    raw = "42" + json.dumps(["tradeCreated", data], separators=(",", ":"))
+                    trade = parse_pumpfun_socket_trade(raw)
+                except Exception:
+                    trade = None
+
+                if not trade:
+                    return
+
+                mint = str(trade.get("mint") or "").strip()
+                if not mint or mint not in self.clients:
+                    return
+
+                await self.publish_external_trade(mint, trade)
+
+            try:
+                await sio.connect(
+                    "https://frontend-api-v3.pump.fun",
+                    socketio_path="socket.io",
+                    transports=["websocket"],
+                    headers={
+                        "Origin": "https://pump.fun",
+                        "Referer": "https://pump.fun/",
+                        "User-Agent": "Meme-Intel/3.0",
+                    },
+                    wait=True,
+                    wait_timeout=8,
+                )
+                backoff = 0.5
+                await sio.wait()
+            except asyncio.CancelledError:
+                try:
+                    await sio.disconnect()
+                except Exception:
+                    pass
+                self.pumpfun_live = False
+                raise
+            except Exception as exc:
+                self.pumpfun_live = False
+                self.last_error = "PUMP_FUN_SOCKETIO:" + str(exc)[:260]
+                if self.clients:
+                    await self._status_all("RECONNECTING", self.last_error)
+                    await asyncio.sleep(backoff)
+                    backoff = min(5.0, backoff * 1.6)
+            finally:
+                try:
+                    if sio.connected:
+                        await sio.disconnect()
+                except Exception:
+                    pass
+                self.pumpfun_live = False
+
+        self.pumpfun_live = False
+
+    async def _run_pumpfun_socket_raw(self) -> None:
+        """Fallback Engine.IO implementation."""
+        backoff = 0.5
 
         while self.clients:
             try:
@@ -725,78 +828,45 @@ class LiveTradeHub:
                     self.pumpfun_live = True
                     self.state = "LIVE"
                     self.last_error = ""
-
-                    await self._status_all(
-                        "LIVE",
-                        "PUMP.FUN native tradeCreated stream",
-                    )
-
-                    backoff = 0.25
+                    await self._status_all("LIVE", "PUMP.FUN raw Socket.IO fallback")
+                    backoff = 0.5
 
                     async for raw in ws:
                         if not isinstance(raw, str):
                             continue
-
                         if raw.startswith("0"):
                             await ws.send("40")
                             continue
-
                         if raw.startswith("40"):
                             for frame in PUMP_FUN_SUBSCRIBE_FRAMES:
                                 await ws.send(frame)
                             continue
-
                         if raw == "2" or raw.startswith("2"):
                             await ws.send("3")
                             continue
-
                         if not raw.startswith("42"):
                             continue
-
                         trade = parse_pumpfun_socket_trade(raw)
-
                         if not trade:
                             continue
-
-                        mint = str(
-                            trade.get("mint") or ""
-                        )
-
+                        mint = str(trade.get("mint") or "").strip()
                         if mint not in self.clients:
                             continue
-
-                        await self.publish_external_trade(
-                            mint,
-                            trade,
-                        )
-
+                        await self.publish_external_trade(mint, trade)
             except asyncio.CancelledError:
                 self.pumpfun_live = False
                 raise
             except Exception as exc:
                 self.pumpfun_live = False
-                self.last_error = (
-                    "PUMP_FUN_SOCKETIO:" +
-                    str(exc)[:260]
-                )
-
+                self.last_error = "PUMP_FUN_RAW_SOCKETIO:" + str(exc)[:260]
                 if self.clients:
-                    await self._status_all(
-                        "RECONNECTING",
-                        self.last_error,
-                    )
-                    await asyncio.sleep(
-                        backoff
-                    )
-                    backoff = min(
-                        5.0,
-                        backoff * 1.7
-                    )
+                    await self._status_all("RECONNECTING", self.last_error)
+                    await asyncio.sleep(backoff)
+                    backoff = min(5.0, backoff * 1.6)
             finally:
                 self.pumpfun_live = False
 
         self.pumpfun_live = False
-
     async def _recovery_loop(self, mint: str) -> None:
         """Low-rate Helius safety net for a silent/malformed websocket path."""
         initialized = False
