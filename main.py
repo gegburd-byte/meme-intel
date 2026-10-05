@@ -699,7 +699,13 @@ def closed_candles(candles, seconds_per_candle):
 async def index():
     return FileResponse(
         Path(__file__).with_name("static")
-        / "index.html"
+        / "index.html",
+        headers={
+            # The HTML chooses a fingerprinted app.js bundle. Never let a
+            # stale cached HTML keep pointing at an older chart bundle.
+            "Cache-Control": "no-store, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+        },
     )
 
 
@@ -2225,10 +2231,20 @@ async def chart_history(
     else:
         native_task = None
 
+    native_fallback_rows = []
+    native_fallback_err = None
+    strong_min_bars = min(limit, 12)
+
     if native_task is not None:
         native_source, native_rows, native_err = await native_task
+        native_fallback_rows = native_rows or []
+        native_fallback_err = native_err
 
-        if native_rows:
+        # Do not accept a broken/truncated Pump.fun native response merely
+        # because it contains one candle. That was the source of the "one bar
+        # then nothing" chart: a tiny native response cancelled the richer
+        # Pump.fun trade/PumpSwap fallbacks before they could render.
+        if native_rows and len(native_rows) >= strong_min_bars:
             payload = {
                 "state": "READY",
                 "source": "PUMP.FUN",
@@ -2261,49 +2277,110 @@ async def chart_history(
             return payload
 
     fallback_errors = []
+    fallback_candidates = []
+    fallback_tasks = [t for t in tasks if t is not native_task]
 
-    for task in asyncio.as_completed(
-        [t for t in tasks if t is not native_task]
-    ):
-        try:
-            source, rows, err = await task
-        except Exception as exc:
-            fallback_errors.append(str(exc)[:180])
-            continue
+    # The fallback providers start in parallel with native history. If native
+    # is weak/truncated, give the exact-venue trade history / on-chain
+    # PumpSwap paths a short window to return a materially richer history.
+    # Choose the richest valid result instead of whichever provider happens to
+    # answer first.
+    try:
+        for task in asyncio.as_completed(
+            fallback_tasks,
+            timeout=3.0,
+        ):
+            try:
+                source, rows, err = await task
+            except Exception as exc:
+                fallback_errors.append(str(exc)[:180])
+                continue
 
-        if rows and chart_data_quality(rows, minimum_bars=1) > 0:
-            payload = {
-                "state": "READY",
-                "source": source,
-                "candles": [
-                    {
-                        "ts": c.ts,
-                        "o": c.o,
-                        "h": c.h,
-                        "l": c.l,
-                        "c": c.c,
-                        "v": c.v,
-                    }
-                    for c in sorted(rows, key=lambda x: x.ts)[-limit:]
-                ],
-                "error": None,
-                "timestamp": int(time.time()),
-            }
+            if rows and chart_data_quality(rows, minimum_bars=1) > 0:
+                priority = {
+                    "PUMP.FUN TRADE HISTORY": 3,
+                    "PUMPSWAP ONSHAIN": 2,
+                    "HELIUS_ONCHAIN_TRADES": 1,
+                }.get(source, 0)
 
-            for other in tasks:
-                if not other.done():
-                    other.cancel()
+                fallback_candidates.append(
+                    (len(rows), priority, source, rows, err)
+                )
 
-            await asyncio.gather(*tasks, return_exceptions=True)
+                if len(rows) < strong_min_bars and err:
+                    fallback_errors.append(str(err)[:180])
+            else:
+                fallback_errors.append(str(err or source)[:180])
+    except asyncio.TimeoutError:
+        fallback_errors.append("FALLBACK_HISTORY_WINDOW_TIMEOUT")
+    finally:
+        for task in fallback_tasks:
+            if not task.done():
+                task.cancel()
 
-            chart_history._cache = getattr(chart_history, "_cache", {})
-            chart_history._cache[cache_key] = {
-                "time": time.time(),
-                "payload": payload,
-            }
-            return payload
+        await asyncio.gather(
+            *fallback_tasks,
+            return_exceptions=True,
+        )
 
-        fallback_errors.append(str(err or source)[:180])
+    if fallback_candidates:
+        _, _, source, rows, _ = max(
+            fallback_candidates,
+            key=lambda item: (item[0], item[1]),
+        )
+
+        payload = {
+            "state": "READY",
+            "source": source,
+            "candles": [
+                {
+                    "ts": c.ts,
+                    "o": c.o,
+                    "h": c.h,
+                    "l": c.l,
+                    "c": c.c,
+                    "v": c.v,
+                }
+                for c in sorted(rows, key=lambda x: x.ts)[-limit:]
+            ],
+            "error": None,
+            "timestamp": int(time.time()),
+        }
+
+        chart_history._cache = getattr(chart_history, "_cache", {})
+        chart_history._cache[cache_key] = {
+            "time": time.time(),
+            "payload": payload,
+        }
+        return payload
+
+    # A tiny native response can still be legitimate for a brand-new token.
+    # Keep it as the last-resort chart rather than making the UI blank.
+    if native_fallback_rows:
+        payload = {
+            "state": "READY",
+            "source": "PUMP.FUN",
+            "candles": [
+                {
+                    "ts": c.ts,
+                    "o": c.o,
+                    "h": c.h,
+                    "l": c.l,
+                    "c": c.c,
+                    "v": c.v,
+                }
+                for c in sorted(native_fallback_rows, key=lambda x: x.ts)[-limit:]
+            ],
+            "error": native_fallback_err,
+            "timestamp": int(time.time()),
+        }
+
+        chart_history._cache = getattr(chart_history, "_cache", {})
+        chart_history._cache[cache_key] = {
+            "time": time.time(),
+            "payload": payload,
+        }
+        return payload
 
     # Never cache a transient empty result. Upstream timeouts/auth failures and
     # very new tokens can resolve moments later; caching an empty payload here
