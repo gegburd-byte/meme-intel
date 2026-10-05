@@ -2050,6 +2050,28 @@ function renderSecurity(data) {
     '</b></div>';
 }
 
+function hasFreshMarketTick(maxAgeMs = 2000) {
+  return (
+    lastLiveTickerAtMs > 0 &&
+    Date.now() - lastLiveTickerAtMs < maxAgeMs
+  );
+}
+
+function showLiveMarketStatus(detail = "LIVE MARKET") {
+  $("chartMode").textContent =
+    detail +
+    " · " +
+    timeframeLabel() +
+    " · LIVE";
+
+  setSource(
+    "dotChart",
+    "chartState",
+    "LIVE",
+    ["LIVE","READY"]
+  );
+}
+
 function renderChart(candles, fit = false) {
   const cleanCandles = sanitizeChartCandles(candles);
 
@@ -2123,13 +2145,20 @@ function renderChart(candles, fit = false) {
     lastLiveTradeReceivedAtMs > 0 &&
     Date.now() - lastLiveTradeReceivedAtMs < 5000;
 
+  const hasRecentTicker =
+    hasFreshMarketTick(3000);
+
+  const chartIsLive =
+    hasRecentTrade ||
+    hasRecentTicker;
+
   $("chartState").textContent =
-    hasRecentTrade ? "LIVE" : "WAITING FOR TRADES";
+    chartIsLive ? "LIVE" : "WAITING FOR TRADES";
 
   setSource(
     "dotChart",
     "chartState",
-    hasRecentTrade ? "LIVE" : "READY",
+    chartIsLive ? "LIVE" : "READY",
     ["LIVE","READY"]
   );
 
@@ -2231,7 +2260,7 @@ function scheduleLiveIndicatorRender() {
   });
 }
 
-function updateRealtimeChart(candle) {
+function updateRealtimeChart(candle, timestampMs = null) {
   if (!candle || !candleSeries) return;
 
   // The price/OHLC path is intentionally synchronous so the visible candle
@@ -2257,9 +2286,13 @@ function updateRealtimeChart(candle) {
 
   updateActivePrice(
     candle.c,
-    lastLiveTradeReceivedAtMs || (
-      Number(candle.time || 0) * 1000
-    ) || Date.now()
+    Number.isFinite(Number(timestampMs)) && Number(timestampMs) > 0
+      ? Number(timestampMs)
+      : (
+          lastLiveTradeReceivedAtMs || (
+            Number(candle.time || 0) * 1000
+          ) || Date.now()
+        )
   );
 
   $("historyStatus").textContent =
@@ -3257,11 +3290,17 @@ async function pollLivePrice() {
   } catch {}
 }
 
-function applyLiveMarketTick(price, timestampSec, source = "MARKET QUOTE") {
+function applyLiveMarketTick(
+  price,
+  timestampSec,
+  source = "MARKET QUOTE",
+  timestampMs = null
+) {
   if (!selectedMint || !chartInitialized) return;
 
   price = Number(price);
   timestampSec = Number(timestampSec);
+  timestampMs = Number(timestampMs);
 
   if (
     !Number.isFinite(price) ||
@@ -3271,6 +3310,11 @@ function applyLiveMarketTick(price, timestampSec, source = "MARKET QUOTE") {
   ) {
     return;
   }
+
+  const effectiveTimestampMs =
+    Number.isFinite(timestampMs) && timestampMs > 0
+      ? timestampMs
+      : timestampSec * 1000;
 
   // Real decoded trades remain authoritative for a short window. The ticker
   // only fills the gap when the event transport is silent.
@@ -3295,7 +3339,7 @@ function applyLiveMarketTick(price, timestampSec, source = "MARKET QUOTE") {
       Math.max(Math.abs(price) * 1e-10, Number.EPSILON)
   ) {
     lastLiveTickerAtMs = Date.now();
-    updateActivePrice(price, timestampSec * 1000);
+    updateActivePrice(price, effectiveTimestampMs);
     return;
   }
 
@@ -3343,7 +3387,7 @@ function applyLiveMarketTick(price, timestampSec, source = "MARKET QUOTE") {
   lastLiveTickerAtMs = Date.now();
   historyBarsLoaded = selectedCandles.length;
 
-  updateActivePrice(price, timestampSec * 1000);
+  updateActivePrice(price, effectiveTimestampMs);
 
   // Feed the same current-minute bar into the indicator engine. This makes
   // EMA/RSI/VWAP/ATR/signal cards react immediately even when the trade event
@@ -3362,7 +3406,7 @@ function applyLiveMarketTick(price, timestampSec, source = "MARKET QUOTE") {
     l: Number(bar.l),
     c: Number(bar.c),
     v: Number(bar.v || 0)
-  });
+  }, effectiveTimestampMs);
 
   $("chartMode").textContent =
     source + " · " +
@@ -3404,6 +3448,7 @@ async function pollLiveTicker() {
 
     const price = Number(data.price);
     const timestamp = Number(data.timestamp);
+    const timestampMs = Number(data.timestamp_ms);
 
     if (
       Number.isFinite(price) &&
@@ -3420,7 +3465,10 @@ async function pollLiveTicker() {
       applyLiveMarketTick(
         price,
         timestamp,
-        String(data.source || "LIVE MARKET")
+        String(data.source || "LIVE MARKET"),
+        Number.isFinite(timestampMs) && timestampMs > 0
+          ? timestampMs
+          : timestamp * 1000
       );
     }
   } catch {
@@ -3805,7 +3853,19 @@ function connectNativePumpFunTrades(mint) {
     socket.addEventListener("close",() => {
       if (socket !== pumpFunNativeTradeSocket) return;
       pumpFunNativeTradeSocket = null;
-      $("chartMode").textContent = "RECONNECTING PUMP.FUN LIVE FEED…";
+
+      if (hasFreshMarketTick()) {
+        showLiveMarketStatus("LIVE MARKET TICK");
+      } else {
+        $("chartMode").textContent = "RECONNECTING PUMP.FUN LIVE FEED…";
+        setSource(
+          "dotChart",
+          "chartState",
+          "RECONNECTING",
+          ["LIVE","READY","CONNECTING"]
+        );
+      }
+
       scheduleNativePumpFunReconnect(mint);
     });
 
@@ -4021,15 +4081,19 @@ function connectLiveTrade(mint) {
 
       liveTradeSocket = null;
 
-      setSource(
-        "dotChart",
-        "chartState",
-        "RECONNECTING",
-        ["LIVE","READY","CONNECTING"]
-      );
+      if (hasFreshMarketTick()) {
+        showLiveMarketStatus("LIVE MARKET TICK");
+      } else {
+        setSource(
+          "dotChart",
+          "chartState",
+          "RECONNECTING",
+          ["LIVE","READY","CONNECTING"]
+        );
 
-      $("chartMode").textContent =
-        "RECONNECTING LIVE FEED…";
+        $("chartMode").textContent =
+          "RECONNECTING LIVE FEED…";
+      }
 
       scheduleReconnect();
     });
