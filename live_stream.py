@@ -438,6 +438,8 @@ class LiveTradeHub:
         self._pending_tasks: set[asyncio.Task[Any]] = set()
         self._subscribed_addresses: dict[str, set[str]] = defaultdict(set)
         self._pending_addresses: dict[str, set[str]] = defaultdict(set)
+        self._global_subscription_ids: set[int] = set()
+        self._global_pending_request_ids: set[int] = set()
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(2.5, connect=1.0),
             limits=httpx.Limits(max_connections=16, max_keepalive_connections=8),
@@ -1218,6 +1220,121 @@ class LiveTradeHub:
         finally:
             self._pending_resolutions.discard(key)
 
+    def _transaction_account_keys(self, transaction: dict[str, Any]) -> set[str]:
+        keys: set[str] = set()
+        tx = transaction or {}
+        message = ((tx.get("transaction") or {}).get("message") or {})
+
+        for key in message.get("accountKeys") or []:
+            if isinstance(key, str):
+                keys.add(key)
+            elif isinstance(key, dict):
+                value = key.get("pubkey") or key.get("address")
+                if value:
+                    keys.add(str(value))
+
+        loaded = ((tx.get("meta") or {}).get("loadedAddresses") or {})
+        for key in (loaded.get("writable") or []) + (loaded.get("readonly") or []):
+            if key:
+                keys.add(str(key))
+
+        return keys
+
+    def _candidate_mints_for_transaction(
+        self,
+        transaction: dict[str, Any],
+    ) -> list[str]:
+        account_keys = self._transaction_account_keys(transaction)
+        meta = transaction.get("meta") or {}
+        balance_mints: set[str] = set()
+
+        for field in ("preTokenBalances", "postTokenBalances"):
+            for row in meta.get(field) or []:
+                if isinstance(row, dict) and row.get("mint"):
+                    balance_mints.add(str(row["mint"]))
+
+        candidates: list[str] = []
+        for mint in list(self.clients):
+            watched = set(self.watch_addresses.get(mint) or {mint})
+            if mint in account_keys or watched.intersection(account_keys) or mint in balance_mints:
+                candidates.append(mint)
+
+        return candidates
+
+    async def _resolve_global_signature(
+        self,
+        signature: str,
+        slot: int | None = None,
+    ) -> None:
+        """Resolve one Pump/PumpAMM transaction and route it to selected mints."""
+        if not signature or not self.clients or not self.api_key:
+            return
+
+        key = ("__GLOBAL__", signature)
+        if key in self._pending_resolutions:
+            return
+
+        self._pending_resolutions.add(key)
+        try:
+            transaction = None
+
+            async with self._resolve_semaphore:
+                for commitment, delay in (
+                    ("processed", 0.0),
+                    ("confirmed", 0.10),
+                ):
+                    if delay:
+                        await asyncio.sleep(delay)
+
+                    response = await self._http.post(
+                        HELIUS_HTTP_RPC.format(key=self.api_key),
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": f"meme-intel-global-{signature[:12]}-{commitment}",
+                            "method": "getTransaction",
+                            "params": [
+                                signature,
+                                {
+                                    "encoding": "jsonParsed",
+                                    "commitment": commitment,
+                                    "maxSupportedTransactionVersion": 1,
+                                },
+                            ],
+                        },
+                    )
+
+                    if response.status_code >= 400:
+                        continue
+
+                    payload = response.json()
+                    candidate = payload.get("result")
+                    if isinstance(candidate, dict):
+                        transaction = candidate
+                        break
+
+            if not isinstance(transaction, dict):
+                return
+
+            for mint in self._candidate_mints_for_transaction(transaction):
+                trade = parse_live_trade_from_transaction(
+                    transaction,
+                    mint,
+                    signature=signature,
+                    slot=slot or transaction.get("slot"),
+                    block_time=transaction.get("blockTime"),
+                )
+                if trade and self.remember_trade(mint, trade):
+                    await self._broadcast(mint, {
+                        "type": "trade",
+                        "trade": trade,
+                    })
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error = str(exc)[:300]
+        finally:
+            self._pending_resolutions.discard(key)
+
     async def _send(self, payload: dict[str, Any]) -> None:
         if self.ws is None:
             return
@@ -1359,6 +1476,8 @@ class LiveTradeHub:
                     self.subscription_to_mint.clear()
                     self._subscription_address.clear()
                     self.pending.clear()
+                    self._global_subscription_ids.clear()
+                    self._global_pending_request_ids.clear()
 
                     await self._status_all(
                         "LIVE",
@@ -1372,6 +1491,26 @@ class LiveTradeHub:
 
                     for mint in list(self.clients):
                         await self._subscribe_when_ready(mint)
+
+                    if self.stream_mode == "STANDARD":
+                        # Program-level log subscriptions are the hard
+                        # fallback for graduated PumpSwap tokens. Pool-account
+                        # notifications are not guaranteed to arrive with the
+                        # trade transaction, while the Pump/PumpAMM program log
+                        # always exists on a successful swap.
+                        for program in (PUMP_PROGRAM, PUMP_AMM_PROGRAM):
+                            request_id = self.request_id
+                            self.request_id += 1
+                            self._global_pending_request_ids.add(request_id)
+                            await self._send({
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "method": "logsSubscribe",
+                                "params": [
+                                    {"mentions": [program]},
+                                    {"commitment": "processed"},
+                                ],
+                            })
 
                     async for raw in ws:
                         try:
@@ -1406,8 +1545,20 @@ class LiveTradeHub:
                             continue
 
                         if "id" in message and "result" in message:
+                            message_id = int(message["id"])
+
+                            if message_id in self._global_pending_request_ids:
+                                try:
+                                    self._global_subscription_ids.add(
+                                        int(message["result"])
+                                    )
+                                except (TypeError, ValueError):
+                                    pass
+                                self._global_pending_request_ids.discard(message_id)
+                                continue
+
                             pending_subscription = self.pending.pop(
-                                int(message["id"]),
+                                message_id,
                                 None,
                             )
                             if pending_subscription:
@@ -1434,6 +1585,32 @@ class LiveTradeHub:
 
                         params = message.get("params") or {}
                         subscription = params.get("subscription")
+
+                        if (
+                            message.get("method") == "logsNotification"
+                            and subscription in self._global_subscription_ids
+                        ):
+                            result = ((params.get("result") or {}).get("value") or {})
+                            if result.get("err") is not None:
+                                continue
+
+                            signature = str(result.get("signature") or "")
+                            slot = (
+                                (params.get("result") or {})
+                                .get("context", {})
+                                .get("slot")
+                            )
+                            if signature:
+                                task = asyncio.create_task(
+                                    self._resolve_global_signature(
+                                        signature,
+                                        slot=slot,
+                                    )
+                                )
+                                self._pending_tasks.add(task)
+                                task.add_done_callback(self._pending_tasks.discard)
+                            continue
+
                         mint = self.subscription_to_mint.get(subscription)
                         if not mint:
                             continue
@@ -1520,6 +1697,8 @@ class LiveTradeHub:
                 self.subscription_to_mint.clear()
                 self._subscription_address.clear()
                 self.pending.clear()
+                self._global_subscription_ids.clear()
+                self._global_pending_request_ids.clear()
 
                 if self.clients:
                     self.state = "RECONNECTING"
