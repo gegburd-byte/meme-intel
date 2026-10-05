@@ -70,6 +70,7 @@ let chartHistoryRetryGeneration = 0;
 let liveTradeBackoff = 500;
 let liveTradeWatchdogTimer = null;
 let lastLiveTradeAtMs = 0;
+let lastLiveTradeReceivedAtMs = 0;
 let lastRenderedCandleTime = 0;
 
 const PAGE_SIZE = 30;
@@ -2115,8 +2116,19 @@ function renderChart(candles, fit = false) {
     (livePreviewActive ? " · LIVE" : " CANDLES") +
     " · " + candles.length + " BARS";
 
-  $("chartState").textContent = "LIVE";
-  setSource("dotChart","chartState","LIVE",["LIVE","READY"]);
+  const hasRecentTrade =
+    lastLiveTradeReceivedAtMs > 0 &&
+    Date.now() - lastLiveTradeReceivedAtMs < 5000;
+
+  $("chartState").textContent =
+    hasRecentTrade ? "LIVE" : "WAITING FOR TRADES";
+
+  setSource(
+    "dotChart",
+    "chartState",
+    hasRecentTrade ? "LIVE" : "READY",
+    ["LIVE","READY"]
+  );
 
   $("historyStatus").textContent =
     historyBarsLoaded.toLocaleString() + " bars";
@@ -2242,7 +2254,9 @@ function updateRealtimeChart(candle) {
 
   updateActivePrice(
     candle.c,
-    Date.now()
+    lastLiveTradeReceivedAtMs || (
+      Number(candle.time || 0) * 1000
+    ) || Date.now()
   );
 
   $("historyStatus").textContent =
@@ -3157,6 +3171,7 @@ function applyLiveTrade(rawTrade, record = true) {
   }
 
   lastLiveTradeAtMs = Date.now();
+  lastLiveTradeReceivedAtMs = Date.now();
 
   const recordedTrade = (
     record &&
