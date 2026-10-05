@@ -1511,9 +1511,16 @@ async def ws_trades(websocket: WebSocket):
             if task and not task.done():
                 task.cancel()
 
-            rest_task = _live_rest_tasks.pop(mint, None)
-            if rest_task and not rest_task.done():
-                rest_task.cancel()
+            # The HTTP chart lane can keep a selected token alive even after
+            # the browser WebSocket closes. Only kill the sampler when nobody
+            # has requested the token for the keepalive window.
+            if (
+                time.monotonic() - _live_feed_last_seen.get(mint, 0.0)
+                >= 12.0
+            ):
+                rest_task = _live_rest_tasks.pop(mint, None)
+                if rest_task and not rest_task.done():
+                    rest_task.cancel()
 
 
 def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
