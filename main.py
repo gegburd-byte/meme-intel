@@ -2599,7 +2599,12 @@ async def chart_current(
     live = trade_hub.current_candle(
         mint,
         timeframe=live_timeframe,
-        max_age_seconds=2,
+        # Keep the last decoded execution authoritative long enough for the
+        # HTTP reconciliation lane to catch up. A 2-second cutoff let a
+        # slightly delayed Pump.fun/PumpSwap trade disappear and caused the
+        # endpoint to fall back to a stale native candle, visibly freezing or
+        # snapping the live bar backward.
+        max_age_seconds=10,
     )
     if live:
         return {
