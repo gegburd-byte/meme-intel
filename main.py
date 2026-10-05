@@ -2759,9 +2759,9 @@ async def chart_ticker(mint: str):
             price = float(latest.get("price") or 0)
             timestamp = int(latest.get("timestamp") or 0)
 
-            // Never let an old cached execution masquerade as a live tick.
-            // If the trade is stale, fall through to Pump.fun/PumpSwap quote
-            // recovery so the chart can still move with the current market.
+            # Never let an old cached execution masquerade as a live tick.
+            # If the trade is stale, fall through to Pump.fun/PumpSwap quote
+            # recovery so the chart can still move with the current market.
             trade_age = time.time() - timestamp if timestamp > 0 else float("inf")
 
             if (
