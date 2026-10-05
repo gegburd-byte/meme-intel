@@ -2418,9 +2418,7 @@ async def chart_history(
 
 @app.get("/api/chart/current")
 async def chart_current(
-    mint:     await ensure_live_feed(mint)
-
-str,
+    mint: str,
     timeframe: str = "1m",
     interval: str | None = None,
 ):
