@@ -304,8 +304,8 @@ def test_live_trade_hub_account_subscription_targets_exact_market_account():
     )
 
     assert sent
-    assert sent[0]["method"] == "accountSubscribe"
-    assert sent[0]["params"][0] == "pool-address"
+    assert sent[0]["method"] == "logsSubscribe"
+    assert sent[0]["params"][0]["mentions"] == ["pool-address"]
     assert sent[0]["params"][1]["commitment"] == "processed"
 
 
