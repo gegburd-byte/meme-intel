@@ -399,7 +399,7 @@ class PumpFunAdapter:
         cursor=0,
         fresh=False,
     ):
-        """Fast Pump.fun/PumpSwap trade feed used only for live chart recovery."""
+        """Return the newest exact Pump.fun/PumpSwap trades for live recovery."""
         mint = (mint or "").strip()
         limit = max(1, min(int(limit or 25), 100))
         cursor = max(0, int(cursor or 0))
@@ -410,11 +410,8 @@ class PumpFunAdapter:
         if not fresh and cached and now - cached["time"] < 0.20:
             return cached["payload"], None
 
-        # Pump.fun's current swap API accepts a creation timestamp for the
-        # coin being queried. It is NOT a "last 90 seconds" filter. The old
-        # implementation sent now-90s here, which makes every older token
-        # return an empty live page and freezes the chart indefinitely.
         created_ts_ms = None
+        is_graduated = False
         try:
             coin_payload, _ = await self.coin(mint, fresh=False)
 
@@ -429,6 +426,15 @@ class PumpFunAdapter:
                 return {}
 
             coin = unwrap_coin(coin_payload)
+            is_graduated = bool(
+                coin.get("complete")
+                or coin.get("is_complete")
+                or coin.get("isComplete")
+                or coin.get("pump_swap_pool")
+                or coin.get("pumpSwapPool")
+                or coin.get("pumpSwapPoolAddress")
+            )
+
             for field in (
                 "created_timestamp",
                 "createdTimestamp",
@@ -441,10 +447,14 @@ class PumpFunAdapter:
                 if raw_created is None:
                     continue
                 value = int(float(raw_created))
-                created_ts_ms = value * 1000 if value < 10_000_000_000 else value
+                created_ts_ms = (
+                    value * 1000
+                    if value < 10_000_000_000
+                    else value
+                )
                 break
         except (TypeError, ValueError, OverflowError):
-            created_ts_ms = None
+            coin = {}
 
         def variant(program, include_created=True):
             params = {
@@ -455,24 +465,34 @@ class PumpFunAdapter:
                 params["createdTs"] = created_ts_ms
             return params
 
-        # Keep the exact current Pump.fun/PumpSwap program names first, then
-        # retain compatibility selectors for older swap-api deployments.
+        # Graduated coins trade on PumpAMM/PumpSwap, not the old bonding
+        # curve. Prefer the AMM program first so a non-empty historical
+        # bonding-curve response can never mask the actual live venue.
+        if is_graduated:
+            program_order = (
+                "pump-amm",
+                "pumpswap",
+                "pump_swap",
+                "pump",
+            )
+        else:
+            program_order = (
+                "pump",
+                "pump-amm",
+                "pumpswap",
+                "pump_swap",
+            )
+
         query_variants = [
-            variant("pump"),
-            variant("pump-amm"),
-            variant("pump_amm"),
-            variant("pumpswap"),
-            variant("pump_swap"),
+            variant(program)
+            for program in program_order
         ]
 
-        # If the coin endpoint did not expose creation time, retry the
-        # canonical program selectors without createdTs rather than inventing
-        # a timestamp that can silently exclude all live trades.
         if not created_ts_ms:
-            query_variants.extend([
-                variant("pump", include_created=False),
-                variant("pump-amm", include_created=False),
-            ])
+            query_variants.extend(
+                variant(program, include_created=False)
+                for program in program_order
+            )
 
         hosts = (
             PUMP_SWAP_API,
@@ -523,63 +543,28 @@ class PumpFunAdapter:
             except Exception as exc:
                 return None, str(exc)
 
-        # Ask for the two real Pump venues in parallel. This avoids waiting
-        # through several empty selector attempts when a coin has graduated
-        # from the bonding curve to PumpSwap.
-        primary_variants = query_variants[:2]
+        # Ask the preferred exact venue first. For a graduated token this is
+        # PumpAMM; for a bonding-curve token this is Pump. Do not accept a
+        # lower-priority program just because it answers a few milliseconds
+        # sooner.
+        preferred_variants = [
+            query_variants[0],
+            query_variants[1],
+        ]
+
         for host in hosts:
-            tasks = [
-                asyncio.create_task(
-                    request_variant(host, extra)
-                )
-                for extra in primary_variants
-            ]
+            for extra in preferred_variants:
+                payload, err = await request_variant(host, extra)
+                if payload is not None:
+                    self._cache[key] = {
+                        "time": time.time(),
+                        "payload": payload,
+                    }
+                    return payload, None
+                if err:
+                    last_error = err
 
-            try:
-                pending = set(tasks)
-                deadline = asyncio.get_running_loop().time() + 0.55
-
-                while pending:
-                    remaining = max(
-                        0.01,
-                        deadline - asyncio.get_running_loop().time(),
-                    )
-                    done, pending = await asyncio.wait(
-                        pending,
-                        timeout=remaining,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-
-                    for task in done:
-                        payload, err = task.result()
-                        if payload is not None:
-                            for other in pending:
-                                other.cancel()
-                            await asyncio.gather(
-                                *pending,
-                                return_exceptions=True,
-                            )
-                            self._cache[key] = {
-                                "time": time.time(),
-                                "payload": payload,
-                            }
-                            return payload, None
-                        if err:
-                            last_error = err
-
-                    if pending and not done:
-                        break
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(
-                    *tasks,
-                    return_exceptions=True,
-                )
-
-            # Rare/current-server compatibility selectors. These are slower
-            # fallbacks only after both primary venue requests failed.
+            # Compatibility selectors only after the preferred venue failed.
             for extra in query_variants[2:]:
                 payload, err = await request_variant(host, extra)
                 if payload is not None:
