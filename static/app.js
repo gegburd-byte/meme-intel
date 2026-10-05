@@ -3285,6 +3285,20 @@ function applyLiveMarketTick(price, timestampSec, source = "MARKET QUOTE") {
   const bucket = Math.floor(timestampSec / span) * span;
   let bar = selectedCandles[selectedCandles.length - 1];
 
+  // Do not re-render the chart/indicators when the upstream quote has not
+  // changed. This lets us poll aggressively without wasting a frame on the
+  // same price, while a real price change still paints immediately.
+  if (
+    bar &&
+    Number(bar.time || 0) === bucket &&
+    Math.abs(Number(bar.c || 0) - price) <=
+      Math.max(Math.abs(price) * 1e-10, Number.EPSILON)
+  ) {
+    lastLiveTickerAtMs = Date.now();
+    updateActivePrice(price, timestampSec * 1000);
+    return;
+  }
+
   if (!bar || bucket > Number(bar.time || 0)) {
     const open = bar && Number(bar.c) > 0
       ? Number(bar.c)
@@ -3424,7 +3438,7 @@ function startLiveTicker() {
 
   liveTickerTimer = setInterval(
     pollLiveTicker,
-    700
+    250
   );
 
   pollLiveTicker();
