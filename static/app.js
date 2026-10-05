@@ -3761,7 +3761,7 @@ function startLiveTicker() {
 
   liveTickerTimer = setInterval(
     pollLiveTicker,
-    250
+    100
   );
 
   pollLiveTicker();
@@ -3836,7 +3836,7 @@ function startLiveTradeCachePoll() {
     ) {
       syncLiveTradeCache();
     }
-  },300);
+  },150);
 
   liveTradeWatchdogTimer = setInterval(() => {
     if (
