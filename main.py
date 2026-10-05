@@ -1353,11 +1353,11 @@ async def live_rest_trade_loop(mint: str) -> None:
                 published_trade = True
 
 
-            await asyncio.sleep(
-                0.75
-                if trade_hub.pumpfun_live
-                else 0.20
-            )
+            # Keep the exact-venue recovery lane hot even when the
+            # Pump.fun Socket.IO connection reports healthy. Graduated coins
+            # use PumpAMM, which is not guaranteed to arrive on the native
+            # bonding-curve tradeCreated stream.
+            await asyncio.sleep(0.20)
 
     except asyncio.CancelledError:
         raise
@@ -1614,7 +1614,7 @@ async def chart_live_trades(mint: str, limit: int = 200):
     now_sec = int(time.time())
     live_lane_stale = (
         latest_server_trade <= 0
-        or now_sec - latest_server_trade >= 2
+        or now_sec - latest_server_trade >= 0.75
     )
 
     if live_lane_stale:
