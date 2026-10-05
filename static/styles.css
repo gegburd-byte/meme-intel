@@ -104,3 +104,126 @@ input:focus{border-color:#41617d}
 .safetyCheck b{display:block;font-size:10px}.safetyCheck span{display:block;color:#778aa0;font-size:9px;margin-top:2px}
 .safetyMethod{margin-top:9px;color:#5f7185;font-size:8px}
 @media(max-width:900px){.safetyTop{flex-direction:column}.safetyNumbers{width:100%}.safetyNumber{text-align:left;flex:1}.safetyChecks{grid-template-columns:1fr}}
+
+
+/* Live volume-profile overlay */
+#chart {
+  position: relative;
+}
+
+.volumeProfile {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  display: none;
+  overflow: hidden;
+}
+
+.volumeProfile.visible {
+  display: block;
+}
+
+.vpHeader {
+  position: absolute;
+  top: 8px;
+  right: 54px;
+  padding: 4px 7px;
+  border: 1px solid rgba(127,144,165,.24);
+  border-radius: 5px;
+  background: rgba(7,16,25,.82);
+  color: #9fb0c3;
+  font: 700 9px/1.1 Inter,system-ui,sans-serif;
+  letter-spacing: .08em;
+}
+
+.vpRows {
+  position: absolute;
+  inset: 0 50px 0 0;
+}
+
+.vpBar {
+  position: absolute;
+  right: 0;
+  min-width: 2px;
+  border-radius: 2px 0 0 2px;
+  background: rgba(127,144,165,.16);
+}
+
+.vpBarValue {
+  background: rgba(80,190,255,.28);
+}
+
+.vpLine {
+  position: absolute;
+  left: 0;
+  right: 50px;
+  height: 1px;
+}
+
+.vpValueArea {
+  background: rgba(80,190,255,.08);
+  border-top: 1px dashed rgba(80,190,255,.45);
+  border-bottom: 1px dashed rgba(80,190,255,.45);
+  height: 0;
+}
+
+.vpPoc {
+  background: rgba(255,193,76,.9);
+  box-shadow: 0 0 5px rgba(255,193,76,.28);
+}
+
+.vpLabel {
+  position: absolute;
+  right: 56px;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(7,16,25,.9);
+  font: 700 9px/1.1 Inter,system-ui,sans-serif;
+}
+
+.vpPocLabel {
+  color: #ffd27a;
+}
+
+.vpVahLabel,
+.vpValLabel {
+  color: #80cfff;
+}
+
+.vpStats {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 180px);
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: rgba(7,16,25,.82);
+  color: #8fa1b5;
+  font: 600 9px/1.2 Inter,system-ui,sans-serif;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .vpRows {
+    inset-right: 44px;
+  }
+
+  .vpHeader {
+    right: 48px;
+    font-size: 8px;
+  }
+
+  .vpLabel {
+    right: 49px;
+    font-size: 8px;
+  }
+
+  .vpStats {
+    max-width: calc(100% - 130px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
