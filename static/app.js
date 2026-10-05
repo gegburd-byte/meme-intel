@@ -69,8 +69,11 @@ let chartHistoryRetryTimer = null;
 let chartHistoryRetryGeneration = 0;
 let liveTradeBackoff = 500;
 let liveTradeWatchdogTimer = null;
+let liveTickerTimer = null;
+let liveTickerBusy = false;
 let lastLiveTradeAtMs = 0;
 let lastLiveTradeReceivedAtMs = 0;
+let lastLiveTickerAtMs = 0;
 let lastRenderedCandleTime = 0;
 
 const PAGE_SIZE = 30;
@@ -2953,6 +2956,31 @@ function updateCandleFromLiveTrade(trade) {
   );
   let lateTradeForCurrentBar = false;
 
+  // A real decoded trade replaces a quote-only preview candle in the same
+  // bucket so the executed trade becomes authoritative immediately.
+  if (bar && bar._quoteOnly) {
+    const idx = selectedCandles.findIndex(
+      x => x.time === bucket
+    );
+
+    bar = {
+      time: bucket,
+      ts: bucket,
+      o: price,
+      h: price,
+      l: price,
+      c: price,
+      v: volume,
+      _firstTs: ts,
+      _lastTs: ts,
+      _quoteOnly: false
+    };
+
+    if (idx >= 0) {
+      selectedCandles[idx] = bar;
+    }
+  }
+
   // A live price fallback is never an OHLC authority. The first real trade
   // replaces it completely.
   if (
@@ -3220,23 +3248,199 @@ async function pollLivePrice() {
     if (Number.isFinite(price) && price > 0) {
       selectedLiveUsdPrice = price;
       selectedLiveUsdAt = Date.now();
-      const now = Date.now();
-
-      // HTTP asset price is only a backup display value. Never let it
-      // overwrite a live Pump.fun trade or a real chart candle.
-      if (
-        !selectedTrades.length &&
-        !selectedCandles.length
-      ) {
-        updateActivePrice(price, now);
-      }
 
       if (!selectedCandles.length) {
+        updateActivePrice(price, Date.now());
         requestCurrentCandleSync();
       }
     }
   } catch {}
 }
+
+function applyLiveMarketTick(price, timestampSec, source = "MARKET QUOTE") {
+  if (!selectedMint || !chartInitialized) return;
+
+  price = Number(price);
+  timestampSec = Number(timestampSec);
+
+  if (
+    !Number.isFinite(price) ||
+    price <= 0 ||
+    !Number.isFinite(timestampSec) ||
+    timestampSec <= 0
+  ) {
+    return;
+  }
+
+  // Real decoded trades remain authoritative for a short window. The ticker
+  // only fills the gap when the event transport is silent.
+  if (
+    lastLiveTradeAtMs > 0 &&
+    Date.now() - lastLiveTradeAtMs < 1500
+  ) {
+    return;
+  }
+
+  const span = timeframeSeconds();
+  const bucket = Math.floor(timestampSec / span) * span;
+  let bar = selectedCandles[selectedCandles.length - 1];
+
+  if (!bar || bucket > Number(bar.time || 0)) {
+    const open = bar && Number(bar.c) > 0
+      ? Number(bar.c)
+      : price;
+
+    bar = {
+      time: bucket,
+      ts: bucket,
+      o: open,
+      h: Math.max(open, price),
+      l: Math.min(open, price),
+      c: price,
+      v: 0,
+      _firstTs: timestampSec,
+      _lastTs: timestampSec,
+      _quoteOnly: true
+    };
+
+    selectedCandles = [
+      ...selectedCandles,
+      bar
+    ].slice(-MAX_HISTORY_BARS);
+  } else if (bucket === Number(bar.time || 0)) {
+    if (!Number.isFinite(Number(bar._firstTs))) {
+      bar._firstTs = timestampSec;
+    }
+    bar._lastTs = Math.max(
+      Number(bar._lastTs || timestampSec),
+      timestampSec
+    );
+    bar.h = Math.max(Number(bar.h || price), price);
+    bar.l = Math.min(Number(bar.l || price), price);
+    bar.c = price;
+    bar._quoteOnly = true;
+  } else {
+    // A stale quote must never move the chart backwards.
+    return;
+  }
+
+  chartDataSource = "LIVE MARKET PRICE";
+  livePreviewActive = true;
+  lastLiveTickerAtMs = Date.now();
+  historyBarsLoaded = selectedCandles.length;
+
+  updateActivePrice(price, timestampSec * 1000);
+
+  // Feed the same current-minute bar into the indicator engine. This makes
+  // EMA/RSI/VWAP/ATR/signal cards react immediately even when the trade event
+  // socket is temporarily silent.
+  updateIndicatorMinuteCandle({
+    price,
+    time: timestampSec,
+    volume_sol: 0,
+  });
+
+  updateRealtimeChart({
+    time: bar.time,
+    ts: bar.ts,
+    o: Number(bar.o),
+    h: Number(bar.h),
+    l: Number(bar.l),
+    c: Number(bar.c),
+    v: Number(bar.v || 0)
+  });
+
+  $("chartMode").textContent =
+    source + " · " +
+    timeframeLabel() +
+    " · LIVE TICK";
+
+  setSource(
+    "dotChart",
+    "chartState",
+    "LIVE",
+    ["LIVE","READY"]
+  );
+}
+
+async function pollLiveTicker() {
+  if (!selectedMint || liveTickerBusy) return;
+
+  liveTickerBusy = true;
+
+  try {
+    const generation = historyGeneration;
+    const r = await fetch(
+      "/api/chart/ticker?mint=" +
+      encodeURIComponent(selectedMint) +
+      "&t=" + Date.now(),
+      {cache:"no-store"}
+    );
+
+    if (!r.ok) return;
+
+    const data = await readJsonResponse(r);
+
+    if (
+      generation !== historyGeneration ||
+      !selectedMint
+    ) {
+      return;
+    }
+
+    const price = Number(data.price);
+    const timestamp = Number(data.timestamp);
+
+    if (
+      Number.isFinite(price) &&
+      price > 0 &&
+      Number.isFinite(timestamp) &&
+      timestamp > 0
+    ) {
+      lastLiveTickerAtMs = Date.now();
+
+      // If the endpoint gave us an actual executed trade, route it through
+      // the normal trade engine. Otherwise use the real market quote as a
+      // live chart/indicator tick.
+      if (data.trade === true) {
+        applyLiveTrade({
+          id:"ticker:" + selectedMint + ":" + timestamp + ":" + price,
+          source:String(data.source || "PUMP.FUN"),
+          side:"BUY",
+          price,
+          timestamp,
+          volume_sol:0,
+          synthetic:true
+        }, false);
+      } else {
+        applyLiveMarketTick(
+          price,
+          timestamp,
+          String(data.source || "MARKET QUOTE")
+        );
+      }
+    }
+  } catch {
+    // The independent live websocket/recovery lanes remain active.
+  } finally {
+    liveTickerBusy = false;
+  }
+}
+
+function startLiveTicker() {
+  if (liveTickerTimer) {
+    clearInterval(liveTickerTimer);
+    liveTickerTimer = null;
+  }
+
+  liveTickerTimer = setInterval(
+    pollLiveTicker,
+    700
+  );
+
+  pollLiveTicker();
+}
+
 
 async function syncLiveTradeCache() {
   if (!selectedMint || liveTradeCacheBusy) return;
@@ -3661,6 +3865,12 @@ function disconnectLiveTrade() {
     liveTradeWatchdogTimer = null;
   }
 
+  if (liveTickerTimer) {
+    clearInterval(liveTickerTimer);
+    liveTickerTimer = null;
+  }
+
+  liveTickerBusy = false;
   liveTradeCacheBusy = false;
 
   if (pumpFunNativeReconnectTimer) {
@@ -3748,6 +3958,7 @@ function connectLiveTrade(mint) {
     startCurrentCandleSync();
     startLiveTradeCachePoll();
     startLivePricePoll();
+    startLiveTicker();
 
     socket.addEventListener("open",()=>{
       if (socket !== liveTradeSocket) return;
