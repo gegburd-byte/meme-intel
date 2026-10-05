@@ -2304,6 +2304,8 @@ async def chart_history(
         asyncio.create_task(helius_history()),
     ]
 
+    pump_swap_task = tasks[0]
+
     if chart_interval != "1s":
         native_task = asyncio.create_task(native_history())
         tasks.insert(0, native_task)
@@ -2319,11 +2321,89 @@ async def chart_history(
         native_fallback_rows = native_rows or []
         native_fallback_err = native_err
 
-        # Do not accept a broken/truncated Pump.fun native response merely
-        # because it contains one candle. That was the source of the "one bar
-        # then nothing" chart: a tiny native response cancelled the richer
-        # Pump.fun trade/PumpSwap fallbacks before they could render.
+        # Prefer the exact PumpSwap 5m candle stream when it has enough
+        # real bars. The native Pump.fun candle endpoint can represent an
+        # older/pre-migration venue for graduated tokens. PumpSwap is already
+        # being fetched in parallel, so give it a short chance to finish
+        # before accepting the native response.
         if native_rows and len(native_rows) >= strong_min_bars:
+            pump_swap_result = None
+
+            if not pump_swap_task.done():
+                try:
+                    pump_swap_result = await asyncio.wait_for(
+                        asyncio.shield(pump_swap_task),
+                        timeout=0.75,
+                    )
+                except (
+                    asyncio.TimeoutError,
+                    asyncio.CancelledError,
+                    Exception,
+                ):
+                    pump_swap_result = None
+            else:
+                try:
+                    pump_swap_result = pump_swap_task.result()
+                except Exception:
+                    pump_swap_result = None
+
+            if (
+                isinstance(pump_swap_result, tuple)
+                and len(pump_swap_result) == 3
+            ):
+                pump_source, pump_rows, pump_err = pump_swap_result
+
+                if (
+                    pump_rows
+                    and len(pump_rows) >= strong_min_bars
+                    and chart_data_quality(
+                        pump_rows,
+                        minimum_bars=1,
+                    ) > 0
+                ):
+                    payload = {
+                        "state": "READY",
+                        "source": pump_source,
+                        "candles": [
+                            {
+                                "ts": c.ts,
+                                "o": c.o,
+                                "h": c.h,
+                                "l": c.l,
+                                "c": c.c,
+                                "v": c.v,
+                            }
+                            for c in sorted(
+                                pump_rows,
+                                key=lambda x: x.ts,
+                            )[-limit:]
+                        ],
+                        "error": None,
+                        "timestamp": int(time.time()),
+                    }
+
+                    for task in tasks:
+                        if task is not pump_swap_task and not task.done():
+                            task.cancel()
+
+                    await asyncio.gather(
+                        *tasks,
+                        return_exceptions=True,
+                    )
+
+                    chart_history._cache = getattr(
+                        chart_history,
+                        "_cache",
+                        {},
+                    )
+                    chart_history._cache[cache_key] = {
+                        "time": time.time(),
+                        "payload": payload,
+                    }
+                    return payload
+
+            # Native history is still a valid fallback when PumpSwap did not
+            # return enough complete bars.
             payload = {
                 "state": "READY",
                 "source": "PUMP.FUN",
@@ -2336,7 +2416,10 @@ async def chart_history(
                         "c": c.c,
                         "v": c.v,
                     }
-                    for c in sorted(native_rows, key=lambda x: x.ts)[-limit:]
+                    for c in sorted(
+                        native_rows,
+                        key=lambda x: x.ts,
+                    )[-limit:]
                 ],
                 "error": None,
                 "timestamp": int(time.time()),
@@ -2346,9 +2429,16 @@ async def chart_history(
                 if task is not native_task and not task.done():
                     task.cancel()
 
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(
+                *tasks,
+                return_exceptions=True,
+            )
 
-            chart_history._cache = getattr(chart_history, "_cache", {})
+            chart_history._cache = getattr(
+                chart_history,
+                "_cache",
+                {},
+            )
             chart_history._cache[cache_key] = {
                 "time": time.time(),
                 "payload": payload,
