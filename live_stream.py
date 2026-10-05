@@ -1253,20 +1253,20 @@ class LiveTradeHub:
                 ],
             }
         else:
-            # Standard Solana WebSockets do not reliably expose Pump.fun token
-            # mints/pools in log text, so a mentions-filtered logs subscription
-            # can sit OPEN while returning zero trades. Subscribing directly to
-            # the bonding-curve / PumpSwap pool account gives us an event every
-            # time the exact market state changes, without a global firehose.
+            # Standard Helius WSS can stream the exact market transaction the
+            # moment it is logged. A mentions-filtered logs subscription is
+            # lower-latency than polling getSignaturesForAddress and does not
+            # depend on account-notification timing.
             payload = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "method": "accountSubscribe",
+                "method": "logsSubscribe",
                 "params": [
-                    address,
+                    {
+                        "mentions": [address],
+                    },
                     {
                         "commitment": "processed",
-                        "encoding": "base64",
                     },
                 ],
             }
@@ -1285,7 +1285,7 @@ class LiveTradeHub:
                     "method": (
                         "transactionUnsubscribe"
                         if self.stream_mode == "ENHANCED"
-                        else "accountUnsubscribe"
+                        else "logsUnsubscribe"
                     ),
                     "params": [sub_id],
                 })
@@ -1360,7 +1360,12 @@ class LiveTradeHub:
                     self._subscription_address.clear()
                     self.pending.clear()
 
-                    await self._status_all("LIVE")
+                    await self._status_all(
+                        "LIVE",
+                        "HELIUS " + self.stream_mode + " " +
+                        ("transaction" if self.stream_mode == "ENHANCED" else "logs")
+                        + " feed",
+                    )
 
                     self._subscribed_addresses.clear()
                     self._pending_addresses.clear()
