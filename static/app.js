@@ -4104,12 +4104,12 @@ function startCurrentCandleSync() {
 
     if (!selectedMint) return;
 
-    // A 250 ms reconciliation lane is still well below the server's current
-    // chart/current rate limit. The websocket remains the primary path; this
-    // only repairs missed/stalled live updates.
+    // A 200 ms reconciliation lane stays below the server's 60/10s
+    // chart/current limit while giving the recovery path a fast 5 Hz cadence.
+    // The websocket remains primary; this repairs missed/stalled live updates.
     currentCandleSyncTimer = setTimeout(
       tick,
-      250
+      200
     );
   };
 
