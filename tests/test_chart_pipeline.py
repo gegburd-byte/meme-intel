@@ -229,12 +229,15 @@ def test_frontend_uses_current_pumpfun_v3_socket():
     html = Path("static/index.html").read_text()
     app = Path("static/app.js").read_text()
 
-    assert "chartfix35" in html
+    assert "chartfix36" in html
     assert "frontend-api-v3.pump.fun/socket.io/" in app
     assert "tradeCreated" in app
     assert "findNativePumpFunTradePayload" in app
     assert "refreshIndicatorHistory" in app
     assert "VWAP / ATR" in html
+    assert "HistogramSeries" in app
+    assert "chart.addSeries(" in app
+    assert "strong_min_bars = min(limit, 12)" in Path("main.py").read_text()
 
 def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
     from pathlib import Path
@@ -247,7 +250,7 @@ def test_live_frontend_avoids_browser_global_pumpfun_firehose_by_default():
     assert "selectedTrades.some(x => x.id === t.id)" not in app
     assert "renderTape();" not in app[app.index("function updateCandleFromLiveTrade"):app.index("function liveTradePriceIsPlausible")]
     assert "selectedMinuteCandles = selectedMinuteCandles.map" not in app
-    assert "chartfix33" in html
+    assert "chartfix36" in html
 
 
 def test_swap_trade_feed_does_not_use_a_fake_recent_creation_timestamp():
