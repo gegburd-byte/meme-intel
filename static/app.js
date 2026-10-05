@@ -3229,7 +3229,7 @@ async function syncLiveTradeCache() {
   // Websocket trade events are authoritative. HTTP only repairs a silent feed.
   if (
     lastLiveTradeAtMs > 0 &&
-    Date.now() - lastLiveTradeAtMs < 750
+    Date.now() - lastLiveTradeAtMs < 250
   ) {
     return;
   }
@@ -3291,7 +3291,7 @@ function startLiveTradeCachePoll() {
     ) {
       syncLiveTradeCache();
     }
-  },750);
+  },300);
 
   liveTradeWatchdogTimer = setInterval(() => {
     if (
@@ -3313,7 +3313,7 @@ function startLiveTradeCachePoll() {
       // tearing down a healthy connection just because the token went quiet.
       syncLiveTradeCache();
     }
-  },1500);
+  },1000);
 
   syncLiveTradeCache();
 }
@@ -3324,7 +3324,7 @@ async function syncCurrentPumpCandle() {
   // Do not repaint the live candle from HTTP immediately after a real trade.
   if (
     lastLiveTradeAtMs > 0 &&
-    Date.now() - lastLiveTradeAtMs < 750
+    Date.now() - lastLiveTradeAtMs < 250
   ) {
     return;
   }
@@ -3468,7 +3468,7 @@ function startCurrentCandleSync() {
     // only repairs missed/stalled live updates.
     currentCandleSyncTimer = setTimeout(
       tick,
-      500
+      250
     );
   };
 
