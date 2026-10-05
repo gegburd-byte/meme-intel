@@ -1189,6 +1189,7 @@ PRICE_CACHE = {}
 
 _live_pool_tasks: dict[str, asyncio.Task[Any]] = {}
 _live_rest_tasks: dict[str, asyncio.Task[Any]] = {}
+_live_feed_last_seen: dict[str, float] = {}
 
 
 async def live_rest_trade_loop(mint: str) -> None:
@@ -1199,7 +1200,10 @@ async def live_rest_trade_loop(mint: str) -> None:
     last_legacy_poll = 0.0
 
     try:
-        while mint in trade_hub.clients:
+        while (
+            mint in trade_hub.clients
+            or time.monotonic() - _live_feed_last_seen.get(mint, 0.0) < 12.0
+        ):
             now = time.time()
             rows = []
 
@@ -1363,6 +1367,25 @@ async def live_rest_trade_loop(mint: str) -> None:
         _live_rest_tasks.pop(mint, None)
 
 
+async def ensure_live_feed(mint: str) -> None:
+    """Keep the exact-venue live sampler alive even when browser WebSockets fail."""
+    mint = (mint or "").strip()
+    if not mint:
+        return
+
+    _live_feed_last_seen[mint] = time.monotonic()
+
+    if mint not in _live_rest_tasks or _live_rest_tasks[mint].done():
+        _live_rest_tasks[mint] = asyncio.create_task(
+            live_rest_trade_loop(mint)
+        )
+
+    if mint not in _live_pool_tasks or _live_pool_tasks[mint].done():
+        _live_pool_tasks[mint] = asyncio.create_task(
+            attach_live_market_addresses(mint)
+        )
+
+
 async def attach_live_market_addresses(mint: str) -> None:
     """Attach every exact Pump.fun/PumpSwap market account to the live stream."""
     try:
@@ -1467,18 +1490,7 @@ async def ws_trades(websocket: WebSocket):
 
     await websocket.accept()
     await trade_hub.add_client(mint, websocket)
-
-    if mint not in _live_rest_tasks or _live_rest_tasks[mint].done():
-        _live_rest_tasks[mint] = asyncio.create_task(
-            live_rest_trade_loop(mint)
-        )
-
-    # Start the pool lookup after the mint stream is already live. This keeps
-    # first-trade latency low while adding PumpSwap coverage a moment later.
-    if mint not in _live_pool_tasks or _live_pool_tasks[mint].done():
-        _live_pool_tasks[mint] = asyncio.create_task(
-            attach_live_market_addresses(mint)
-        )
+    await ensure_live_feed(mint)
 
     try:
         await websocket.send_json({
@@ -1553,7 +1565,9 @@ def chart_data_quality(candles: list[Candle], minimum_bars: int = 3) -> float:
 
 
 @app.get("/api/chart/live-trades")
-async def chart_live_trades(mint: str, limit: int = 200):
+async def chart_live_trades(mint:     await ensure_live_feed(mint)
+
+str, limit: int = 200):
     """Return the newest trade stream data without changing chart price units."""
     mint = (mint or "").strip()
 
@@ -1603,7 +1617,7 @@ async def chart_live_trades(mint: str, limit: int = 200):
                     mint,
                     limit=min(25, limit),
                     cursor=0,
-                    fresh=False,
+                    fresh=True,
                 ),
                 timeout=0.45,
             )
@@ -2397,7 +2411,9 @@ async def chart_history(
 
 @app.get("/api/chart/current")
 async def chart_current(
-    mint: str,
+    mint:     await ensure_live_feed(mint)
+
+str,
     timeframe: str = "1m",
     interval: str | None = None,
 ):
@@ -2444,9 +2460,9 @@ async def chart_current(
         swap_payload, swap_err = await asyncio.wait_for(
             pf.swap_trades(
                 mint,
-                limit=5,
+                limit=12,
                 cursor=0,
-                fresh=False,
+                fresh=True,
             ),
             timeout=0.45,
         )
